@@ -11,6 +11,10 @@ main [CVEngine](https://github.com/hevnsnt/CVEngine) repository for the design, 
 for the REST contract this client speaks. Nothing it runs is ever built from, or interprets, text the server sends:
 see `client/tools.py`'s header for the argv discipline every tool call follows.
 
+If an AI agent is setting this up (for example one with Docker and shell access to the target machine, and MCP or
+REST access to the cvENGINE instance), see [AGENTS.md](AGENTS.md) instead: it is the same procedure below, but
+driven entirely from the `generate_sentinel_enrollment` MCP tool's response, with no steps that need a human.
+
 ## Set up
 
 1. Clone this repository onto the machine that will do the scanning (the same one you would otherwise have run nmap

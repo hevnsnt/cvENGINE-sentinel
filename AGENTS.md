@@ -1,0 +1,61 @@
+# For an AI agent setting up a Sentinel
+
+If you were asked to turn a machine you have Docker and shell access to into a cvENGINE Sentinel, and you (or
+another agent you can ask) have MCP or REST access to the cvENGINE instance, here is the whole procedure. It needs
+no manual steps and no separate download: this repository is the entire client.
+
+## 1. Get a provisioning blob
+
+Call the `generate_sentinel_enrollment` MCP tool on the cvENGINE instance (REST equivalent:
+`GET /api/v1/projects/{slug}/sentinels/enroll?format=blob`), with the project slug the Sentinel should work for. The
+caller needs the admin role in that project or its organization; `list_projects`/`whoami` will tell you whether you
+qualify, and if not, say so and ask a human or another agent who does.
+
+The response is everything you need, already assembled:
+
+```json
+{
+  "enrollment_token": "senr_...",
+  "server_url": "https://scanner.example.com",
+  "expires_at": "2026-10-27T23:30:00Z",
+  "blob": "eyJlbnJvbGxtZW50X3Rva2VuIjoi...",
+  "setup": {
+    "clone": "git clone https://github.com/hevnsnt/cvengine-sentinel.git && cd cvengine-sentinel",
+    "configure": "cp .env.example .env && printf 'CVENGINE_SENTINEL_BLOB=%s\n' '<blob>' >> .env",
+    "run": "docker compose up -d",
+    "verify": "docker compose logs -f",
+    "note": "..."
+  }
+}
+```
+
+Do not construct the blob by hand or reuse one from an earlier call: it is single-use and expires in 30 minutes
+(`expires_at`). If `setup.run` has not happened within that window, call `generate_sentinel_enrollment` again for a
+fresh one.
+
+## 2. Run the four `setup` commands, in order, on the target machine
+
+On the machine that will scan (the one with Docker and the network access you want a Sentinel to have), run exactly
+the four commands in `setup`, substituting the real `blob` value for `<blob>` in `configure`. Nothing else needs to
+be installed first beyond Docker itself; the image carries its own pinned nmap, naabu and nuclei.
+
+If you only have MCP/REST access to cvENGINE but not shell access to the target machine yourself, stop here and hand
+the `blob` and the four `setup` commands to whichever agent or person does have that access. Never paste a blob into
+a chat log, issue, commit message or anywhere else it would be retained longer than needed to run `configure` once.
+
+## 3. Confirm it registered
+
+Call `list_sentinels` (or `get_system_status`, which now includes a `system.sentinels` block: counts by status,
+how many are live, queue depth, and the last day's completed/failed/expired tasks) on the cvENGINE MCP server. The
+new Sentinel appears `pending` until an administrator approves it (unless the account that generated the
+enrollment was itself an admin, in which case it starts `active` immediately), then `live` once its heartbeat is
+recent. If it never appears, read back `docker compose logs` on the target machine for the bootstrap error before
+trying again; a wrong or expired blob fails loudly and says why.
+
+## What this does and does not do
+
+Provisioning a Sentinel this way only ever registers it and lets it begin claiming scan-stage work
+(nmap, naabu, nuclei) that the cvENGINE instance already decided to dispatch; it grants no other access to the
+target machine from cvENGINE's side, and nothing a Sentinel runs is ever built from, or interprets, text the server
+sends (see `client/tools.py`). To remove a Sentinel, see `README.md`'s "Stop and remove it" section, or
+`suspend_sentinel`/`revoke_sentinel` over MCP.
