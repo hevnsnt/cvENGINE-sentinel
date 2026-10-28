@@ -313,3 +313,26 @@ class GvmAvailableTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class GvmStatusTests(unittest.TestCase):
+    def setUp(self):
+        tools._GVM_STATUS.update(at=0.0, value=(False, 'not checked yet'))
+        self.addCleanup(tools._GVM_STATUS.update, at=0.0, value=(False, 'not checked yet'))
+
+    def test_not_available_is_not_ready_without_asking_gvmd(self):
+        with mock.patch('client.tools.gvm_available', return_value=False), mock.patch('client.openvas.readiness') as readiness:
+            ready, why = tools.gvm_status()
+        self.assertFalse(ready)
+        self.assertIn('not running', why)
+        readiness.assert_not_called()
+
+    def test_readiness_is_asked_once_a_minute_and_the_reason_is_kept(self):
+        with mock.patch('client.tools.gvm_available', return_value=True), \
+                mock.patch('client.openvas.readiness', return_value=(False, 'GVM is still syncing its SCAP feed(s)')) as readiness:
+            self.assertEqual(tools.gvm_status(now=100), (False, 'GVM is still syncing its SCAP feed(s)'))
+            self.assertEqual(tools.gvm_status(now=130), (False, 'GVM is still syncing its SCAP feed(s)'))
+            self.assertEqual(readiness.call_count, 1)
+            readiness.return_value = (True, '')
+            self.assertEqual(tools.gvm_status(now=100 + tools.GVM_STATUS_TTL + 1), (True, ''))
+            self.assertTrue(tools.gvm_ready())

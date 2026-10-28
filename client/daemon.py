@@ -27,6 +27,18 @@ from . import tools
 
 logger = logging.getLogger('sentinel.daemon')
 
+
+def _describe_target(target):
+    """A short, safe line about what a task is aimed at, for the log: a count, never the addresses or any secret in the target."""
+    target = target if isinstance(target, dict) else {}
+    for key in ('targets', 'addresses'):
+        if isinstance(target.get(key), list):
+            return f'{len(target[key])} target(s)'
+    if isinstance(target.get('hosts'), (list, dict)):
+        return f'{len(target["hosts"])} host(s)'
+    return 'one target'
+
+RECONCILE_GRACE_SECONDS = 10.0  # a task accepted this recently may not be in the heartbeat's lease list yet
 MIN_BACKOFF = 1.0
 MAX_BACKOFF = 60.0
 
@@ -61,6 +73,17 @@ def save_token(path, token, server_url):
             pass
 
 
+def declared_kinds(kinds=None):
+    """The scan kinds this Sentinel can run right now, which is what it tells the server it can do. ``openvas`` is declared only while this
+    Sentinel's own GVM stack answers (its socket exists), so a Sentinel started without the stack, or whose stack is still syncing feeds,
+    is never handed OpenVAS work it cannot run; and a kind the operator disabled (CVENGINE_SENTINEL_DISABLE) is never declared."""
+    off = config.disabled_kinds()
+    declared = [k for k in config.registered_capabilities(kinds) if k not in off]
+    if 'openvas' in declared and not tools.gvm_ready():
+        declared.remove('openvas')
+    return declared
+
+
 def bootstrap(blob_raw, name, max_concurrent, client_factory=httpclient.Client):
     """Decode the provisioning blob and trade it for this Sentinel's own token. Returns ``(token, server_url)``; the
     caller persists it. Raises ``blob.BlobError`` on a bad blob, ``httpclient.ApiError``/``requests.RequestException``
@@ -68,7 +91,7 @@ def bootstrap(blob_raw, name, max_concurrent, client_factory=httpclient.Client):
     payload = blob_mod.decode_blob(blob_raw)
     server_url = payload['server_url']
     client = client_factory(server_url)
-    body = {'enrollment_token': payload['enrollment_token'], 'name': name, 'capabilities': config.registered_capabilities(),
+    body = {'enrollment_token': payload['enrollment_token'], 'name': name, 'capabilities': declared_kinds(),
             'os': [config.os_family()] if config.os_family() else [], 'tools': tools.detect_tools(),
             'max_concurrent': max_concurrent}
     out = client.call('POST', 'sentinels/bootstrap', body)
@@ -84,7 +107,7 @@ def register(client, name, max_concurrent, kinds=None):
     (CVENGINE_SENTINEL_MAX_CONCURRENT, or the host's freshly auto-detected CPU count) instead of whatever was true
     the one time it originally bootstrapped. ``scope`` is left out on purpose: ``PUT sentinel`` only changes fields
     given in the body, so this never touches the scope an enrollment secret already assigned."""
-    body = {'name': name, 'capabilities': config.registered_capabilities(kinds), 'os': [config.os_family()] if config.os_family() else [],
+    body = {'name': name, 'capabilities': declared_kinds(kinds), 'os': [config.os_family()] if config.os_family() else [],
             'tools': tools.detect_tools(), 'max_concurrent': max_concurrent}
     client.call('PUT', 'sentinel', body)
 
@@ -94,6 +117,9 @@ class Daemon:
         self.client = client or httpclient.Client(server_url, token)
         self.max_concurrent = max(1, max_concurrent)
         self.kinds = list(kinds or config.CAPABILITIES)
+        self._kinds_given = bool(kinds)
+        self.reregister = None  # set by the entry point: re-sends this Sentinel's registration when what it can run changes
+        self._declared = declared_kinds(kinds)  # what startup registered, so a change after it is noticed
         self.heartbeat_seconds = heartbeat_seconds or config.HEARTBEAT_SECONDS
         self.stop_event = threading.Event()
         self._lock = threading.Lock()
@@ -124,9 +150,57 @@ class Daemon:
     def _heartbeat_loop(self):
         while not self.stop_event.wait(self.heartbeat_seconds):
             try:
-                self.client.call('POST', 'sentinel/heartbeat')
+                out = self.client.call('POST', 'sentinel/heartbeat')
             except (httpclient.ApiError, requests.RequestException) as exc:
                 logger.warning('heartbeat failed: %s', exc)
+                continue
+            self._reconcile((out or {}).get('leases'))
+            self._refresh_registration()
+
+    def _poll_kinds(self):
+        """The kinds worth asking the server for now: the configured ones, less any the operator disabled and ``openvas`` while no GVM stack answers."""
+        off = config.disabled_kinds()
+        kinds = [k for k in self.kinds if k not in off]
+        if 'openvas' in kinds and not tools.gvm_ready():
+            kinds.remove('openvas')
+        return kinds
+
+    def _refresh_registration(self):
+        """A GVM stack that finished syncing after this Sentinel started (it can take hours the first time) makes ``openvas`` runnable, and
+        one that stopped makes it not; register again when what this Sentinel can run has changed since it last told the server."""
+        if self.reregister is None:
+            return
+        declared = declared_kinds(self.kinds if self._kinds_given else None)
+        if declared == self._declared:
+            return
+        try:
+            self.reregister()
+        except (httpclient.ApiError, requests.RequestException) as exc:
+            logger.warning('could not refresh registration: %s', exc)
+            return
+        logger.info('capabilities changed: now %s', ', '.join(declared))
+        self._declared = declared
+
+    def _reconcile(self, leases):
+        """The heartbeat answers with the tasks the server still holds for this Sentinel. A task running here that is not among them was
+        taken back (the stage that dispatched it gave up and ran the tool itself, a person cancelled it, this Sentinel was suspended): its
+        result will be refused, so the run is killed instead of burning CPU for nothing. ``leases`` None (an answer with no list) judges nothing."""
+        if not isinstance(leases, list):
+            return
+        held = {lease.get('task_id') for lease in leases if isinstance(lease, dict)}
+        with self._lock:
+            running = dict(self._in_flight)
+        for task_id, state in running.items():
+            if task_id in held or time.monotonic() - state.get('started', time.monotonic()) < RECONCILE_GRACE_SECONDS:
+                continue
+            logger.warning('task %s is no longer assigned to this Sentinel (taken back by the server); stopping it', task_id)
+            state['dropped'] = True
+            proc = state.get('proc')
+            if proc is not None and proc.poll() is None:
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
 
     # --- polling and task execution ------------------------------------------------------------------------------
 
@@ -135,7 +209,7 @@ class Daemon:
             time.sleep(0.5)
             return
         try:
-            out = self.client.call('POST', 'sentinel/tasks/next', {'wait': config.DEFAULT_POLL_WAIT, 'kinds': self.kinds})
+            out = self.client.call('POST', 'sentinel/tasks/next', {'wait': config.DEFAULT_POLL_WAIT, 'kinds': self._poll_kinds()})
         except (httpclient.ApiError, requests.RequestException) as exc:
             logger.warning('poll failed: %s', exc)
             self._sleep_backoff()
@@ -157,9 +231,10 @@ class Daemon:
         except (httpclient.ApiError, requests.RequestException) as exc:
             logger.warning('could not accept task %s: %s', task_id, exc)
             return
-        state = {'proc': None, 'done': threading.Event()}
+        state = {'proc': None, 'done': threading.Event(), 'started': time.monotonic(), 'dropped': False}
         with self._lock:
             self._in_flight[task_id] = state
+        logger.info('task %s accepted: %s (%s)', task_id, task.get('kind'), _describe_target(task.get('target')))
         thread = threading.Thread(target=self._run_task, args=(task, state), name=f'sentinel-task-{task_id}', daemon=True)
         thread.start()
 
@@ -170,18 +245,28 @@ class Daemon:
 
     def _run_task(self, task, state):
         task_id = task['id']
+        outcome = 'error'
         try:
             result = self._execute(task, self._register_proc(state))
-            self._report(task_id, result)
+            outcome = result.get('outcome', 'done')
+            self._report_unless_dropped(task_id, state, result)
         except tools.TargetError as exc:
-            self._report(task_id, {'outcome': 'error', 'error': str(exc)[:280]})
+            self._report_unless_dropped(task_id, state, {'outcome': 'error', 'error': str(exc)[:280]})
         except Exception as exc:  # noqa: BLE001 - one bad task must never take the daemon down
-            logger.exception('task %s failed', task_id)
-            self._report(task_id, {'outcome': 'error', 'error': str(exc)[:280]})
+            if not state.get('dropped'):
+                logger.exception('task %s failed', task_id)
+            self._report_unless_dropped(task_id, state, {'outcome': 'error', 'error': str(exc)[:280]})
         finally:
+            logger.info('task %s finished: %s, %s, %.1fs', task_id, task.get('kind'), 'dropped by the server' if state.get('dropped') else outcome,
+                        time.monotonic() - state.get('started', time.monotonic()))
             state['done'].set()
             with self._lock:
                 self._in_flight.pop(task_id, None)
+
+    def _report_unless_dropped(self, task_id, state, result):
+        if state.get('dropped'):  # the server took it back: it would refuse the result
+            return
+        self._report(task_id, result)
 
     def _execute(self, task, register):
         kind = task.get('kind')
