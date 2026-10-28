@@ -202,6 +202,8 @@ class EnsureConfigTests(unittest.TestCase):
         wanted_names = [w[0] for w in family_call[1][1]]
         self.assertNotIn('Denial of Service', wanted_names)
         self.assertIn('Web application abuses', wanted_names)
+        # gvmd answers 400 to a family that includes all VTs without also growing, so every kept family must be (name, growing, all VTs) = True, True
+        self.assertTrue(all(w[1] is True and w[2] is True for w in family_call[1][1]), family_call[1][1])
         self.assertIn('modify_scan_config_set_scanner_preference', gmp.names())
 
     def test_reuses_an_existing_config_by_name_but_still_reapplies_family_selection(self):
