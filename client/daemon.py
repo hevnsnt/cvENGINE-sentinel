@@ -191,8 +191,18 @@ class Daemon:
         target = task.get('target') or {}
         if kind in ('nmap', 'naabu'):
             out = runner(target.get('addresses') or [], register=register)
-        else:
+        elif kind in ('nuclei_light', 'nuclei_targeted', 'nuclei_deep'):
             out = runner(target.get('targets') or [], tags=target.get('tags'), severities=target.get('severities'), register=register)
+        elif kind == 'testssl':
+            out = runner(target.get('host') or '', target.get('ip') or '', target.get('port'), target.get('starttls') or '', register=register)
+        elif kind == 'nmap_udp':
+            out = runner(target.get('address') or '', register=register)
+        elif kind == 'wpscan':
+            out = runner(target.get('url') or '', target.get('token') or '', register=register)
+        elif kind == 'openvas':
+            out = runner(target.get('hosts') or {}, target.get('excluded_families') or [], target.get('max_hours'), register=register)
+        else:
+            raise tools.TargetError(f'unknown task kind {kind!r}')
         return {'outcome': 'done', **out}
 
     def _report(self, task_id, result):

@@ -3,7 +3,7 @@ import os
 import platform
 import socket
 
-CAPABILITIES = ['nmap', 'naabu', 'nuclei_light', 'nuclei_targeted', 'nuclei_deep']
+CAPABILITIES = ['nmap', 'naabu', 'nuclei_light', 'nuclei_targeted', 'nuclei_deep', 'testssl', 'nmap_udp', 'wpscan', 'openvas']
 HEARTBEAT_SECONDS = 60  # matches agentapi.agent_broker.HEARTBEAT_SECONDS; see that constant if it ever changes
 DEFAULT_TOKEN_PATH = '/var/lib/cvengine-sentinel/token.json'
 DEFAULT_POLL_WAIT = 15  # seconds the long poll (sentinel/tasks/next) may block per call

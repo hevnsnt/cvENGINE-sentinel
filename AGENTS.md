@@ -45,7 +45,13 @@ fresh one.
 
 On the machine that will scan (the one with Docker and the network access you want a Sentinel to have), run exactly
 the four commands in `setup`, substituting the real `blob` value for `<blob>` in `configure`. Nothing else needs to
-be installed first beyond Docker itself; the image carries its own pinned nmap, naabu and nuclei.
+be installed first beyond Docker itself; the image carries its own pinned nmap, naabu, nuclei, testssl.sh and
+WPScan, and `docker compose up -d` also brings up this Sentinel's own OpenVAS/GVM stack alongside it. That stack
+downloads several GB of vulnerability-test feeds on its first start, which can take hours; every other capability
+(nmap/naabu/nuclei/testssl/UDP/WPScan) is usable immediately, and OpenVAS tasks simply wait until the feed sync
+finishes. If this machine should stay lightweight and never run OpenVAS, tell the person or agent operating it to
+remove the `openvas-*` services from `docker-compose.yml` before step 4 below, per README.md's "Configuration"
+section.
 
 If you only have MCP/REST access to cvENGINE but not shell access to the target machine yourself, stop here and hand
 the `blob` and the four `setup` commands to whichever agent or person does have that access. Never paste a blob into
@@ -63,7 +69,8 @@ trying again; a wrong or expired blob fails loudly and says why.
 ## What this does and does not do
 
 Provisioning a Sentinel this way only ever registers it and lets it begin claiming scan-stage work
-(nmap, naabu, nuclei) that the cvENGINE instance already decided to dispatch; it grants no other access to the
-target machine from cvENGINE's side, and nothing a Sentinel runs is ever built from, or interprets, text the server
-sends (see `client/tools.py`). To remove a Sentinel, see `README.md`'s "Stop and remove it" section, or
+(nmap, naabu, nuclei, testssl.sh, a UDP exposure sweep, WPScan, OpenVAS) that the cvENGINE instance already decided
+to dispatch; it grants no other access to the target machine from cvENGINE's side, and nothing a Sentinel runs is
+ever built from, or interprets, text the server sends (see `client/tools.py`, and `client/openvas.py` for the GMP
+session OpenVAS work runs over). To remove a Sentinel, see `README.md`'s "Stop and remove it" section, or
 `suspend_sentinel`/`revoke_sentinel` over MCP.

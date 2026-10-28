@@ -62,7 +62,8 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual((method, path), ('POST', 'sentinels/bootstrap'))
         self.assertEqual(body['enrollment_token'], 'senr_abc')
         self.assertEqual(body['name'], 'my-sentinel')
-        self.assertEqual(sorted(body['capabilities']), sorted(['nmap', 'naabu', 'nuclei_light', 'nuclei_targeted', 'nuclei_deep']))
+        self.assertEqual(sorted(body['capabilities']),
+                         sorted(['nmap', 'naabu', 'nuclei_light', 'nuclei_targeted', 'nuclei_deep', 'testssl', 'nmap_udp', 'wpscan', 'openvas']))
         self.assertEqual(body['max_concurrent'], 2)
         self.assertEqual(body['tools'], ['nmap'])
 
@@ -163,6 +164,32 @@ class PollAndExecuteTests(unittest.TestCase):
         self.assertIn(('POST', 'sentinel/tasks/next'), fc.paths())
         self.assertIn(('POST', 'sentinel/tasks/7/accept'), fc.paths())
         self.assertEqual(fc.body_for('sentinel/tasks/7/result'), {'outcome': 'done', **fake_result})
+
+    def test_each_new_kind_is_dispatched_with_the_fields_its_target_carries(self):
+        cases = [
+            ('testssl', {'host': 'www.example.test', 'ip': '192.0.2.10', 'port': 443, 'starttls': ''},
+             {'items': []}, (('www.example.test', '192.0.2.10', 443, ''), {})),
+            ('nmap_udp', {'address': '192.0.2.10'}, {'xml': '<nmaprun/>'}, (('192.0.2.10',), {})),
+            ('wpscan', {'url': 'https://www.example.test', 'token': 'tok'}, {'report': None, 'returncode': 0, 'stderr_tail': ''},
+             (('https://www.example.test', 'tok'), {})),
+            ('openvas', {'hosts': {'192.0.2.10': 'www.example.test'}, 'excluded_families': ['Denial of Service'], 'max_hours': 4},
+             {'results': [], 'scanned_addresses': [], 'without_cve': 0, 'unusable': 0},
+             (({'192.0.2.10': 'www.example.test'}, ['Denial of Service'], 4), {})),
+        ]
+        for kind, target, fake_result, expected_call in cases:
+            with self.subTest(kind=kind):
+                fc = FakeClient()
+                fc.next_responses = [{'task': {'id': 100, 'kind': kind, 'target': target}}]
+                d = daemon.Daemon('https://cve.example.test', 'tok', client=fc)
+                fake_runner = mock.Mock(return_value=fake_result)
+                with mock.patch.dict(tools.RUNNERS, {kind: fake_runner}):
+                    d._poll_once()
+                    self._wait_idle(d)
+                self.assertEqual(fc.body_for('sentinel/tasks/100/result'), {'outcome': 'done', **fake_result})
+                expected_args, expected_kwargs = expected_call
+                actual_args, actual_kwargs = fake_runner.call_args
+                self.assertEqual(actual_args, expected_args)
+                self.assertEqual({k: v for k, v in actual_kwargs.items() if k != 'register'}, expected_kwargs)
 
     def test_an_unknown_task_kind_is_reported_as_an_error_not_a_crash(self):
         fc = FakeClient()

@@ -1,4 +1,6 @@
+import json
 import os
+import tempfile
 import unittest
 from unittest import mock
 
@@ -153,14 +155,160 @@ class RunnerArgvTests(unittest.TestCase):
         fake_run.assert_not_called()
 
 
+class TestsslRunnerTests(unittest.TestCase):
+    """The argv passed to subprocess.Popen is always a fixed list of flags plus the server-vetted host:ip:port -
+    never a string, never shell=True - and only the four fields evaluate() reads ever leave this process."""
+
+    class _FakeProc:
+        def __init__(self, argv, report, **kwargs):
+            self.argv = argv
+            self.returncode = 0
+            out = argv[argv.index('--jsonfile') + 1]
+            with open(out, 'w', encoding='utf-8') as handle:
+                json.dump(report, handle)
+
+        def communicate(self, timeout=None):
+            return ('', '')
+
+    def test_builds_a_fixed_argv_and_reads_only_the_four_fields(self):
+        report = [{'id': 'heartbleed', 'severity': 'HIGH', 'finding': 'VULNERABLE', 'cve': 'CVE-2014-0160', 'extra': 'dropped'},
+                  {'id': 'not_tracked', 'severity': 'INFO', 'finding': 'test ok'}]
+        captured = {}
+
+        def fake_popen(argv, **kwargs):
+            proc = self._FakeProc(argv, report, **kwargs)
+            captured['argv'] = proc.argv
+            return proc
+        with mock.patch('client.tools.subprocess.Popen', side_effect=fake_popen):
+            result = tools.run_testssl('www.example.test', '192.0.2.10', 443)
+        self.assertEqual(captured['argv'][0], tools.TESTSSL_BIN)
+        self.assertIn('--ip', captured['argv'])
+        self.assertEqual(captured['argv'][-1], 'www.example.test:443')
+        self.assertEqual(result, {'items': [
+            {'id': 'heartbleed', 'severity': 'HIGH', 'finding': 'VULNERABLE', 'cve': 'CVE-2014-0160'},
+            {'id': 'not_tracked', 'severity': 'INFO', 'finding': 'test ok', 'cve': ''}]})
+
+    def test_starttls_is_added_only_when_given(self):
+        captured = {}
+
+        def fake_popen(argv, **kwargs):
+            captured['argv'] = argv
+            return self._FakeProc(argv, [])
+        with mock.patch('client.tools.subprocess.Popen', side_effect=fake_popen):
+            tools.run_testssl('mail.example.test', '192.0.2.5', 25, starttls='smtp')
+        self.assertIn('--starttls', captured['argv'])
+        self.assertEqual(captured['argv'][captured['argv'].index('--starttls') + 1], 'smtp')
+
+    def test_an_ipv6_host_is_bracketed(self):
+        captured = {}
+
+        def fake_popen(argv, **kwargs):
+            captured['argv'] = argv
+            return self._FakeProc(argv, [])
+        with mock.patch('client.tools.subprocess.Popen', side_effect=fake_popen):
+            tools.run_testssl('2001:db8::1', '2001:db8::1', 443)
+        self.assertEqual(captured['argv'][-1], '[2001:db8::1]:443')
+
+    def test_a_malicious_host_never_reaches_subprocess(self):
+        with mock.patch('client.tools.subprocess.Popen') as popen:
+            with self.assertRaises(tools.TargetError):
+                tools.run_testssl('host; rm -rf /', '192.0.2.10', 443)
+        popen.assert_not_called()
+
+
+class UdpRunnerTests(unittest.TestCase):
+    def test_builds_a_fixed_argv_with_the_curated_ports_and_returns_raw_xml(self):
+        with mock.patch('client.tools._run', return_value='<nmaprun/>') as fake_run:
+            result = tools.run_nmap_udp('192.0.2.10')
+        argv = fake_run.call_args[0][0]
+        self.assertEqual(argv[0], tools.NMAP_BIN)
+        self.assertIn('-sU', argv)
+        self.assertIn('192.0.2.10', argv)
+        self.assertEqual(result, {'xml': '<nmaprun/>'})
+
+    def test_a_malicious_address_never_reaches_subprocess(self):
+        with mock.patch('client.tools._run') as fake_run:
+            with self.assertRaises(tools.TargetError):
+                tools.run_nmap_udp('192.0.2.10; rm -rf /')
+        fake_run.assert_not_called()
+
+
+class WpscanRunnerTests(unittest.TestCase):
+    class _FakeProc:
+        def __init__(self, argv, env, report, returncode=0, stderr=''):
+            self.argv, self.env = argv, env
+            self.returncode = returncode
+            self._stderr = stderr
+            if report is not None:
+                out = argv[argv.index('-o') + 1]
+                with open(out, 'w', encoding='utf-8') as handle:
+                    json.dump(report, handle)
+
+        def communicate(self, timeout=None):
+            return ('', self._stderr)
+
+    def test_builds_argv_reads_the_report_and_puts_the_token_only_in_the_environment(self):
+        report = {'version': {'number': '6.4'}}
+        captured = {}
+
+        def fake_popen(argv, env=None, **kwargs):
+            proc = self._FakeProc(argv, env, report)
+            captured['argv'], captured['env'] = argv, env
+            return proc
+        with mock.patch('client.tools.subprocess.Popen', side_effect=fake_popen):
+            result = tools.run_wpscan('https://www.example.test', token='super-secret-token')
+        self.assertEqual(captured['argv'][0], tools.WPSCAN_BIN)
+        self.assertIn('--url', captured['argv'])
+        self.assertNotIn('super-secret-token', captured['argv'])
+        self.assertEqual(captured['env'].get('WPSCAN_API_TOKEN'), 'super-secret-token')
+        self.assertEqual(result, {'report': report, 'returncode': 0, 'stderr_tail': ''})
+
+    def test_no_report_written_is_reported_as_none_not_a_crash(self):
+        def fake_popen(argv, env=None, **kwargs):
+            return self._FakeProc(argv, env, None, returncode=4, stderr='Scan Aborted: not running WordPress\n')
+        with mock.patch('client.tools.subprocess.Popen', side_effect=fake_popen):
+            result = tools.run_wpscan('https://www.example.test')
+        self.assertIsNone(result['report'])
+        self.assertEqual(result['returncode'], 4)
+        self.assertEqual(result['stderr_tail'], 'Scan Aborted: not running WordPress')
+
+    def test_rejects_a_non_url(self):
+        with mock.patch('client.tools.subprocess.Popen') as popen:
+            with self.assertRaises(tools.TargetError):
+                tools.run_wpscan('not-a-url; rm -rf /')
+        popen.assert_not_called()
+
+
 class DetectToolsTests(unittest.TestCase):
     def test_a_missing_binary_is_left_out_not_fatal(self):
-        with mock.patch('client.tools.subprocess.run', side_effect=FileNotFoundError):
+        with mock.patch('client.tools.subprocess.run', side_effect=FileNotFoundError), \
+                mock.patch('client.tools.gvm_available', return_value=False):
             self.assertEqual(tools.detect_tools(), [])
 
     def test_an_installed_binary_is_reported(self):
-        with mock.patch('client.tools.subprocess.run', return_value=mock.Mock(returncode=0)):
-            self.assertEqual(sorted(tools.detect_tools()), ['naabu', 'nmap', 'nuclei'])
+        with mock.patch('client.tools.subprocess.run', return_value=mock.Mock(returncode=0)), \
+                mock.patch('client.tools.gvm_available', return_value=False):
+            self.assertEqual(sorted(tools.detect_tools()), ['naabu', 'nmap', 'nuclei', 'testssl', 'wpscan'])
+
+    def test_gvm_is_reported_once_the_sentinels_own_gvmd_is_reachable(self):
+        with mock.patch('client.tools.subprocess.run', side_effect=FileNotFoundError), \
+                mock.patch('client.tools.gvm_available', return_value=True):
+            self.assertEqual(tools.detect_tools(), ['gvm'])
+
+
+class GvmAvailableTests(unittest.TestCase):
+    def test_false_without_the_python_gvm_package(self):
+        with mock.patch.dict('sys.modules', {'gvm': None}):
+            self.assertFalse(tools.gvm_available())
+
+    def test_false_when_the_socket_does_not_exist_yet(self):
+        with mock.patch('client.openvas.socket_path', return_value='/no/such/socket'):
+            self.assertFalse(tools.gvm_available())
+
+    def test_true_once_the_package_imports_and_the_socket_exists(self):
+        with tempfile.NamedTemporaryFile() as sock_file:
+            with mock.patch('client.openvas.socket_path', return_value=sock_file.name):
+                self.assertTrue(tools.gvm_available())
 
 
 if __name__ == '__main__':

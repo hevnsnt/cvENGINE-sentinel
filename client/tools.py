@@ -21,6 +21,8 @@ import tempfile
 from urllib.parse import urlparse
 from xml.etree import ElementTree as ET
 
+from . import openvas
+
 logger = logging.getLogger('sentinel.tools')
 
 MAX_TARGETS = 64  # matches agentapi.sentinel_broker.MAX_ADDRESSES: a task never names more than this many
@@ -247,17 +249,170 @@ def run_nuclei(targets, tags=None, severities=None, timeout=3600, register=None)
         os.unlink(path)
 
 
-RUNNERS = {'nmap': run_nmap, 'naabu': run_naabu, 'nuclei_light': run_nuclei, 'nuclei_targeted': run_nuclei, 'nuclei_deep': run_nuclei}
+# --- testssl.sh: one host:port at a time, raw report items, server-side evaluate() reads them ------------------------
+
+TESTSSL_BIN = os.environ.get('CVENGINE_TESTSSL_BIN', 'testssl.sh')
+MAX_TESTSSL_OUTPUT = 8 * 1024 * 1024
+# Same options cveFeed.testssl_scan.BASE_ARGS uses: protocols, cipher categories, server defaults and certificate,
+# vulnerabilities, forward secrecy. --nodns none: the task already names a vetted ip, never resolved again here.
+TESTSSL_FLAGS = ['--quiet', '--warnings', 'off', '--color', '0', '--nodns', 'none', '--connect-timeout', '15',
+                 '--openssl-timeout', '15', '--overwrite', '-p', '-s', '-S', '-U', '-f']
+_HOST_OR_IP = re.compile(r'^[A-Za-z0-9][A-Za-z0-9.:_-]{0,252}$')
+
+
+def _validate_host(value, what='host'):
+    if not isinstance(value, str) or not value.strip() or len(value) > 260:
+        raise TargetError(f'not a usable {what}: {value!r}')
+    text = value.strip()
+    if any(ch in _SHELL_META for ch in text) or '://' in text or not _HOST_OR_IP.match(text):
+        raise TargetError(f'not a usable {what}: {value!r}')
+    return text
+
+
+def _validate_port(value):
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 < value < 65536:
+        raise TargetError(f'not a usable port: {value!r}')
+    return value
+
+
+def parse_testssl_report(raw):
+    """The finding objects of a testssl.sh JSON report, flat (``--jsonfile``) or grouped (``--jsonfile-pretty``); mirrors
+    ``cveFeed.testssl_scan.flatten``."""
+    if isinstance(raw, dict):
+        results = raw.get('scanResult') or []
+        raw = [item for group in results if isinstance(group, dict) for value in group.values()
+               if isinstance(value, list) for item in value]
+    return [i for i in raw if isinstance(i, dict) and i.get('id')] if isinstance(raw, list) else []
+
+
+def run_testssl(host, ip, port, starttls=None, timeout=900, register=None):
+    """Run testssl.sh against ``host:port`` at the server-vetted ``ip`` and return ``{'items': [...]}``: the exact four
+    fields (``id``, ``severity``, ``finding``, ``cve``) ``cveFeed.testssl_scan.evaluate`` reads, everything else
+    testssl.sh's own report carries dropped before it ever leaves this process."""
+    host, ip = _validate_host(host), _validate_host(ip, 'ip')
+    port = _validate_port(port)
+    destination = f'[{host}]:{port}' if ':' in host else f'{host}:{port}'
+    with tempfile.TemporaryDirectory(prefix='testssl-') as work:
+        out = os.path.join(work, 'out.json')
+        argv = [TESTSSL_BIN, *TESTSSL_FLAGS, '--ip', ip, '--jsonfile', out]
+        if starttls:
+            argv += ['--starttls', _validate_host(starttls, 'starttls')]
+        argv.append(destination)
+        env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'HOME': work, 'TERM': 'dumb', 'LC_ALL': 'C'}
+        proc = subprocess.Popen(argv, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if register is not None:
+            register(proc)
+        try:
+            proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+            return {'items': []}
+        try:
+            if os.path.getsize(out) > MAX_TESTSSL_OUTPUT:
+                return {'items': []}
+            with open(out, encoding='utf-8', errors='replace') as handle:
+                report = json.load(handle)
+        except (OSError, ValueError):
+            return {'items': []}
+    items = parse_testssl_report(report)[:300]
+    return {'items': [{'id': str(i.get('id') or ''), 'severity': str(i.get('severity') or ''),
+                       'finding': str(i.get('finding') or ''), 'cve': str(i.get('cve') or '')} for i in items]}
+
+
+# --- nmap -sU: raw XML returned as-is; cveFeed.nmap_scan.parse_xml reads UDP's own state vocabulary --------------------
+
+UDP_PORTS = (53, 67, 68, 69, 123, 137, 161, 500, 514, 623, 1194, 1812, 1813, 1900, 4500, 5060, 5353, 11211)
+UDP_NSE_SCRIPTS = ('snmp-sysdescr', 'snmp-info', 'ntp-info', 'upnp-info', 'ipmi-version')
+
+
+def run_nmap_udp(address, timeout=1500, register=None):
+    """Run ``nmap -sU`` against one address with the same curated port list and low-rate options
+    ``cveFeed.udp_scan.nmap_flags`` uses, and return its raw XML report text (never parsed here: UDP's
+    ``open|filtered`` vocabulary and NSE script output are only read correctly by the server's own
+    ``cveFeed.nmap_scan.parse_xml``, so the Sentinel never duplicates that logic)."""
+    address = _validate_host(address, 'address')
+    ports = ','.join(str(p) for p in UDP_PORTS)
+    scripts = ','.join(('nbstat', *UDP_NSE_SCRIPTS))
+    argv = [NMAP_BIN, '-sU', '-sV', '--version-intensity', '3', '-Pn', '-n', '--max-retries', '1', '--max-rate', '20',
+            '--script', scripts, '--script-timeout', '30s', '-p', f'U:{ports}', '-oX', '-', address]
+    return {'xml': _run(argv, timeout, register)}
+
+
+# --- wpscan: raw report, exit code and a trailing line of stderr; cveFeed.wpscan_scan._classify reads them server-side -
+
+WPSCAN_BIN = os.environ.get('CVENGINE_WPSCAN_BIN', 'wpscan')
+MAX_WPSCAN_OUTPUT = 8 * 1024 * 1024
+_URL = re.compile(r'^https?://[A-Za-z0-9][A-Za-z0-9.:_-]{0,252}(/.*)?$')
+# Same options cveFeed.wpscan_scan.wpscan_args builds for a passive pass: mixed detection, no TLS verification (the
+# target is whatever the server named, already vetted there), a bounded max-scan-duration so a slow site still
+# reports what it found before the process would be killed.
+WPSCAN_ARGS = ['--format', 'json', '--no-banner', '--random-user-agent', '--throttle', '0', '--request-timeout', '30',
+               '--connect-timeout', '15', '--detection-mode', 'mixed', '--plugins-detection', 'passive',
+               '--themes-detection', 'passive', '--disable-tls-checks', '--enumerate', 'vp,vt,cb,dbe,u1-5']
+
+
+def run_wpscan(url, token='', timeout=900, register=None):
+    """Run WPScan on one site and return its raw outcome: ``{'report', 'returncode', 'stderr_tail'}``, exactly what
+    ``cveFeed.wpscan_scan._classify`` already reads from a local run - the one function, local or dispatched, that
+    turns a wpscan process's outcome into a report or a classified failure. The API token travels in the environment,
+    never a command line argument, and never logged."""
+    if not isinstance(url, str) or not url.strip() or not _URL.match(url.strip()):
+        raise TargetError(f'not a usable url: {url!r}')
+    url = url.strip()
+    env = {k: os.environ[k] for k in ('PATH', 'HOME', 'LANG', 'LC_ALL', 'TZ', 'TMPDIR', 'GEM_HOME', 'GEM_PATH',
+                                      'BUNDLE_PATH', 'RUBYLIB', 'RUBYOPT', 'SSL_CERT_FILE', 'SSL_CERT_DIR') if k in os.environ}
+    if token:
+        env['WPSCAN_API_TOKEN'] = token
+    with tempfile.TemporaryDirectory(prefix='wpscan-') as work:
+        out = os.path.join(work, 'report.json')
+        argv = [WPSCAN_BIN, '--url', url, *WPSCAN_ARGS, '--max-scan-duration', str(max(30, timeout - 30)), '-o', out]
+        proc = subprocess.Popen(argv, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        if register is not None:
+            register(proc)
+        try:
+            _, err = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            _, err = proc.communicate()
+        report = None
+        if os.path.exists(out) and os.path.getsize(out) <= MAX_WPSCAN_OUTPUT:
+            with open(out, encoding='utf-8', errors='replace') as handle:
+                try:
+                    report = json.load(handle)
+                except ValueError:
+                    report = None
+        stderr_tail = (err or '').strip().splitlines()[-1] if err else ''
+        return {'report': report, 'returncode': proc.returncode if proc.returncode is not None else 1,
+                'stderr_tail': stderr_tail[:300]}
+
+
+RUNNERS = {'nmap': run_nmap, 'naabu': run_naabu, 'nuclei_light': run_nuclei, 'nuclei_targeted': run_nuclei,
+           'nuclei_deep': run_nuclei, 'testssl': run_testssl, 'nmap_udp': run_nmap_udp, 'wpscan': run_wpscan,
+           'openvas': openvas.run_openvas}
 
 
 # --- version probing, for the capabilities a bootstrapping Sentinel declares ------------------------------------------
 
-VERSION_ARGS = {'nmap': [NMAP_BIN, '--version'], 'naabu': [NAABU_BIN, '-version'], 'nuclei': [NUCLEI_BIN, '-version']}
+VERSION_ARGS = {'nmap': [NMAP_BIN, '--version'], 'naabu': [NAABU_BIN, '-version'], 'nuclei': [NUCLEI_BIN, '-version'],
+                'testssl': [TESTSSL_BIN, '--version'], 'wpscan': [WPSCAN_BIN, '--version']}
+
+
+def gvm_available():
+    """Whether ``python-gvm`` is importable and this Sentinel's own gvmd socket exists: what a bootstrapping Sentinel
+    checks before declaring the ``openvas`` capability, never raising just because the GVM stack is not finished
+    starting (the socket is created once gvmd is ready, which can take hours on a first start while the feed syncs)."""
+    try:
+        import gvm  # noqa: F401
+    except ImportError:
+        return False
+    return os.path.exists(openvas.socket_path())
 
 
 def detect_tools():
-    """The tool names whose binary actually ran when probed with its own version flag: what a Sentinel declares in
-    ``tools`` at bootstrap. Never raises; a missing or broken tool is simply left out."""
+    """The tool names whose binary actually ran when probed with its own version flag, plus ``gvm`` once this
+    Sentinel's own GVM stack is reachable: what a Sentinel declares in ``tools`` at bootstrap. Never raises; a
+    missing or broken tool (or a GVM stack still syncing its feeds) is simply left out."""
     found = []
     for name, argv in VERSION_ARGS.items():
         try:
@@ -265,4 +420,6 @@ def detect_tools():
             found.append(name)
         except (OSError, subprocess.TimeoutExpired):
             continue
+    if gvm_available():
+        found.append('gvm')
     return found
