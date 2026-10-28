@@ -126,5 +126,18 @@ COPY client /opt/sentinel/client
 COPY docker-entrypoint.sh /opt/sentinel/docker-entrypoint.sh
 RUN chmod +x /opt/sentinel/docker-entrypoint.sh
 
+# The commit this image is built from, so the Sentinels page always knows the build even with no updater (CVENGINE_SENTINEL_VERSION still wins
+# when set). Only git's HEAD, packed-refs and refs are copied, and when the build context has no .git (a zip download) requirements.txt is the
+# only source that matches and VERSION is left empty, which the client reports as unknown. The refs directory's contents land directly in
+# /tmp/gitmeta, so refs/heads/main is /tmp/gitmeta/heads/main.
+COPY requirements.txt .gi[t]/HEAD .gi[t]/packed-refs .gi[t]/refs /tmp/gitmeta/
+RUN h="$(cat /tmp/gitmeta/HEAD 2>/dev/null || true)"; v=""; \
+    case "$h" in \
+      "ref: "*) r="${h#ref: }"; v="$(cat "/tmp/gitmeta/${r#refs/}" 2>/dev/null || true)"; \
+                [ -n "$v" ] || v="$(grep " ${r}\$" /tmp/gitmeta/packed-refs 2>/dev/null | cut -c1-40 || true)" ;; \
+      *) v="$h" ;; \
+    esac; \
+    printf '%s' "$v" | tr -cd '0-9a-f' | cut -c1-12 > /opt/sentinel/VERSION; rm -rf /tmp/gitmeta
+
 ENTRYPOINT ["/opt/sentinel/docker-entrypoint.sh"]
 CMD ["python3", "-m", "client"]
