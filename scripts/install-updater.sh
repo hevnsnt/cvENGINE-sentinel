@@ -5,6 +5,12 @@
 #   scripts/install-updater.sh [--remove]
 set -eu
 DIR=$(cd "$(dirname "$0")/.." && pwd)
+# The updater runs as whoever owns this checkout, not as root: git refuses a checkout owned by another user ("dubious ownership"), and update.sh
+# writes .env and .update.lock here. That user needs Docker access (the docker group). A checkout owned by root is updated as root.
+OWNER=$(stat -c %U "$DIR" 2>/dev/null || echo root)
+if [ "$OWNER" != root ] && ! id -nG "$OWNER" | tr ' ' '\n' | grep -qx docker; then
+  echo "warning: $OWNER owns this checkout but is not in the docker group, so the updater cannot run docker as $OWNER; run: usermod -aG docker $OWNER" >&2
+fi
 if [ "$(id -u)" != 0 ]; then
   command -v sudo >/dev/null 2>&1 || { echo "run this as root (it writes to /etc), or install sudo" >&2; exit 1; }
   exec sudo "$0" "$@"
@@ -28,6 +34,7 @@ After=docker.service
 [Service]
 Type=oneshot
 WorkingDirectory=$DIR
+User=$OWNER
 ExecStart=$DIR/scripts/update.sh
 UNIT
   cat > /etc/systemd/system/cvengine-sentinel-update.timer <<UNIT
@@ -46,7 +53,7 @@ UNIT
   systemctl enable --now cvengine-sentinel-update.timer
   echo "installed: systemd timer cvengine-sentinel-update.timer (hourly); logs: journalctl -u cvengine-sentinel-update"
 else
-  echo "17 * * * * root cd $DIR && ./scripts/update.sh >> /var/log/cvengine-sentinel-update.log 2>&1" > /etc/cron.d/cvengine-sentinel-update
+  echo "17 * * * * $OWNER cd $DIR && ./scripts/update.sh >> /var/log/cvengine-sentinel-update.log 2>&1" > /etc/cron.d/cvengine-sentinel-update
   echo "installed: /etc/cron.d/cvengine-sentinel-update (hourly); log: /var/log/cvengine-sentinel-update.log"
 fi
 # Tell the Sentinel an updater now exists, so cvENGINE shows it as installed straight away rather than after the first run an hour from now.
