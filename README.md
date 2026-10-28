@@ -36,7 +36,11 @@ driven entirely from the `generate_sentinel_enrollment` MCP tool's response, wit
    the one-time blob it shows (it is single-use and expires in 30 minutes). You need the admin role in the project or
    its organization to do this; see
    [docs/FRONTEND.md](https://github.com/hevnsnt/CVEngine/blob/develop/docs/FRONTEND.md#sentinels) in the main repo.
-3. Create `.env` from the example and paste the blob in:
+3. Create `.env`. The easy way is `./setup.sh`, which asks for the profile (full or light), the network (external or internal), a name and the blob, and writes `.env` for you; or pass everything as options and skip the questions:
+   ```
+   ./setup.sh --light --internal --name office-lan --blob "$BLOB"
+   ```
+   Or do it by hand:
    ```
    cp .env.example .env
    ```
@@ -93,6 +97,7 @@ Revoking also hands back any task it was mid-run on to the queue immediately.
 | --- | --- | --- | --- |
 | `CVENGINE_SENTINEL_BLOB` | Only for the first start | - | The one-time provisioning blob from the Sentinels page. Ignored once a token is persisted. |
 | `CVENGINE_SENTINEL_NAME` | No | the container's hostname | The Sentinel's name on the Sentinels page. |
+| `COMPOSE_PROFILES` | No | `openvas` (full) | `openvas` runs the GVM stack too (full); empty is light. See "Full or light" below. |
 | `CVENGINE_SENTINEL_NETWORK` | No | `external` | Set to `internal` on a Sentinel deployed inside a private network (office LAN, VPC, VPN). It then declares `network:internal`, so the server will hand it work for the internal ranges a project declared (projects/{slug}/internal-ranges); an external Sentinel is never offered that work. |
 | `CVENGINE_SENTINEL_MAX_CONCURRENT` | No | auto-detected from the container's CPU (capped at 10) | How many nmap/naabu/nuclei/testssl/wpscan runs this Sentinel executes at once (an OpenVAS task is one GVM job, counted separately by gvmd itself). Set a number to override the auto-detected value. |
 
@@ -103,10 +108,9 @@ targets are elsewhere on your LAN rather than reachable through that bridge, unc
 own compose file uses, on a separate internal network (`openvas_network`); its scans leave by this Docker host's
 default route, not through the `sentinel` container.
 
-Only want the lightweight tools on a particular box, without the OpenVAS/GVM stack? Remove the `openvas-*` services
-from `docker-compose.yml` and the `sentinel` service's `openvas_gvmd_socket_vol` mount and `depends_on`. The daemon
-never requires gvmd to be present: it simply never declares the `openvas` capability once the socket never appears
-(`client/tools.gvm_available`), so that Sentinel just never gets handed OpenVAS work.
+**Full or light.** The openvas-* services are the compose profile `openvas`, switched on by `COMPOSE_PROFILES=openvas` in `.env`. Full (the default in `.env.example`) also runs the OpenVAS/GVM stack so this Sentinel can take OpenVAS work; light leaves `COMPOSE_PROFILES` empty and runs only nmap, naabu, nuclei, testssl and WPScan on a small box. A light Sentinel simply never declares the `openvas` capability (`client/tools.gvm_available`). `./setup.sh` writes these choices for you (see below), and the Sentinels page's Provision form shows the exact `.env` lines.
+
+**External or internal.** `CVENGINE_SENTINEL_NETWORK=internal` says this machine sits inside a private network (office LAN, VPC, VPN). It then declares `network:internal`, and the server hands it work for the internal ranges a project declared; an external Sentinel is never offered that work.
 
 ## What it will and will not do
 
