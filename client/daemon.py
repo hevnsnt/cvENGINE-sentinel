@@ -68,7 +68,7 @@ def bootstrap(blob_raw, name, max_concurrent, client_factory=httpclient.Client):
     payload = blob_mod.decode_blob(blob_raw)
     server_url = payload['server_url']
     client = client_factory(server_url)
-    body = {'enrollment_token': payload['enrollment_token'], 'name': name, 'capabilities': config.CAPABILITIES,
+    body = {'enrollment_token': payload['enrollment_token'], 'name': name, 'capabilities': config.registered_capabilities(),
             'os': [config.os_family()] if config.os_family() else [], 'tools': tools.detect_tools(),
             'max_concurrent': max_concurrent}
     out = client.call('POST', 'sentinels/bootstrap', body)
@@ -84,7 +84,7 @@ def register(client, name, max_concurrent, kinds=None):
     (CVENGINE_SENTINEL_MAX_CONCURRENT, or the host's freshly auto-detected CPU count) instead of whatever was true
     the one time it originally bootstrapped. ``scope`` is left out on purpose: ``PUT sentinel`` only changes fields
     given in the body, so this never touches the scope an enrollment secret already assigned."""
-    body = {'name': name, 'capabilities': list(kinds or config.CAPABILITIES), 'os': [config.os_family()] if config.os_family() else [],
+    body = {'name': name, 'capabilities': config.registered_capabilities(kinds), 'os': [config.os_family()] if config.os_family() else [],
             'tools': tools.detect_tools(), 'max_concurrent': max_concurrent}
     client.call('PUT', 'sentinel', body)
 
@@ -191,8 +191,18 @@ class Daemon:
         target = task.get('target') or {}
         if kind in ('nmap', 'naabu'):
             out = runner(target.get('addresses') or [], register=register)
-        else:
+        elif kind in ('nuclei_light', 'nuclei_targeted', 'nuclei_deep'):
             out = runner(target.get('targets') or [], tags=target.get('tags'), severities=target.get('severities'), register=register)
+        elif kind == 'testssl':
+            out = runner(target.get('host') or '', target.get('ip') or '', target.get('port'), target.get('starttls') or '', register=register)
+        elif kind == 'nmap_udp':
+            out = runner(target.get('address') or '', register=register)
+        elif kind == 'wpscan':
+            out = runner(target.get('url') or '', target.get('token') or '', register=register)
+        elif kind == 'openvas':
+            out = runner(target.get('hosts') or {}, target.get('excluded_families') or [], target.get('max_hours'), register=register)
+        else:
+            raise tools.TargetError(f'unknown task kind {kind!r}')
         return {'outcome': 'done', **out}
 
     def _report(self, task_id, result):

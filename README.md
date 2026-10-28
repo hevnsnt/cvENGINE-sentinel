@@ -1,9 +1,18 @@
 # CVEngine Sentinel
 
-A Sentinel is a small Docker Compose service you run on a machine on your own network. It registers itself with your
-CVEngine instance, pulls nmap, naabu and nuclei work off a project's scan queue, runs it locally, and reports typed
-results back. There is no separate download or per-OS package: this repository is the whole client, and it runs
-identically on Linux, macOS and Windows hosts through Docker.
+A Sentinel is a Docker Compose stack you run on a machine on your own network. It registers itself with your
+CVEngine instance, pulls scan-stage work off a project's queue (nmap, naabu, nuclei, testssl.sh, a UDP exposure
+sweep, WPScan, and OpenVAS/GVM), runs it locally, and reports typed results back. There is no separate download or
+per-OS package: this repository is the whole client, and it runs identically on Linux, macOS and Windows hosts
+through Docker. Running one or more Sentinels lets you offload scanning from your CVEngine instance onto other
+machines - spin up several across different VPSes or networks to parallelize and speed up scanning, each one pulling
+work independently from the same queue.
+
+OpenVAS is the one capability that makes a Sentinel heavy: `docker-compose.yml` includes the full Greenbone/GVM stack
+(gvmd, the scanner, its own Postgres and Redis, and the NVT/SCAP/CERT feed syncs) alongside the lightweight tools, so
+every Sentinel can take any kind of work cvENGINE dispatches. The first start downloads the vulnerability-test feeds,
+which takes a long time and several GB of disk; every other capability works immediately, and OpenVAS tasks simply
+wait for a Sentinel whose feed sync has finished.
 
 See [docs/ARCHITECTURE.md](https://github.com/hevnsnt/CVEngine/blob/develop/docs/ARCHITECTURE.md#sentinels) in the
 main [CVEngine](https://github.com/hevnsnt/CVEngine) repository for the design, and
@@ -84,16 +93,26 @@ Revoking also hands back any task it was mid-run on to the queue immediately.
 | --- | --- | --- | --- |
 | `CVENGINE_SENTINEL_BLOB` | Only for the first start | - | The one-time provisioning blob from the Sentinels page. Ignored once a token is persisted. |
 | `CVENGINE_SENTINEL_NAME` | No | the container's hostname | The Sentinel's name on the Sentinels page. |
-| `CVENGINE_SENTINEL_MAX_CONCURRENT` | No | auto-detected from the container's CPU (capped at 10) | How many nmap/naabu/nuclei runs this Sentinel executes at once. Set a number to override the auto-detected value. |
+| `CVENGINE_SENTINEL_NETWORK` | No | `external` | Set to `internal` on a Sentinel deployed inside a private network (office LAN, VPC, VPN). It then declares `network:internal`, so the server will hand it work for the internal ranges a project declared (projects/{slug}/internal-ranges); an external Sentinel is never offered that work. |
+| `CVENGINE_SENTINEL_MAX_CONCURRENT` | No | auto-detected from the container's CPU (capped at 10) | How many nmap/naabu/nuclei/testssl/wpscan runs this Sentinel executes at once (an OpenVAS task is one GVM job, counted separately by gvmd itself). Set a number to override the auto-detected value. |
 
-`docker-compose.yml` adds `NET_RAW`/`NET_ADMIN` (not `--privileged`), which nmap's OS detection and naabu's SYN
-scanning need; it runs on the Docker bridge network by default, so if your targets are elsewhere on your LAN rather
-than reachable through that bridge, uncomment `network_mode: host` in `docker-compose.yml`.
+`docker-compose.yml` adds `NET_RAW`/`NET_ADMIN` (not `--privileged`) to the `sentinel` service, which nmap's OS
+detection, naabu's SYN scanning and the UDP sweep need; it runs on the Docker bridge network by default, so if your
+targets are elsewhere on your LAN rather than reachable through that bridge, uncomment `network_mode: host`. The
+`openvas-ospd` service gets its own `NET_RAW`/`NET_ADMIN` plus the unconfined seccomp/AppArmor profiles Greenbone's
+own compose file uses, on a separate internal network (`openvas_network`); its scans leave by this Docker host's
+default route, not through the `sentinel` container.
+
+Only want the lightweight tools on a particular box, without the OpenVAS/GVM stack? Remove the `openvas-*` services
+from `docker-compose.yml` and the `sentinel` service's `openvas_gvmd_socket_vol` mount and `depends_on`. The daemon
+never requires gvmd to be present: it simply never declares the `openvas` capability once the socket never appears
+(`client/tools.gvm_available`), so that Sentinel just never gets handed OpenVAS work.
 
 ## What it will and will not do
 
-A Sentinel only ever runs one of a small set of whitelisted tools (nmap, naabu, or nuclei in its light, targeted or weekly deep pass) against
-the exact address, host or target list a `SentinelTask` names, built as a fixed argv list, never a shell command. It
-never evaluates or interprets any text the server sends as code or as a command, and it reports typed, bounded
-results back; see `client/tools.py` for the validation every target list passes through before a tool ever runs
-against it.
+A Sentinel only ever runs one of a whitelisted set of tools - nmap, naabu, nuclei (light, targeted or weekly deep
+pass), testssl.sh, a UDP exposure sweep, WPScan, or an OpenVAS/GVM scan - against the exact address, host, target
+list or host set a `SentinelTask` names, built as a fixed argv list (or, for OpenVAS, a typed GMP call) never a shell
+command. It never evaluates or interprets any text the server sends as code or as a command, and it reports typed,
+bounded results back; see `client/tools.py` for the validation every target list passes through before a tool ever
+runs against it, and `client/openvas.py` for the GMP session OpenVAS work runs over.
