@@ -36,7 +36,11 @@ driven entirely from the `generate_sentinel_enrollment` MCP tool's response, wit
    the one-time blob it shows (it is single-use and expires in 30 minutes). You need the admin role in the project or
    its organization to do this; see
    [docs/FRONTEND.md](https://github.com/hevnsnt/CVEngine/blob/develop/docs/FRONTEND.md#sentinels) in the main repo.
-3. Create `.env` from the example and paste the blob in:
+3. Create `.env`. The easy way is `./setup.sh`, which asks for the profile (full or light), the network (external or internal), a name and the blob, and writes `.env` for you; or pass everything as options and skip the questions:
+   ```
+   ./setup.sh --light --internal --name office-lan --blob "$BLOB"
+   ```
+   Or do it by hand:
    ```
    cp .env.example .env
    ```
@@ -93,6 +97,7 @@ Revoking also hands back any task it was mid-run on to the queue immediately.
 | --- | --- | --- | --- |
 | `CVENGINE_SENTINEL_BLOB` | Only for the first start | - | The one-time provisioning blob from the Sentinels page. Ignored once a token is persisted. |
 | `CVENGINE_SENTINEL_NAME` | No | the container's hostname | The Sentinel's name on the Sentinels page. |
+| `COMPOSE_PROFILES` | No | `openvas` (full) | `openvas` runs the GVM stack too (full); empty is light. See "Full or light" below. |
 | `CVENGINE_SENTINEL_DISABLE` | No | none | Comma-separated scan kinds this Sentinel never declares or polls for (for example `openvas`, or `openvas,wpscan`), whatever tools are installed. |
 | `CVENGINE_SENTINEL_VERSION` | No | unknown | The git commit this checkout is at, shown on the Sentinels page. `scripts/update.sh` sets it. |
 | `CVENGINE_SENTINEL_NETWORK` | No | `external` | Set to `internal` on a Sentinel deployed inside a private network (office LAN, VPC, VPN). It then declares `network:internal`, so the server will hand it work for the internal ranges a project declared (projects/{slug}/internal-ranges); an external Sentinel is never offered that work. |
@@ -105,12 +110,11 @@ targets are elsewhere on your LAN rather than reachable through that bridge, unc
 own compose file uses, on a separate internal network (`openvas_network`); its scans leave by this Docker host's
 default route, not through the `sentinel` container.
 
-Only want the lightweight tools on a particular box, without the OpenVAS/GVM stack? Remove the `openvas-*` services
-from `docker-compose.yml` and the `sentinel` service's `openvas_gvmd_socket_vol` mount and `depends_on`. The daemon
-never requires gvmd to be present: it declares the `openvas` capability only while gvmd's socket exists
-(`client/tools.gvm_available`), and registers again by itself when that changes (a first start can take hours to sync the
-feeds), so a Sentinel without a working GVM stack is never handed OpenVAS work. To keep OpenVAS off a box that has the stack,
-set `CVENGINE_SENTINEL_DISABLE=openvas`.
+**Full or light.** The openvas-* services are the compose profile `openvas`, switched on by `COMPOSE_PROFILES=openvas` in `.env`. Full (the default in `.env.example`) also runs the OpenVAS/GVM stack so this Sentinel can take OpenVAS work; light leaves `COMPOSE_PROFILES` empty and runs only nmap, naabu, nuclei, testssl and WPScan on a small box. A light Sentinel simply never declares the `openvas` capability (`client/tools.gvm_available`). `./setup.sh` writes these choices for you (see below), and the Sentinels page's Provision form shows the exact `.env` lines.
+
+**External or internal.** `CVENGINE_SENTINEL_NETWORK=internal` says this machine sits inside a private network (office LAN, VPC, VPN). It then declares `network:internal`, and the server hands it work for the internal ranges a project declared; an external Sentinel is never offered that work.
+
+To keep OpenVAS off a box that has the stack, set `CVENGINE_SENTINEL_DISABLE=openvas`. The daemon never requires gvmd to be present: it declares the `openvas` capability only while gvmd is ready (`client/tools.gvm_ready`), and registers again by itself when that changes.
 
 The Greenbone images are pinned by digest, and Greenbone publishes no version tags and replaces what `stable` points to, so
 an old pin can vanish from the registry (`artifact ... not found` on `docker compose up`). `./scripts/greenbone-digests.sh`

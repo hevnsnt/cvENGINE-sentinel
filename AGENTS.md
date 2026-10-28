@@ -50,8 +50,10 @@ WPScan, and `docker compose up -d` also brings up this Sentinel's own OpenVAS/GV
 downloads several GB of vulnerability-test feeds on its first start, which can take hours; every other capability
 (nmap/naabu/nuclei/testssl/UDP/WPScan) is usable immediately, and OpenVAS tasks simply wait until the feed sync
 finishes. If this machine should stay lightweight and never run OpenVAS, tell the person or agent operating it to
-remove the `openvas-*` services from `docker-compose.yml` before step 4 below, per README.md's "Configuration"
-section.
+set `COMPOSE_PROFILES=` (empty) in `.env` after step 2's `configure` and before `run`, per README.md's "Full or light"
+section (`./setup.sh --light --yes --blob '<blob>'` does the whole `.env` in one command). If this machine is inside a
+private network that cvENGINE cannot reach, also add `CVENGINE_SENTINEL_NETWORK=internal` (or pass `--internal`): only
+such a Sentinel is offered work for a project's declared internal ranges.
 
 If you only have MCP/REST access to cvENGINE but not shell access to the target machine yourself, stop here and hand
 the `blob` and the four `setup` commands to whichever agent or person does have that access. Never paste a blob into

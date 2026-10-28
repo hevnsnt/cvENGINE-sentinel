@@ -160,6 +160,60 @@ def run_nmap(addresses, timeout=600, register=None):
         os.unlink(path)
 
 
+# --- discover: which addresses of an internal network answer -------------------------------------------------------
+
+DISCOVER_FLAGS = ['-sn', '-T4', '-PE', '-PP', '-PS21,22,23,25,80,135,443,445,3389,8080', '-PA80,443', '-PU53,161', '--max-retries', '2',
+                  '--host-timeout', '30s']
+MAX_DISCOVER_ADDRESSES = 512  # a /23: the server sweeps in /24 chunks, so anything larger is not a task this server would send
+MAX_DISCOVER_HOSTS = 512
+_PRIVATE_V4 = [ipaddress.ip_network(n) for n in ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '100.64.0.0/10')]
+
+
+def validate_cidr(value):
+    """The chunk of an internal network a ``discover`` task names, as a canonical string, or ``TargetError``. Only a small private IPv4
+    network is ever swept: a public range, a huge one or an odd string is refused, whatever the server sent."""
+    try:
+        net = ipaddress.ip_network(str(value).strip(), strict=True)
+    except ValueError:
+        raise TargetError('discover target is not a network in CIDR form')
+    if net.version != 4 or not any(net.subnet_of(p) for p in _PRIVATE_V4):
+        raise TargetError('discover only sweeps a private IPv4 network')
+    if net.num_addresses > MAX_DISCOVER_ADDRESSES:
+        raise TargetError(f'discover target covers {net.num_addresses} addresses; the most one task may sweep is {MAX_DISCOVER_ADDRESSES}')
+    return str(net)
+
+
+def parse_discover_xml(xml_text):
+    """The addresses nmap's ping sweep found up, each with the host names it learned, from ``-oX`` output."""
+    hosts = []
+    if not (xml_text or '').strip():
+        return {'hosts': hosts}
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        logger.warning('could not parse nmap XML output')
+        return {'hosts': hosts}
+    for host_el in root.findall('host'):
+        status = host_el.find('status')
+        addr_el = host_el.find("address[@addrtype='ipv4']")
+        if status is None or status.get('state') != 'up' or addr_el is None or not addr_el.get('addr'):
+            continue
+        names = [h.get('name') for h in host_el.findall('hostnames/hostname') if h.get('name')]
+        hosts.append({'ip': addr_el.get('addr'), 'hostnames': names[:5]})
+        if len(hosts) >= MAX_DISCOVER_HOSTS:
+            break
+    return {'hosts': hosts}
+
+
+def run_discover(cidr, timeout=900, register=None):
+    """A host-alive sweep of one chunk of an internal network: ARP on the local segment, ICMP and a few TCP/UDP probes elsewhere. Reports
+    only which addresses answered; a firewall that drops every probe makes a host invisible here, and the server says so (it never reads a
+    sweep as proof a host is absent)."""
+    cidr = validate_cidr(cidr)
+    argv = [NMAP_BIN, *DISCOVER_FLAGS, '-oX', '-', cidr]
+    return parse_discover_xml(_run(argv, timeout, register))
+
+
 # --- naabu ----------------------------------------------------------------------------------------------------------
 
 MAX_OPEN_PER_IP = 500  # an address with more "open" ports than this is a tarpit or a firewall that accepts everything
@@ -389,7 +443,7 @@ def run_wpscan(url, token='', timeout=900, register=None):
 
 RUNNERS = {'nmap': run_nmap, 'naabu': run_naabu, 'nuclei_light': run_nuclei, 'nuclei_targeted': run_nuclei,
            'nuclei_deep': run_nuclei, 'testssl': run_testssl, 'nmap_udp': run_nmap_udp, 'wpscan': run_wpscan,
-           'openvas': openvas.run_openvas}
+           'openvas': openvas.run_openvas, 'discover': run_discover}
 
 
 # --- version probing, for the capabilities a bootstrapping Sentinel declares ------------------------------------------
