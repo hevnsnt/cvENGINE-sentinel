@@ -312,7 +312,9 @@ def scanned_addresses(gmp, task_status, items):
 
 def _apply_family_selection(gmp, config_id, excluded_families):
     families = [_text(f, 'name') for f in gmp.get_nvt_families().findall('./families/family')]
-    wanted = [(name, False, True) for name in families if name and name not in excluded_families]
+    # (family, add new NVTs automatically, include all NVTs): gvmd refuses a family that includes all VTs without also growing ("must be growing and
+    # include all VTs or it must be static and empty"), so every kept family is (name, True, True); an excluded family is left out, hence unselected.
+    wanted = [(name, True, True) for name in families if name and name not in excluded_families]
     gmp.modify_scan_config_set_family_selection(config_id, wanted, auto_add_new_families=False)
 
 
