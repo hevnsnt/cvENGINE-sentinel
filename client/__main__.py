@@ -40,6 +40,7 @@ def main():
     except (httpclient.ApiError, requests.RequestException):
         logger.warning('could not refresh registration with the server at startup; continuing with the current token as-is', exc_info=True)
     engine = daemon_mod.Daemon(server_url, token, max_concurrent=config.max_concurrent(), client=client)
+    engine.reregister = lambda: daemon_mod.register(client, config.sentinel_name(), config.max_concurrent())
 
     def handle_signal(signum, _frame):
         logger.info('received signal %s; finishing or releasing in-flight tasks', signum)

@@ -93,6 +93,7 @@ Revoking also hands back any task it was mid-run on to the queue immediately.
 | --- | --- | --- | --- |
 | `CVENGINE_SENTINEL_BLOB` | Only for the first start | - | The one-time provisioning blob from the Sentinels page. Ignored once a token is persisted. |
 | `CVENGINE_SENTINEL_NAME` | No | the container's hostname | The Sentinel's name on the Sentinels page. |
+| `CVENGINE_SENTINEL_DISABLE` | No | none | Comma-separated scan kinds this Sentinel never declares or polls for (for example `openvas`, or `openvas,wpscan`), whatever tools are installed. |
 | `CVENGINE_SENTINEL_NETWORK` | No | `external` | Set to `internal` on a Sentinel deployed inside a private network (office LAN, VPC, VPN). It then declares `network:internal`, so the server will hand it work for the internal ranges a project declared (projects/{slug}/internal-ranges); an external Sentinel is never offered that work. |
 | `CVENGINE_SENTINEL_MAX_CONCURRENT` | No | auto-detected from the container's CPU (capped at 10) | How many nmap/naabu/nuclei/testssl/wpscan runs this Sentinel executes at once (an OpenVAS task is one GVM job, counted separately by gvmd itself). Set a number to override the auto-detected value. |
 
@@ -105,8 +106,14 @@ default route, not through the `sentinel` container.
 
 Only want the lightweight tools on a particular box, without the OpenVAS/GVM stack? Remove the `openvas-*` services
 from `docker-compose.yml` and the `sentinel` service's `openvas_gvmd_socket_vol` mount and `depends_on`. The daemon
-never requires gvmd to be present: it simply never declares the `openvas` capability once the socket never appears
-(`client/tools.gvm_available`), so that Sentinel just never gets handed OpenVAS work.
+never requires gvmd to be present: it declares the `openvas` capability only while gvmd's socket exists
+(`client/tools.gvm_available`), and registers again by itself when that changes (a first start can take hours to sync the
+feeds), so a Sentinel without a working GVM stack is never handed OpenVAS work. To keep OpenVAS off a box that has the stack,
+set `CVENGINE_SENTINEL_DISABLE=openvas`.
+
+The Greenbone images are pinned by digest, and Greenbone publishes no version tags and replaces what `stable` points to, so
+an old pin can vanish from the registry (`artifact ... not found` on `docker compose up`). `./scripts/greenbone-digests.sh`
+prints which pinned digests no longer match `stable`; replace the `sha256` of any that changed in `docker-compose.yml`.
 
 ## What it will and will not do
 
