@@ -1,13 +1,13 @@
 # One Sentinel, with its own OpenVAS (Greenbone Community Edition) stack. Run it with: docker compose up -d
 # See README.md for the one-time provisioning blob and how to get one from the Sentinels page.
 #
-# This is a heavy deployment on purpose: every Sentinel runs the full GVM stack (gvmd, the scanner, its own Postgres
-# and Redis, and the NVT/SCAP/CERT feed syncs) alongside nmap/naabu/nuclei/testssl/wpscan, so it can take every kind
-# of work cvENGINE dispatches, including OpenVAS. The first start downloads the vulnerability-test feeds, which takes
-# a long time and several GB of disk; no OpenVAS scan is possible until that finishes (other kinds work immediately).
-# If you want a Sentinel that only ever does nmap/naabu/nuclei/testssl/wpscan on a small box, remove the
-# openvas-* services and the sentinel service's openvas_gvmd_socket_vol mount below; the daemon falls back to not
-# declaring the openvas capability once gvmd's socket never appears (client/tools.gvm_available).
+# Two profiles: FULL (the default) also runs the Greenbone/GVM stack (gvmd, the scanner, its own Postgres and Redis, and the
+# NVT/SCAP/CERT feed syncs) so this Sentinel can take every kind of work cvENGINE dispatches, including OpenVAS. The first start
+# downloads the vulnerability-test feeds, which takes a long time and several GB of disk; no OpenVAS scan is possible until that
+# finishes (other kinds work immediately). LIGHT runs only nmap/naabu/nuclei/testssl/wpscan, for a small box: the openvas-*
+# services belong to the "openvas" compose profile, which is switched on by COMPOSE_PROFILES=openvas in .env (./setup.sh writes it,
+# or the Sentinels page's Provision form shows the lines to use). Without the profile the daemon simply never declares the
+# openvas capability, because gvmd's socket never appears (client/tools.gvm_available).
 services:
   sentinel:
     build:
@@ -39,8 +39,6 @@ services:
       # gvmd's GMP socket, read-only: an empty directory until openvas-gvmd is up and has created it (client/openvas.py
       # tolerates that - a task dispatched before then simply reports an error, like any other tool that is not ready).
       - openvas_gvmd_socket_vol:/run/gvmd:ro
-    depends_on:
-      - openvas-gvmd
     logging:
       driver: json-file
       options:
@@ -57,6 +55,7 @@ services:
   # follow their moving tag on purpose: they are data, refreshed daily and checked against Greenbone's GPG signing
   # keys, and a pinned feed would be a stale one.
   openvas-vulnerability-tests:
+    profiles: ["openvas"]
     image: "registry.community.greenbone.net/community/vulnerability-tests:community"
     environment:
       FEED_RELEASE: "24.10"
@@ -67,6 +66,7 @@ services:
       - openvas_network
 
   openvas-notus-data:
+    profiles: ["openvas"]
     image: "registry.community.greenbone.net/community/notus-data:community"
     environment:
       KEEP_ALIVE: 1
@@ -76,6 +76,7 @@ services:
       - openvas_network
 
   openvas-scap-data:
+    profiles: ["openvas"]
     image: "registry.community.greenbone.net/community/scap-data:community"
     environment:
       KEEP_ALIVE: 1
@@ -85,6 +86,7 @@ services:
       - openvas_network
 
   openvas-cert-bund-data:
+    profiles: ["openvas"]
     image: "registry.community.greenbone.net/community/cert-bund-data:community"
     environment:
       KEEP_ALIVE: 1
@@ -94,6 +96,7 @@ services:
       - openvas_network
 
   openvas-dfn-cert-data:
+    profiles: ["openvas"]
     image: "registry.community.greenbone.net/community/dfn-cert-data:community"
     environment:
       KEEP_ALIVE: 1
@@ -106,6 +109,7 @@ services:
       - openvas_network
 
   openvas-data-objects:
+    profiles: ["openvas"]
     image: "registry.community.greenbone.net/community/data-objects:community"
     environment:
       FEED_RELEASE: "24.10"
@@ -116,6 +120,7 @@ services:
       - openvas_network
 
   openvas-report-formats:
+    profiles: ["openvas"]
     image: "registry.community.greenbone.net/community/report-formats:community"
     environment:
       FEED_RELEASE: "24.10"
@@ -129,6 +134,7 @@ services:
       - openvas_network
 
   openvas-gpg-data:
+    profiles: ["openvas"]
     image: "registry.community.greenbone.net/community/gpg-data:stable@sha256:c18618252f7d874cd1fe09413b043cfc40b57e6464d8c5973d4a93b074d5d91a"
     volumes:
       - openvas_gpg_data_vol:/mnt
@@ -136,6 +142,7 @@ services:
       - openvas_network
 
   openvas-redis:
+    profiles: ["openvas"]
     restart: always
     image: "registry.community.greenbone.net/community/redis-server:stable@sha256:83227e34b276bf7c7453a91bbfc070341af58f7ff40eb707ed6724965fe3846c"
     volumes:
@@ -144,6 +151,7 @@ services:
       - openvas_network
 
   openvas-pg-gvm-migrator:
+    profiles: ["openvas"]
     restart: "no"
     image: "registry.community.greenbone.net/community/pg-gvm-migrator:stable@sha256:8fc1cc11cac0481674527e01ec7610a8195110cf117d700bd47fe3af7012b34d"
     volumes:
@@ -153,6 +161,7 @@ services:
       - openvas_network
 
   openvas-pg-gvm:
+    profiles: ["openvas"]
     restart: always
     image: "registry.community.greenbone.net/community/pg-gvm:stable@sha256:a18d9e2f0cbba7839e65547a2331ce8f984500e8c4fbe91d08f9a48036d03fa2"
     volumes:
@@ -165,6 +174,7 @@ services:
       - openvas_network
 
   openvas-gvmd:
+    profiles: ["openvas"]
     restart: always
     image: "registry.community.greenbone.net/community/gvmd:stable@sha256:e59a6a684b112ea77fe4ddd7e5ca35e6a07d36bf854f1b411d11d12f9b0c608a"
     volumes:
@@ -195,6 +205,7 @@ services:
 
   # writes the scanner's configuration (notus, and where openvasd listens) into a volume, then exits
   openvas-configure:
+    profiles: ["openvas"]
     image: "registry.community.greenbone.net/community/openvas-scanner:stable@sha256:4873aa9478545d589dd853d41a6076bc0265c2de90bf30e563d805c56937ed52"
     volumes:
       - openvas_data_vol:/mnt
@@ -214,6 +225,7 @@ services:
 
   # notus, the static vulnerability engine for authenticated package checks (OPENVASD_MODE service_notus: nothing else), reachable only by name inside this stack's own network
   openvas-openvasd:
+    profiles: ["openvas"]
     restart: always
     image: "registry.community.greenbone.net/community/openvas-scanner:stable@sha256:4873aa9478545d589dd853d41a6076bc0265c2de90bf30e563d805c56937ed52"
     environment:
@@ -243,6 +255,7 @@ services:
   # Greenbone's compose file uses, which is why it is on its own network and why its scans leave by this Docker
   # host's default route (not through the sentinel container).
   openvas-ospd:
+    profiles: ["openvas"]
     restart: always
     image: "registry.community.greenbone.net/community/ospd-openvas:stable@sha256:31a85272abc77521c98451ce6834ed7d2f887e98ff1b26ff3fd94f00d000b169"
     hostname: ospd-openvas.local
