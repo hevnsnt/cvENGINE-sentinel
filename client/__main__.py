@@ -5,6 +5,8 @@ import logging
 import signal
 import sys
 
+import requests
+
 from . import config
 from . import daemon as daemon_mod
 from . import httpclient
@@ -33,6 +35,10 @@ def main():
         logger.info('bootstrap succeeded; token persisted at %s', path)
 
     client = httpclient.Client(server_url, token)
+    try:
+        daemon_mod.register(client, config.sentinel_name(), config.max_concurrent())
+    except (httpclient.ApiError, requests.RequestException):
+        logger.warning('could not refresh registration with the server at startup; continuing with the current token as-is', exc_info=True)
     engine = daemon_mod.Daemon(server_url, token, max_concurrent=config.max_concurrent(), client=client)
 
     def handle_signal(signum, _frame):

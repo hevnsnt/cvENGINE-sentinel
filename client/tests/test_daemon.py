@@ -7,7 +7,7 @@ import time
 import unittest
 from unittest import mock
 
-from client import blob, daemon, httpclient, tools
+from client import blob, config, daemon, httpclient, tools
 
 
 class FakeClient:
@@ -62,7 +62,7 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual((method, path), ('POST', 'sentinels/bootstrap'))
         self.assertEqual(body['enrollment_token'], 'senr_abc')
         self.assertEqual(body['name'], 'my-sentinel')
-        self.assertEqual(sorted(body['capabilities']), sorted(['nmap', 'naabu', 'nuclei_light', 'nuclei_targeted']))
+        self.assertEqual(sorted(body['capabilities']), sorted(['nmap', 'naabu', 'nuclei_light', 'nuclei_targeted', 'nuclei_deep']))
         self.assertEqual(body['max_concurrent'], 2)
         self.assertEqual(body['tools'], ['nmap'])
 
@@ -89,6 +89,37 @@ class BootstrapTests(unittest.TestCase):
                 return {'id': 1}  # no 'token'
         with self.assertRaises(httpclient.ApiError):
             daemon.bootstrap(self._blob(), 'x', 1, client_factory=Fake)
+
+
+class RegisterTests(unittest.TestCase):
+    """register() is PUT sentinel, called on every startup (not just the first) so a restart always reports this
+    Sentinel's current capacity; scope is deliberately left out of the body so it never touches what an enrollment
+    secret already assigned (PUT sentinel only changes fields given, per agentapi.agent_broker.register)."""
+
+    def test_sends_name_capabilities_tools_and_max_concurrent_but_no_scope(self):
+        fc = FakeClient()
+        with mock.patch('client.tools.detect_tools', return_value=['nmap', 'naabu']):
+            daemon.register(fc, 'my-sentinel', 5)
+        self.assertEqual(fc.paths(), [('PUT', 'sentinel')])
+        body = fc.body_for('sentinel')
+        self.assertEqual(body['name'], 'my-sentinel')
+        self.assertEqual(body['max_concurrent'], 5)
+        self.assertEqual(body['tools'], ['nmap', 'naabu'])
+        self.assertEqual(sorted(body['capabilities']), sorted(config.CAPABILITIES))
+        self.assertNotIn('scope', body)
+
+    def test_a_custom_kinds_list_overrides_the_default_capabilities(self):
+        fc = FakeClient()
+        with mock.patch('client.tools.detect_tools', return_value=[]):
+            daemon.register(fc, 'x', 1, kinds=['nmap'])
+        self.assertEqual(fc.body_for('sentinel')['capabilities'], ['nmap'])
+
+    def test_a_server_error_propagates_to_the_caller(self):
+        fc = FakeClient()
+        fc.fail_on.add(('PUT', 'sentinel'))
+        with mock.patch('client.tools.detect_tools', return_value=[]):
+            with self.assertRaises(httpclient.ApiError):
+                daemon.register(fc, 'x', 1)
 
 
 class TokenPersistenceTests(unittest.TestCase):

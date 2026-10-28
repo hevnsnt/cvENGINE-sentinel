@@ -78,6 +78,17 @@ def bootstrap(blob_raw, name, max_concurrent, client_factory=httpclient.Client):
     return token, server_url
 
 
+def register(client, name, max_concurrent, kinds=None):
+    """(Re-)register this Sentinel with the server: name, capabilities, os, tools and max_concurrent. Called on every
+    startup, not just the first, so a restarted Sentinel always reports its current capacity
+    (CVENGINE_SENTINEL_MAX_CONCURRENT, or the host's freshly auto-detected CPU count) instead of whatever was true
+    the one time it originally bootstrapped. ``scope`` is left out on purpose: ``PUT sentinel`` only changes fields
+    given in the body, so this never touches the scope an enrollment secret already assigned."""
+    body = {'name': name, 'capabilities': list(kinds or config.CAPABILITIES), 'os': [config.os_family()] if config.os_family() else [],
+            'tools': tools.detect_tools(), 'max_concurrent': max_concurrent}
+    client.call('PUT', 'sentinel', body)
+
+
 class Daemon:
     def __init__(self, server_url, token, max_concurrent=1, kinds=None, client=None, heartbeat_seconds=None):
         self.client = client or httpclient.Client(server_url, token)

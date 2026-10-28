@@ -15,8 +15,10 @@ services:
       CVENGINE_SENTINEL_BLOB: "${CVENGINE_SENTINEL_BLOB:-}"
       # Optional: defaults to this container's hostname (a random id unless you set one below).
       CVENGINE_SENTINEL_NAME: "${CVENGINE_SENTINEL_NAME:-}"
-      # Optional: how many nmap/naabu/nuclei runs this Sentinel executes at once. Default 1.
-      CVENGINE_SENTINEL_MAX_CONCURRENT: "${CVENGINE_SENTINEL_MAX_CONCURRENT:-1}"
+      # Optional: how many nmap/naabu/nuclei runs this Sentinel executes at once. Left unset (the default here), the
+      # Sentinel auto-detects it from the CPU this container actually has (a `docker run --cpus`-style limit if one
+      # applies, else the host's CPU count), capped at 10. Set a number to override that.
+      CVENGINE_SENTINEL_MAX_CONCURRENT: "${CVENGINE_SENTINEL_MAX_CONCURRENT:-}"
     # nmap's OS detection and naabu's SYN scanning need raw sockets; NET_RAW/NET_ADMIN are enough, no --privileged.
     cap_add:
       - NET_RAW

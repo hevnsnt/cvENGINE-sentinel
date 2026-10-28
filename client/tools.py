@@ -247,7 +247,7 @@ def run_nuclei(targets, tags=None, severities=None, timeout=3600, register=None)
         os.unlink(path)
 
 
-RUNNERS = {'nmap': run_nmap, 'naabu': run_naabu, 'nuclei_light': run_nuclei, 'nuclei_targeted': run_nuclei}
+RUNNERS = {'nmap': run_nmap, 'naabu': run_naabu, 'nuclei_light': run_nuclei, 'nuclei_targeted': run_nuclei, 'nuclei_deep': run_nuclei}
 
 
 # --- version probing, for the capabilities a bootstrapping Sentinel declares ------------------------------------------

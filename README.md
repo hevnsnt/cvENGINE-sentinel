@@ -44,7 +44,10 @@ driven entirely from the `generate_sentinel_enrollment` MCP tool's response, wit
 
 The first start decodes the blob, bootstraps (trades the one-time secret for this Sentinel's own token) and saves
 that token to the `sentinel-state` Docker volume. Every start after that uses the saved token directly: the blob in
-`.env` is read only once and can be removed from `.env` (or left; it is ignored once a token is persisted).
+`.env` is read only once and can be removed from `.env` (or left; it is ignored once a token is persisted). Every
+start, including these later ones, also re-registers with the server (name, capabilities, `max_concurrent`), so a
+restart always reports this Sentinel's current, freshly auto-detected capacity rather than whatever was true the
+one time it originally bootstrapped.
 
 ## Check it registered
 
@@ -81,7 +84,7 @@ Revoking also hands back any task it was mid-run on to the queue immediately.
 | --- | --- | --- | --- |
 | `CVENGINE_SENTINEL_BLOB` | Only for the first start | - | The one-time provisioning blob from the Sentinels page. Ignored once a token is persisted. |
 | `CVENGINE_SENTINEL_NAME` | No | the container's hostname | The Sentinel's name on the Sentinels page. |
-| `CVENGINE_SENTINEL_MAX_CONCURRENT` | No | `1` | How many nmap/naabu/nuclei runs this Sentinel executes at once. |
+| `CVENGINE_SENTINEL_MAX_CONCURRENT` | No | auto-detected from the container's CPU (capped at 10) | How many nmap/naabu/nuclei runs this Sentinel executes at once. Set a number to override the auto-detected value. |
 
 `docker-compose.yml` adds `NET_RAW`/`NET_ADMIN` (not `--privileged`), which nmap's OS detection and naabu's SYN
 scanning need; it runs on the Docker bridge network by default, so if your targets are elsewhere on your LAN rather
@@ -89,7 +92,7 @@ than reachable through that bridge, uncomment `network_mode: host` in `docker-co
 
 ## What it will and will not do
 
-A Sentinel only ever runs one of four whitelisted tools (nmap, naabu, nuclei in its light or targeted pass) against
+A Sentinel only ever runs one of a small set of whitelisted tools (nmap, naabu, or nuclei in its light, targeted or weekly deep pass) against
 the exact address, host or target list a `SentinelTask` names, built as a fixed argv list, never a shell command. It
 never evaluates or interprets any text the server sends as code or as a command, and it reports typed, bounded
 results back; see `client/tools.py` for the validation every target list passes through before a tool ever runs
