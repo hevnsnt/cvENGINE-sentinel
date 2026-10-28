@@ -116,7 +116,7 @@ class Daemon:
     def __init__(self, server_url, token, max_concurrent=1, kinds=None, client=None, heartbeat_seconds=None):
         self.client = client or httpclient.Client(server_url, token)
         self.max_concurrent = max(1, max_concurrent)
-        self.kinds = list(kinds or config.CAPABILITIES)
+        self.kinds = config.poll_kinds(kinds)
         self._kinds_given = bool(kinds)
         self.reregister = None  # set by the entry point: re-sends this Sentinel's registration when what it can run changes
         self._declared = declared_kinds(kinds)  # what startup registered, so a change after it is noticed
@@ -284,6 +284,8 @@ class Daemon:
             out = runner(target.get('address') or '', register=register)
         elif kind == 'wpscan':
             out = runner(target.get('url') or '', target.get('token') or '', register=register)
+        elif kind == 'discover':
+            out = runner(target.get('cidr') or '', register=register)
         elif kind == 'openvas':
             out = runner(target.get('hosts') or {}, target.get('excluded_families') or [], target.get('max_hours'), register=register)
         else:

@@ -181,6 +181,18 @@ class RegisterTests(unittest.TestCase):
                 daemon.register(fc, 'x', 1)
             self.assertEqual(config.INTERNAL_CAPABILITY in fc.body_for('sentinel')['capabilities'], expected, value)
 
+    def test_discover_is_declared_and_polled_only_by_an_internal_sentinel(self):
+        for value, expected in ((None, False), ('internal', True)):
+            fc = FakeClient()
+            with mock.patch.dict('os.environ'), mock.patch('client.tools.detect_tools', return_value=[]):
+                os.environ.pop('CVENGINE_SENTINEL_NETWORK', None)
+                if value is not None:
+                    os.environ['CVENGINE_SENTINEL_NETWORK'] = value
+                daemon.register(fc, 'x', 1)
+                d = daemon.Daemon('https://x.example', 'tok', client=fc)
+            self.assertEqual('discover' in fc.body_for('sentinel')['capabilities'], expected, value)
+            self.assertEqual('discover' in d.kinds, expected, value)
+
     def test_the_poll_filter_never_carries_the_network_capability(self):
         with mock.patch.dict('os.environ', {'CVENGINE_SENTINEL_NETWORK': 'internal'}):
             d = daemon.Daemon('https://x.example', 'tok', client=FakeClient())
@@ -243,6 +255,7 @@ class PollAndExecuteTests(unittest.TestCase):
             ('nmap_udp', {'address': '192.0.2.10'}, {'xml': '<nmaprun/>'}, (('192.0.2.10',), {})),
             ('wpscan', {'url': 'https://www.example.test', 'token': 'tok'}, {'report': None, 'returncode': 0, 'stderr_tail': ''},
              (('https://www.example.test', 'tok'), {})),
+            ('discover', {'cidr': '10.20.0.0/24'}, {'hosts': [{'ip': '10.20.0.5', 'hostnames': []}]}, (('10.20.0.0/24',), {})),
             ('openvas', {'hosts': {'192.0.2.10': 'www.example.test'}, 'excluded_families': ['Denial of Service'], 'max_hours': 4},
              {'results': [], 'scanned_addresses': [], 'without_cve': 0, 'unusable': 0},
              (({'192.0.2.10': 'www.example.test'}, ['Denial of Service'], 4), {})),

@@ -5,6 +5,7 @@ import socket
 
 CAPABILITIES = ['nmap', 'naabu', 'nuclei_light', 'nuclei_targeted', 'nuclei_deep', 'testssl', 'nmap_udp', 'wpscan', 'openvas']
 INTERNAL_CAPABILITY = 'network:internal'  # mirrors agentapi.sentinel_broker.INTERNAL_CAPABILITY
+INTERNAL_KINDS = ['discover']  # scan kinds only an internal Sentinel declares: the server sweeps a declared private range only through one
 HEARTBEAT_SECONDS = 60  # matches agentapi.agent_broker.HEARTBEAT_SECONDS; see that constant if it ever changes
 DEFAULT_TOKEN_PATH = '/var/lib/cvengine-sentinel/token.json'
 DEFAULT_POLL_WAIT = 15  # seconds the long poll (sentinel/tasks/next) may block per call
@@ -34,10 +35,18 @@ def disabled_kinds():
 
 
 def registered_capabilities(kinds=None):
-    """What this Sentinel tells the server it can do: the scan kinds, plus ``network:internal`` when deployed inside a private network.
-    The poll's own ``kinds`` filter takes only scan kinds, so this is for registration and bootstrap alone."""
-    caps = list(kinds or CAPABILITIES)
+    """What this Sentinel tells the server it can do: the scan kinds, plus ``network:internal`` (and the kinds only an internal Sentinel
+    takes) when deployed inside a private network. The poll's own ``kinds`` filter takes only scan kinds (``poll_kinds``), so this is for
+    registration and bootstrap alone."""
+    caps = poll_kinds(kinds)
     return caps + [INTERNAL_CAPABILITY] if is_internal() and INTERNAL_CAPABILITY not in caps else caps
+
+
+def poll_kinds(kinds=None):
+    """The scan kinds this Sentinel asks the server for: every standard kind, plus the internal-only ones when deployed inside a network."""
+    if kinds:  # an explicit list is the operator's own choice and is taken as given
+        return list(kinds)
+    return CAPABILITIES + INTERNAL_KINDS if is_internal() else list(CAPABILITIES)
 
 
 MAX_AUTO_CONCURRENT = 10  # mirrors agentapi.agent_broker.MAX_CONCURRENT_CAP: no point auto-detecting past what the server will ever grant
