@@ -80,7 +80,7 @@ def declared_kinds(kinds=None):
     is never handed OpenVAS work it cannot run; and a kind the operator disabled (CVENGINE_SENTINEL_DISABLE) is never declared."""
     off = config.disabled_kinds()
     declared = [k for k in config.registered_capabilities(kinds) if k not in off]
-    if 'openvas' in declared and not tools.gvm_available():
+    if 'openvas' in declared and not tools.gvm_ready():
         declared.remove('openvas')
     return declared
 
@@ -220,7 +220,7 @@ class Daemon:
         """The kinds worth asking the server for now: the configured ones, less any the operator disabled and ``openvas`` while no GVM stack answers."""
         off = config.disabled_kinds()
         kinds = [k for k in self.kinds if k not in off]
-        if 'openvas' in kinds and not tools.gvm_available():
+        if 'openvas' in kinds and not tools.gvm_ready():
             kinds.remove('openvas')
         return kinds
 

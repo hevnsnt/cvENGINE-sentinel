@@ -54,7 +54,7 @@ class BootstrapTests(unittest.TestCase):
             def call(self, method, path, body=None, timeout=None):
                 fc.call(method, path, body, timeout)
                 return {'token': 'cve_newtoken', 'id': 1, 'status': 'pending'}
-        with mock.patch('client.tools.detect_tools', return_value=['nmap']), mock.patch('client.tools.gvm_available', return_value=True):
+        with mock.patch('client.tools.detect_tools', return_value=['nmap']), mock.patch('client.tools.gvm_ready', return_value=True):
             token, server_url = daemon.bootstrap(self._blob(), 'my-sentinel', 2, client_factory=Fake)
         self.assertEqual(token, 'cve_newtoken')
         self.assertEqual(server_url, 'https://cve.example.test')
@@ -99,7 +99,7 @@ class RegisterTests(unittest.TestCase):
 
     def test_sends_name_capabilities_tools_and_max_concurrent_but_no_scope(self):
         fc = FakeClient()
-        with mock.patch('client.tools.detect_tools', return_value=['nmap', 'naabu']), mock.patch('client.tools.gvm_available', return_value=True):
+        with mock.patch('client.tools.detect_tools', return_value=['nmap', 'naabu']), mock.patch('client.tools.gvm_ready', return_value=True):
             daemon.register(fc, 'my-sentinel', 5)
         self.assertEqual(fc.paths(), [('PUT', 'sentinel')])
         body = fc.body_for('sentinel')
@@ -112,14 +112,14 @@ class RegisterTests(unittest.TestCase):
     def test_openvas_is_declared_only_while_the_gvm_stack_answers(self):
         for gvm, expected in ((True, True), (False, False)):
             fc = FakeClient()
-            with mock.patch('client.tools.detect_tools', return_value=[]), mock.patch('client.tools.gvm_available', return_value=gvm):
+            with mock.patch('client.tools.detect_tools', return_value=[]), mock.patch('client.tools.gvm_ready', return_value=gvm):
                 daemon.register(fc, 'x', 1)
             self.assertEqual('openvas' in fc.body_for('sentinel')['capabilities'], expected, gvm)
 
     def test_an_operator_can_turn_a_kind_off(self):
         fc = FakeClient()
         with mock.patch.dict('os.environ', {'CVENGINE_SENTINEL_DISABLE': 'openvas, wpscan'}), \
-                mock.patch('client.tools.detect_tools', return_value=[]), mock.patch('client.tools.gvm_available', return_value=True):
+                mock.patch('client.tools.detect_tools', return_value=[]), mock.patch('client.tools.gvm_ready', return_value=True):
             daemon.register(fc, 'x', 1)
             d = daemon.Daemon('https://x.example', 'tok', client=fc)
             kinds = d._poll_kinds()
@@ -129,24 +129,24 @@ class RegisterTests(unittest.TestCase):
 
     def test_the_poll_leaves_out_openvas_while_no_gvm_stack_answers(self):
         d = daemon.Daemon('https://x.example', 'tok', client=FakeClient())
-        with mock.patch('client.tools.gvm_available', return_value=False):
+        with mock.patch('client.tools.gvm_ready', return_value=False):
             self.assertNotIn('openvas', d._poll_kinds())
-        with mock.patch('client.tools.gvm_available', return_value=True):
+        with mock.patch('client.tools.gvm_ready', return_value=True):
             self.assertIn('openvas', d._poll_kinds())
 
     def test_registration_is_sent_again_when_the_gvm_stack_comes_up_or_goes_away(self):
         sent = []
-        with mock.patch('client.tools.gvm_available', return_value=False):
+        with mock.patch('client.tools.gvm_ready', return_value=False):
             d = daemon.Daemon('https://x.example', 'tok', client=FakeClient())
         d.reregister = lambda: sent.append(1)
-        with mock.patch('client.tools.gvm_available', return_value=False):
+        with mock.patch('client.tools.gvm_ready', return_value=False):
             d._refresh_registration()
         self.assertEqual(sent, [])  # nothing changed since startup
-        with mock.patch('client.tools.gvm_available', return_value=True):
+        with mock.patch('client.tools.gvm_ready', return_value=True):
             d._refresh_registration()
             d._refresh_registration()
         self.assertEqual(len(sent), 1)  # told the server once, not on every heartbeat
-        with mock.patch('client.tools.gvm_available', return_value=False):
+        with mock.patch('client.tools.gvm_ready', return_value=False):
             d._refresh_registration()
         self.assertEqual(len(sent), 2)
 
@@ -157,10 +157,10 @@ class RegisterTests(unittest.TestCase):
             calls.append(1)
             if len(calls) == 1:
                 raise httpclient.ApiError(503, 'down')
-        with mock.patch('client.tools.gvm_available', return_value=False):
+        with mock.patch('client.tools.gvm_ready', return_value=False):
             d = daemon.Daemon('https://x.example', 'tok', client=FakeClient())
         d.reregister = flaky
-        with mock.patch('client.tools.gvm_available', return_value=True):
+        with mock.patch('client.tools.gvm_ready', return_value=True):
             d._refresh_registration()
             d._refresh_registration()
         self.assertEqual(len(calls), 2)

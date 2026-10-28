@@ -144,6 +144,23 @@ hours on its own and is cleared whenever the Sentinel starts, so an updater that
 Set the version once on an existing install with `echo "CVENGINE_SENTINEL_VERSION=$(git rev-parse --short=12 HEAD)" >> .env && docker compose up -d`
 (later updates do it themselves).
 
+## Testing OpenVAS
+
+CI runs the client tests on every change, and `.github/workflows/openvas-integration.yml` brings up the pinned `gvmd` and runs the login
+bootstrap and the readiness check against it with the pinned `python-gvm` (when the OpenVAS client, the compose pins or `requirements.txt`
+change, weekly, and on demand), because a mock cannot catch gvmd refusing a request. It does not run a scan: a scan needs the vulnerability-test
+feeds, which take hours and tens of GB to sync. To prove the whole path on a machine with Docker, once, after a change to the OpenVAS pins:
+
+    docker compose up -d --build
+    docker compose exec sentinel python3 scripts/ci_openvas_bootstrap.py     # logs in, saves the login, prints whether GVM can scan yet
+    docker compose logs -f sentinel                                          # "capabilities changed: now ..., openvas" once the feeds finished syncing
+
+then dispatch an OpenVAS task from cvENGINE (Hosts, run an OpenVAS scan) and watch it finish. The Sentinel declares `openvas` only once gvmd has
+loaded its scan configuration, scanner and port lists and has stopped its first feed sync, and a task that arrives earlier fails with
+"GVM is still syncing its ... feed(s)". The first sync downloads tens of GB. If gvmd will not let the default `admin` user change its own password
+(it answers "Failed to find user", 404, on some versions) the Sentinel creates a login of its own (`cvengine-sentinel`) instead; to use a login you
+made by hand, save it to `/var/lib/cvengine-sentinel/openvas-credentials.json` as `{"username": ..., "password": ...}` (mode 600).
+
 ## What it will and will not do
 
 A Sentinel only ever runs one of a whitelisted set of tools - nmap, naabu, nuclei (light, targeted or weekly deep
