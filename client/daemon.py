@@ -93,7 +93,7 @@ def bootstrap(blob_raw, name, max_concurrent, client_factory=httpclient.Client):
     client = client_factory(server_url)
     body = {'enrollment_token': payload['enrollment_token'], 'name': name, 'capabilities': declared_kinds(),
             'os': [config.os_family()] if config.os_family() else [], 'tools': tools.detect_tools(),
-            'max_concurrent': max_concurrent}
+            'max_concurrent': max_concurrent, 'settings': config.local_settings()}
     out = client.call('POST', 'sentinels/bootstrap', body)
     token = out.get('token')
     if not isinstance(token, str) or not token:
@@ -108,8 +108,8 @@ def register(client, name, max_concurrent, kinds=None):
     the one time it originally bootstrapped. ``scope`` is left out on purpose: ``PUT sentinel`` only changes fields
     given in the body, so this never touches the scope an enrollment secret already assigned."""
     body = {'name': name, 'capabilities': declared_kinds(kinds), 'os': [config.os_family()] if config.os_family() else [],
-            'tools': tools.detect_tools(), 'max_concurrent': max_concurrent}
-    client.call('PUT', 'sentinel', body)
+            'tools': tools.detect_tools(), 'max_concurrent': max_concurrent, 'settings': config.local_settings()}
+    return client.call('PUT', 'sentinel', body)
 
 
 class Daemon:
@@ -119,6 +119,8 @@ class Daemon:
         self.kinds = list(kinds or config.CAPABILITIES)
         self._kinds_given = bool(kinds)
         self.reregister = None  # set by the entry point: re-sends this Sentinel's registration when what it can run changes
+        self._register_pending = False  # the last settings change has not reached the server yet
+        self._settings_rev = None  # fingerprint of the server's settings this Sentinel last applied
         self._declared = declared_kinds(kinds)  # what startup registered, so a change after it is noticed
         self.heartbeat_seconds = heartbeat_seconds or config.HEARTBEAT_SECONDS
         self.stop_event = threading.Event()
@@ -155,7 +157,36 @@ class Daemon:
                 logger.warning('heartbeat failed: %s', exc)
                 continue
             self._reconcile((out or {}).get('leases'))
+            self.apply_settings((out or {}).get('settings'))
             self._refresh_registration()
+
+    def apply_settings(self, reply):
+        """Run with the settings the server sent (``{values, rev}``: the most recent of what an administrator set in cvENGINE and what this machine's
+        own configuration says). A change is applied at once, and this Sentinel registers again so the server sees its new name, concurrency and
+        capabilities. This machine's own values are what gets reported, never these, so applying them is not itself seen as a local change."""
+        if not isinstance(reply, dict) or not isinstance(reply.get('values'), dict):
+            return
+        rev = reply.get('rev')
+        if rev is not None and rev == self._settings_rev:
+            return
+        before = config.overrides()
+        config.set_overrides(reply['values'])
+        after = config.overrides()
+        self.max_concurrent = max(1, config.max_concurrent())
+        self._settings_rev = rev
+        if before == after and not self._register_pending:
+            return
+        logger.info('settings from the server: %s', ', '.join(f'{k}={v}' for k, v in sorted(after.items())) or 'none (this machine\'s own)')
+        if self.reregister is not None:
+            try:
+                self.reregister()
+            except (httpclient.ApiError, requests.RequestException) as exc:
+                logger.warning('could not register the new settings: %s', exc)
+                self._settings_rev = None  # try again on the next heartbeat
+                self._register_pending = True
+                return
+            self._register_pending = False
+            self._declared = declared_kinds(self.kinds if self._kinds_given else None)
 
     def _poll_kinds(self):
         """The kinds worth asking the server for now: the configured ones, less any the operator disabled and ``openvas`` while no GVM stack answers."""

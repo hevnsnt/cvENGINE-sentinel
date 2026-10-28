@@ -5,6 +5,7 @@ import socket
 
 CAPABILITIES = ['nmap', 'naabu', 'nuclei_light', 'nuclei_targeted', 'nuclei_deep', 'testssl', 'nmap_udp', 'wpscan', 'openvas']
 INTERNAL_CAPABILITY = 'network:internal'  # mirrors agentapi.sentinel_broker.INTERNAL_CAPABILITY
+INTERNAL_KINDS = []  # scan kinds only an internal Sentinel takes
 HEARTBEAT_SECONDS = 60  # matches agentapi.agent_broker.HEARTBEAT_SECONDS; see that constant if it ever changes
 DEFAULT_TOKEN_PATH = '/var/lib/cvengine-sentinel/token.json'
 DEFAULT_POLL_WAIT = 15  # seconds the long poll (sentinel/tasks/next) may block per call
@@ -16,21 +17,87 @@ def _env(name, default=None):
     return value if value not in (None, '') else default
 
 
-def sentinel_name():
+# Settings the server may manage (agentapi.sentinel_settings.SETTINGS): the most recent change, here or in cvENGINE, wins. ``local_settings`` is what this
+# machine's own configuration says and is what gets reported; ``_overrides`` holds what the server told this Sentinel to run with, and is consulted first.
+SETTING_KEYS = ('name', 'network', 'profile', 'disabled_kinds', 'max_concurrent')
+_overrides = {}
+
+
+def clean_settings(raw):
+    """The settings in ``raw`` (from the server) that are well formed, clipped to what this client accepts. They are data, never commands:
+    anything else is dropped."""
+    out = {}
+    if not isinstance(raw, dict):
+        return out
+    name = raw.get('name')
+    if isinstance(name, str) and name.strip():
+        out['name'] = ''.join(c for c in name if c.isprintable()).strip()[:100] or None
+        if out['name'] is None:
+            del out['name']
+    if raw.get('network') in ('external', 'internal'):
+        out['network'] = raw['network']
+    if raw.get('profile') in ('full', 'light'):
+        out['profile'] = raw['profile']
+    kinds = raw.get('disabled_kinds')
+    if isinstance(kinds, list):
+        out['disabled_kinds'] = sorted({k for k in kinds if isinstance(k, str) and k in CAPABILITIES + INTERNAL_KINDS})
+    value = raw.get('max_concurrent')
+    if isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= MAX_AUTO_CONCURRENT:
+        out['max_concurrent'] = value
+    return out
+
+
+def set_overrides(values):
+    """Replace what the server told this Sentinel to run with. An empty dict means nothing: every setting is this machine's own again."""
+    _overrides.clear()
+    _overrides.update(clean_settings(values))
+
+
+def overrides():
+    return dict(_overrides)
+
+
+def _local_name():
     return _env('CVENGINE_SENTINEL_NAME') or socket.gethostname() or 'sentinel'
 
 
-def is_internal():
+def sentinel_name():
+    return _overrides.get('name') or _local_name()
+
+
+def local_settings():
+    """What this machine's own configuration says for each setting, ignoring anything the server set: reported to the server at every registration,
+    so it can tell a change made here from one made in cvENGINE. ``profile`` is reported only when this machine states one."""
+    out = {'name': _local_name(), 'network': 'internal' if _local_internal() else 'external',
+           'disabled_kinds': sorted(_local_disabled()), 'max_concurrent': _local_max_concurrent()}
+    profile = (_env('CVENGINE_SENTINEL_PROFILE') or '').strip().lower()
+    if profile in ('full', 'light'):
+        out['profile'] = profile
+    return out
+
+
+def _local_internal():
     """Whether this Sentinel was told it sits inside a private network (CVENGINE_SENTINEL_NETWORK=internal). Only then does it
     declare ``network:internal``, which is what lets the server hand it work for an address of an internal range the project
     declared; every other Sentinel is never offered such work, because it could not reach it."""
     return (_env('CVENGINE_SENTINEL_NETWORK') or '').strip().lower() == 'internal'
 
 
-def disabled_kinds():
-    """Scan kinds the operator turned off on this Sentinel (CVENGINE_SENTINEL_DISABLE, comma separated, for example ``openvas``): never
-    declared to the server and never polled for, whatever tools are installed."""
+def is_internal():
+    """The effective network: the server's setting when it set one more recently than this machine's, else this machine's own."""
+    return _overrides['network'] == 'internal' if 'network' in _overrides else _local_internal()
+
+
+def _local_disabled():
     return {k.strip() for k in (_env('CVENGINE_SENTINEL_DISABLE') or '').split(',') if k.strip()}
+
+
+def disabled_kinds():
+    """Scan kinds turned off on this Sentinel (CVENGINE_SENTINEL_DISABLE, comma separated, for example ``openvas``, or the server's setting): never
+    declared to the server and never polled for, whatever tools are installed. A light profile never runs OpenVAS."""
+    kinds = set(_overrides['disabled_kinds']) if 'disabled_kinds' in _overrides else _local_disabled()
+    profile = _overrides.get('profile') or (_env('CVENGINE_SENTINEL_PROFILE') or '').strip().lower()
+    return kinds | {'openvas'} if profile == 'light' else kinds
 
 
 def registered_capabilities(kinds=None):
@@ -83,6 +150,11 @@ def _detected_cpus():
 
 
 def max_concurrent():
+    """The effective concurrency: the server's setting when it set one more recently than this machine's, else this machine's own."""
+    return _overrides.get('max_concurrent') or _local_max_concurrent()
+
+
+def _local_max_concurrent():
     """How many nmap/naabu/nuclei runs this Sentinel executes at once. ``CVENGINE_SENTINEL_MAX_CONCURRENT`` wins when
     set; left unset, this auto-detects from the CPU this Sentinel actually has (its container's own cgroup quota when
     one is set, else the host's CPU count), capped at ``MAX_AUTO_CONCURRENT`` - never a flat ``1`` regardless of how

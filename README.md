@@ -115,6 +115,17 @@ The Greenbone images are pinned by digest, and Greenbone publishes no version ta
 an old pin can vanish from the registry (`artifact ... not found` on `docker compose up`). `./scripts/greenbone-digests.sh`
 prints which pinned digests no longer match `stable`; replace the `sha256` of any that changed in `docker-compose.yml`.
 
+## Managing a Sentinel from cvENGINE
+
+Once a Sentinel has checked in, an administrator can change its settings from the cvENGINE Sentinels page (or `PATCH agents/{id}` with
+`{"settings": {...}}`) with nothing touched on this machine: its **name**, **network** (`external` or `internal`), **profile** (`full` or
+`light`; light never runs OpenVAS), the **kinds it never takes** and its **concurrency**. The same settings can be set here, in `.env`
+(`CVENGINE_SENTINEL_NAME`, `_NETWORK`, `_PROFILE`, `_DISABLE`, `_MAX_CONCURRENT`). **The most recent change wins, wherever it was made**: the
+Sentinel reports this machine's own values at every start and cvENGINE keeps the time each last changed, so restarting with an unchanged `.env`
+never undoes an edit made in cvENGINE, and an edit made in `.env` after the last dashboard edit takes over. Settings are only data: the Sentinel
+checks every value and ignores anything it does not recognise, and what a Sentinel is allowed to scan is still decided by its scope, an
+administrator's approval and limits.
+
 ## What it will and will not do
 
 A Sentinel only ever runs one of a whitelisted set of tools - nmap, naabu, nuclei (light, targeted or weekly deep

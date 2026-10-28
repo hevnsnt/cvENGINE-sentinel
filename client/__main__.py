@@ -35,12 +35,14 @@ def main():
         logger.info('bootstrap succeeded; token persisted at %s', path)
 
     client = httpclient.Client(server_url, token)
+    settings = None
     try:
-        daemon_mod.register(client, config.sentinel_name(), config.max_concurrent())
+        settings = (daemon_mod.register(client, config.sentinel_name(), config.max_concurrent()) or {}).get('settings')
     except (httpclient.ApiError, requests.RequestException):
         logger.warning('could not refresh registration with the server at startup; continuing with the current token as-is', exc_info=True)
     engine = daemon_mod.Daemon(server_url, token, max_concurrent=config.max_concurrent(), client=client)
     engine.reregister = lambda: daemon_mod.register(client, config.sentinel_name(), config.max_concurrent())
+    engine.apply_settings(settings)  # the server may hold a more recent setting than this machine's own
 
     def handle_signal(signum, _frame):
         logger.info('received signal %s; finishing or releasing in-flight tasks', signum)
