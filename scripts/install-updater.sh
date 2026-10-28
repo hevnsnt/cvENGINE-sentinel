@@ -1,15 +1,20 @@
 #!/bin/sh
 # Install a timer that runs scripts/update.sh every hour on this host, so a Sentinel follows cvENGINE's update mode with nothing done by hand:
 # Automatic means it updates itself (after draining running tasks), Manual means it waits until an administrator presses Update now.
-# Uses systemd when there is one, else a cron.d entry. Run as root: scripts/install-updater.sh [--remove]
+# Uses systemd when there is one, else a cron.d entry. It writes to /etc, so it needs root: run it as root, or as a user who can sudo (it asks).
+#   scripts/install-updater.sh [--remove]
 set -eu
 DIR=$(cd "$(dirname "$0")/.." && pwd)
-[ "$(id -u)" = 0 ] || { echo "run this as root (it writes to /etc)" >&2; exit 1; }
+if [ "$(id -u)" != 0 ]; then
+  command -v sudo >/dev/null 2>&1 || { echo "run this as root (it writes to /etc), or install sudo" >&2; exit 1; }
+  exec sudo "$0" "$@"
+fi
 
 if [ "${1:-}" = "--remove" ]; then
   systemctl disable --now cvengine-sentinel-update.timer 2>/dev/null || true
   rm -f /etc/systemd/system/cvengine-sentinel-update.service /etc/systemd/system/cvengine-sentinel-update.timer /etc/cron.d/cvengine-sentinel-update
   systemctl daemon-reload 2>/dev/null || true
+  (cd "$DIR" && docker compose exec -T sentinel python3 -m client.control updater-removed) >/dev/null 2>&1 || true  # so cvENGINE shows "not installed"
   echo "removed"
   exit 0
 fi
@@ -44,3 +49,6 @@ else
   echo "17 * * * * root cd $DIR && ./scripts/update.sh >> /var/log/cvengine-sentinel-update.log 2>&1" > /etc/cron.d/cvengine-sentinel-update
   echo "installed: /etc/cron.d/cvengine-sentinel-update (hourly); log: /var/log/cvengine-sentinel-update.log"
 fi
+# Tell the Sentinel an updater now exists, so cvENGINE shows it as installed straight away rather than after the first run an hour from now.
+# Best effort: when the stack is not up yet, the first run of the updater says it.
+(cd "$DIR" && docker compose exec -T sentinel python3 -m client.control updater-installed --interval 3600) >/dev/null 2>&1 || true

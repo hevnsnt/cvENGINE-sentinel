@@ -11,12 +11,16 @@
 #   --external | --internal
 #                      external: scans targets reachable from the internet side (the default); internal: this machine sits
 #                      inside a private network (office LAN, VPC, VPN) and scans the internal ranges a project declared
-#   --yes              do not ask, use the defaults for anything not given (full, external)
+#   --updater | --no-updater
+#                      install the updater (an hourly timer on this machine, scripts/install-updater.sh) so this Sentinel can update itself when cvENGINE
+#                      says to (the default; it asks for sudo when it is not root). --no-updater leaves it out; install it later with
+#                      `sudo ./scripts/install-updater.sh`. What it may do is the self-update setting (Off, Manual or Automatic) on the Sentinels page
+#   --yes              do not ask, use the defaults for anything not given (full, external, updater installed)
 #   --help
 set -euo pipefail
 cd "$(dirname "$0")"
 
-blob="" name="" profile="" network="" yes=0
+blob="" name="" profile="" network="" updater="" yes=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --blob) blob="${2:?--blob needs a value}"; shift 2 ;;
@@ -25,8 +29,10 @@ while [ $# -gt 0 ]; do
     --light) profile=light; shift ;;
     --external) network=external; shift ;;
     --internal) network=internal; shift ;;
+    --updater) updater=yes; shift ;;
+    --no-updater) updater=no; shift ;;
     --yes|-y) yes=1; shift ;;
-    --help|-h) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --help|-h) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1 (see --help)" >&2; exit 2 ;;
   esac
 done
@@ -51,6 +57,12 @@ if [ -z "$blob" ] && [ "$yes" != 1 ] && [ -t 0 ]; then
   read -r -p "Provisioning blob from the Sentinels page (blank: add it to .env later)? " blob || true
 fi
 
+if [ -z "$updater" ]; then
+  echo "The updater is a small hourly job on this machine that lets cvENGINE update this Sentinel (it does nothing unless self-update is Manual or Automatic for it)."
+  ask updater_answer "Install the updater (yes/no)?" yes
+  case "$updater_answer" in n|N|no|NO|No) updater=no ;; *) updater=yes ;; esac
+fi
+
 case "$profile" in full|light) ;; *) echo "profile must be full or light" >&2; exit 2 ;; esac
 case "$network" in external|internal) ;; *) echo "network must be external or internal" >&2; exit 2 ;; esac
 case "$blob$name" in *$'\n'*|*"'"*|*'"'*) echo "the blob and name must not contain quotes or newlines" >&2; exit 2 ;; esac
@@ -62,6 +74,20 @@ case "$blob$name" in *$'\n'*|*"'"*|*'"'*) echo "the blob and name must not conta
   [ -n "$name" ] && echo "CVENGINE_SENTINEL_NAME=$name"
   echo "CVENGINE_SENTINEL_NETWORK=$network"
   if [ "$profile" = full ]; then echo "COMPOSE_PROFILES=openvas"; else echo "COMPOSE_PROFILES="; fi
+  echo "# Self-update (off, manual or automatic) is chosen in cvENGINE; set CVENGINE_SENTINEL_UPDATE here only to state this machine's own choice (the most recent change wins)."
+  echo "# CVENGINE_SENTINEL_UPDATE="
 } > .env
 chmod 600 .env
-echo "Wrote .env: profile=$profile, network=$network. Next: docker compose up -d"
+echo "Wrote .env: profile=$profile, network=$network."
+
+if [ "$updater" = yes ]; then
+  if ./scripts/install-updater.sh; then
+    echo "Updater installed. Choose Off, Manual or Automatic for this Sentinel on the Sentinels page; until you do it follows the instance default."
+  else
+    echo "The updater was NOT installed (see above). Install it later with: sudo ./scripts/install-updater.sh" >&2
+    echo "Until then this Sentinel cannot update itself, and the Sentinels page will say so." >&2
+  fi
+else
+  echo "No updater installed. To let cvENGINE update this Sentinel later: sudo ./scripts/install-updater.sh"
+fi
+echo "Next: docker compose up -d"

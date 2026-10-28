@@ -70,8 +70,9 @@ def is_draining(now=None):
 
 def write_status(version, in_flight, update_reply, now=None):
     update_reply = update_reply if isinstance(update_reply, dict) else {}
+    setting = update_reply.get('setting') if update_reply.get('setting') in config.SELF_UPDATE else None
     _write_json('control.json', {'version': version, 'in_flight': in_flight, 'draining': is_draining(), 'mode': update_reply.get('mode'),
-                                 'requested': bool(update_reply.get('requested')), 'at': int(now or time.time())})
+                                 'setting': setting, 'requested': bool(update_reply.get('requested')), 'at': int(now or time.time())})
 
 
 def read_status():
@@ -84,9 +85,25 @@ def idle(now=None):
     return bool(status) and (now or time.time()) - status.get('at', 0) <= STATUS_MAX_AGE and status.get('in_flight') == 0
 
 
-def wanted(status=None):
-    """Whether cvENGINE wants this Sentinel updated now: its update mode is automatic, or an administrator asked for this Sentinel."""
+def setting(status=None):
+    """This Sentinel's self-update setting as the server last said it (``off``, ``manual`` or ``automatic``), else the one this machine's own
+    configuration says, else ``unknown`` (a server that predates the setting: its ``mode`` and ``requested`` are all there is)."""
     status = status if status is not None else read_status()
+    value = status.get('setting') if status.get('setting') in config.SELF_UPDATE else config.self_update()
+    return value or 'unknown'
+
+
+def wanted(status=None):
+    """Whether this Sentinel should be updated now: never while its setting is Off; Automatic always; Manual only when an administrator asked for this
+    Sentinel. A server that predates the setting is read the old way (its update mode is automatic, or an administrator asked)."""
+    status = status if status is not None else read_status()
+    current = setting(status)
+    if current == 'off':
+        return False
+    if current == 'automatic':
+        return True
+    if current == 'manual':
+        return bool(status.get('requested'))
     return status.get('mode') == 'auto' or bool(status.get('requested'))
 
 
@@ -97,6 +114,54 @@ def record_update(status, phase='', detail='', previous='', target=''):
         raise ValueError(f'status must be one of {", ".join(UPDATE_STATUSES)}')
     _write_json('update.json', {'status': status, 'phase': phase[:60], 'detail': detail[:300], 'from': previous[:64], 'to': target[:64],
                                 'at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())})
+
+
+# --- the updater's own heartbeat: is one installed, and is it running -------------------------------------------------------------------------
+
+UPDATER_INTERVAL = 3600  # the hourly timer scripts/install-updater.sh sets up
+UPDATER_SLACK = 2.5  # an updater that has not run for this many intervals is not running
+
+
+def record_updater(result='', detail='', interval=UPDATER_INTERVAL, installed=False, now=None):
+    """Written by ``scripts/update.sh`` at every run (and by ``install-updater.sh`` once, with ``installed``), so the daemon can report whether a host
+    updater exists, whether it is running, and how its last run went. ``result`` is one of ``ok`` (nothing to update, or updated), ``waiting``,
+    ``off``, ``updated`` or ``failed``."""
+    previous = _read_json('updater.json')
+    stamp = int(now or time.time())
+    keep = installed and isinstance(previous.get('interval'), int) and previous['interval'] > 0  # an install marker does not change how often runs come
+    data = {'installed_at': previous.get('installed_at') or stamp, 'interval': previous['interval'] if keep else (int(interval) if interval else UPDATER_INTERVAL)}
+    if not installed:
+        data.update(at=stamp, result=str(result)[:40], detail=''.join(c for c in str(detail) if c.isprintable())[:300])
+    else:
+        for key in ('at', 'result', 'detail'):
+            if key in previous:
+                data[key] = previous[key]
+    _write_json('updater.json', data)
+
+
+def remove_updater():
+    try:
+        os.unlink(_path('updater.json'))
+    except OSError:
+        pass
+
+
+def updater_info(now=None):
+    """``{installed, running, last_run, last_result, detail}`` for the heartbeat. Installed means the install script or an update run wrote its
+    file; running means a run happened within ``UPDATER_SLACK`` intervals (the daemon only sees its own state volume, not the host's timer)."""
+    data = _read_json('updater.json')
+    if not data:
+        return {'installed': False, 'running': False}
+    now = now or time.time()
+    at = data.get('at')
+    interval = data.get('interval') if isinstance(data.get('interval'), int) and data['interval'] > 0 else UPDATER_INTERVAL
+    out = {'installed': True, 'running': isinstance(at, int) and now - at <= interval * UPDATER_SLACK}
+    if isinstance(at, int):
+        out['last_run'] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(at))
+    for key in ('result', 'detail'):
+        if data.get(key):
+            out['last_result' if key == 'result' else 'detail'] = data[key]
+    return out
 
 
 def read_update():
@@ -113,6 +178,16 @@ def main(argv):
         print(json.dumps(read_status()))
     elif command == 'wanted':
         print('yes' if wanted() else 'no')
+    elif command == 'setting':
+        print(setting())
+    elif command == 'updater-run':
+        opts = {rest[i].lstrip('-'): rest[i + 1] for i in range(1, len(rest) - 1, 2)}
+        record_updater(rest[0] if rest else '', opts.get('detail', ''), int(opts['interval']) if opts.get('interval', '').isdigit() else UPDATER_INTERVAL)
+    elif command == 'updater-installed':
+        opts = {rest[i].lstrip('-'): rest[i + 1] for i in range(0, len(rest) - 1, 2)}
+        record_updater(interval=int(opts['interval']) if opts.get('interval', '').isdigit() else UPDATER_INTERVAL, installed=True)
+    elif command == 'updater-removed':
+        remove_updater()
     elif command == 'drain':
         set_draining(True)
     elif command == 'undrain':
@@ -132,7 +207,7 @@ def main(argv):
         opts = {rest[i].lstrip('-'): rest[i + 1] for i in range(1, len(rest) - 1, 2)}
         record_update(rest[0], opts.get('phase', ''), opts.get('detail', ''), opts.get('from', ''), opts.get('to', ''))
     else:
-        print('commands: status, wanted, drain, undrain, wait-idle [--timeout S], report STATUS [...]', file=sys.stderr)
+        print('commands: status, wanted, setting, drain, undrain, wait-idle [--timeout S], report STATUS [...], updater-run RESULT [--detail D], updater-installed, updater-removed', file=sys.stderr)
         return 2
     return 0
 

@@ -110,6 +110,7 @@ def info():
     update = control.read_update()
     if update:
         out['update'] = update
+    out['updater'] = control.updater_info()  # installed or not, running or not, and how its last run went: a Sentinel that cannot update itself shows
     return out
 
 
