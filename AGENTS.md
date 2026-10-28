@@ -6,10 +6,18 @@ no manual steps and no separate download: this repository is the entire client.
 
 ## 1. Get a provisioning blob
 
-Call the `generate_sentinel_enrollment` MCP tool on the cvENGINE instance (REST equivalent:
-`GET /api/v1/projects/{slug}/sentinels/enroll?format=blob`), with the project slug the Sentinel should work for. The
-caller needs the admin role in that project or its organization; `list_projects`/`whoami` will tell you whether you
-qualify, and if not, say so and ask a human or another agent who does.
+Call the `generate_sentinel_enrollment` MCP tool on the cvENGINE instance, scoped to whichever of the three levels
+the Sentinel should cover:
+
+- **One project** (REST equivalent: `GET /api/v1/projects/{slug}/sentinels/enroll?format=blob`) — pass `project`
+  with that project's slug. Needs the admin role in that project or its organization.
+- **One organization, every project of it, present and future** (REST: `GET /api/v1/orgs/{slug}/sentinels/enroll?format=blob`)
+  — pass `org` with that organization's slug. Needs the admin role in that organization.
+- **The whole instance, every organization and project, present and future** (REST: `GET /api/v1/sentinels/enroll?format=blob`)
+  — pass neither `project` nor `org`. Needs the App Admin (superuser) role.
+
+Give at most one of `project`/`org`; both at once is refused. `list_projects`/`whoami` will tell you which level you
+qualify for, and if none, say so and ask a human or another agent who does.
 
 The response is everything you need, already assembled:
 
