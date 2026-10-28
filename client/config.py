@@ -27,6 +27,12 @@ def is_internal():
     return (_env('CVENGINE_SENTINEL_NETWORK') or '').strip().lower() == 'internal'
 
 
+def disabled_kinds():
+    """Scan kinds the operator turned off on this Sentinel (CVENGINE_SENTINEL_DISABLE, comma separated, for example ``openvas``): never
+    declared to the server and never polled for, whatever tools are installed."""
+    return {k.strip() for k in (_env('CVENGINE_SENTINEL_DISABLE') or '').split(',') if k.strip()}
+
+
 def registered_capabilities(kinds=None):
     """What this Sentinel tells the server it can do: the scan kinds, plus ``network:internal`` when deployed inside a private network.
     The poll's own ``kinds`` filter takes only scan kinds, so this is for registration and bootstrap alone."""

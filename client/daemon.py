@@ -73,6 +73,17 @@ def save_token(path, token, server_url):
             pass
 
 
+def declared_kinds(kinds=None):
+    """The scan kinds this Sentinel can run right now, which is what it tells the server it can do. ``openvas`` is declared only while this
+    Sentinel's own GVM stack answers (its socket exists), so a Sentinel started without the stack, or whose stack is still syncing feeds,
+    is never handed OpenVAS work it cannot run; and a kind the operator disabled (CVENGINE_SENTINEL_DISABLE) is never declared."""
+    off = config.disabled_kinds()
+    declared = [k for k in config.registered_capabilities(kinds) if k not in off]
+    if 'openvas' in declared and not tools.gvm_available():
+        declared.remove('openvas')
+    return declared
+
+
 def bootstrap(blob_raw, name, max_concurrent, client_factory=httpclient.Client):
     """Decode the provisioning blob and trade it for this Sentinel's own token. Returns ``(token, server_url)``; the
     caller persists it. Raises ``blob.BlobError`` on a bad blob, ``httpclient.ApiError``/``requests.RequestException``
@@ -80,7 +91,7 @@ def bootstrap(blob_raw, name, max_concurrent, client_factory=httpclient.Client):
     payload = blob_mod.decode_blob(blob_raw)
     server_url = payload['server_url']
     client = client_factory(server_url)
-    body = {'enrollment_token': payload['enrollment_token'], 'name': name, 'capabilities': config.registered_capabilities(),
+    body = {'enrollment_token': payload['enrollment_token'], 'name': name, 'capabilities': declared_kinds(),
             'os': [config.os_family()] if config.os_family() else [], 'tools': tools.detect_tools(),
             'max_concurrent': max_concurrent}
     out = client.call('POST', 'sentinels/bootstrap', body)
@@ -96,7 +107,7 @@ def register(client, name, max_concurrent, kinds=None):
     (CVENGINE_SENTINEL_MAX_CONCURRENT, or the host's freshly auto-detected CPU count) instead of whatever was true
     the one time it originally bootstrapped. ``scope`` is left out on purpose: ``PUT sentinel`` only changes fields
     given in the body, so this never touches the scope an enrollment secret already assigned."""
-    body = {'name': name, 'capabilities': config.registered_capabilities(kinds), 'os': [config.os_family()] if config.os_family() else [],
+    body = {'name': name, 'capabilities': declared_kinds(kinds), 'os': [config.os_family()] if config.os_family() else [],
             'tools': tools.detect_tools(), 'max_concurrent': max_concurrent}
     client.call('PUT', 'sentinel', body)
 
@@ -106,6 +117,9 @@ class Daemon:
         self.client = client or httpclient.Client(server_url, token)
         self.max_concurrent = max(1, max_concurrent)
         self.kinds = list(kinds or config.CAPABILITIES)
+        self._kinds_given = bool(kinds)
+        self.reregister = None  # set by the entry point: re-sends this Sentinel's registration when what it can run changes
+        self._declared = declared_kinds(kinds)  # what startup registered, so a change after it is noticed
         self.heartbeat_seconds = heartbeat_seconds or config.HEARTBEAT_SECONDS
         self.stop_event = threading.Event()
         self._lock = threading.Lock()
@@ -141,6 +155,31 @@ class Daemon:
                 logger.warning('heartbeat failed: %s', exc)
                 continue
             self._reconcile((out or {}).get('leases'))
+            self._refresh_registration()
+
+    def _poll_kinds(self):
+        """The kinds worth asking the server for now: the configured ones, less any the operator disabled and ``openvas`` while no GVM stack answers."""
+        off = config.disabled_kinds()
+        kinds = [k for k in self.kinds if k not in off]
+        if 'openvas' in kinds and not tools.gvm_available():
+            kinds.remove('openvas')
+        return kinds
+
+    def _refresh_registration(self):
+        """A GVM stack that finished syncing after this Sentinel started (it can take hours the first time) makes ``openvas`` runnable, and
+        one that stopped makes it not; register again when what this Sentinel can run has changed since it last told the server."""
+        if self.reregister is None:
+            return
+        declared = declared_kinds(self.kinds if self._kinds_given else None)
+        if declared == self._declared:
+            return
+        try:
+            self.reregister()
+        except (httpclient.ApiError, requests.RequestException) as exc:
+            logger.warning('could not refresh registration: %s', exc)
+            return
+        logger.info('capabilities changed: now %s', ', '.join(declared))
+        self._declared = declared
 
     def _reconcile(self, leases):
         """The heartbeat answers with the tasks the server still holds for this Sentinel. A task running here that is not among them was
@@ -170,7 +209,7 @@ class Daemon:
             time.sleep(0.5)
             return
         try:
-            out = self.client.call('POST', 'sentinel/tasks/next', {'wait': config.DEFAULT_POLL_WAIT, 'kinds': self.kinds})
+            out = self.client.call('POST', 'sentinel/tasks/next', {'wait': config.DEFAULT_POLL_WAIT, 'kinds': self._poll_kinds()})
         except (httpclient.ApiError, requests.RequestException) as exc:
             logger.warning('poll failed: %s', exc)
             self._sleep_backoff()
