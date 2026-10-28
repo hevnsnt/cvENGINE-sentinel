@@ -30,6 +30,7 @@ services:
       CVENGINE_SENTINEL_MAX_CONCURRENT: "${CVENGINE_SENTINEL_MAX_CONCURRENT:-}"
       # The version (git commit) of this checkout, shown on the Sentinels page and set by scripts/update.sh; see "Updates" in README.md.
       CVENGINE_SENTINEL_VERSION: "${CVENGINE_SENTINEL_VERSION:-}"
+      CVENGINE_SENTINEL_UPDATE: "${CVENGINE_SENTINEL_UPDATE:-}"
       # Optional: network, profile and kinds to turn off can be set here or from cvENGINE; the most recent change wins (README.md).
       CVENGINE_SENTINEL_NETWORK: "${CVENGINE_SENTINEL_NETWORK:-}"
       CVENGINE_SENTINEL_DISABLE: "${CVENGINE_SENTINEL_DISABLE:-}"

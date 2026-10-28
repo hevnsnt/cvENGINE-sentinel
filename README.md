@@ -124,8 +124,8 @@ prints which pinned digests no longer match `stable`; replace the `sha256` of an
 
 Once a Sentinel has checked in, an administrator can change its settings from the cvENGINE Sentinels page (or `PATCH agents/{id}` with
 `{"settings": {...}}`) with nothing touched on this machine: its **name**, **network** (`external` or `internal`), **profile** (`full` or
-`light`; light never runs OpenVAS), the **kinds it never takes** and its **concurrency**. The same settings can be set here, in `.env`
-(`CVENGINE_SENTINEL_NAME`, `_NETWORK`, `_PROFILE`, `_DISABLE`, `_MAX_CONCURRENT`). **The most recent change wins, wherever it was made**: the
+`light`; light never runs OpenVAS), the **kinds it never takes**, its **concurrency** and its **self-update** setting (see Updates below). The same settings can be set here, in `.env`
+(`CVENGINE_SENTINEL_NAME`, `_NETWORK`, `_PROFILE`, `_DISABLE`, `_MAX_CONCURRENT`, `_UPDATE`). **The most recent change wins, wherever it was made**: the
 Sentinel reports this machine's own values at every start and cvENGINE keeps the time each last changed, so restarting with an unchanged `.env`
 never undoes an edit made in cvENGINE, and an edit made in `.env` after the last dashboard edit takes over. Settings are only data: the Sentinel
 checks every value and ignores anything it does not recognise, and what a Sentinel is allowed to scan is still decided by its scope, an
@@ -133,20 +133,43 @@ administrator's approval and limits.
 
 ## Updates
 
-A Sentinel updates itself so nothing has to be done by hand on its machine. `scripts/update.sh` (run by the hourly timer that
-`sudo scripts/install-updater.sh` sets up, or by hand) compares this checkout with `origin/main` and, when there is something new **and cvENGINE
-says to**, drains the Sentinel (it finishes the tasks it holds and takes no new ones), fast-forwards the checkout, pulls the images (so a moved
-Greenbone digest in `docker-compose.yml` reaches the stack too), rebuilds and restarts it, waits for the new Sentinel to report the new version,
-and records each step, which the Sentinels page shows. "Says to" is the same Automatic or Manual choice the main cvENGINE updater follows: in
-Automatic a Sentinel updates as soon as the timer next runs; in Manual it waits until an administrator presses **Update now** for it (or
-`PATCH agents/{id}` with `{"update": "now"}`). `scripts/update.sh --check` says what it would do, `--now` updates regardless. A failed step is
-reported (`update.status: failed`) and the Sentinel is put back to work on the version it had; the checkout must be unmodified to fast-forward.
+A Sentinel updates itself so nothing has to be done by hand on its machine, **under a setting chosen in cvENGINE**: **Off** (it never
+changes its own code), **Manual** (it updates only when an administrator presses **Update now** for it, or `PATCH agents/{id}` with
+`{"update": "now"}`) or **Automatic** (it updates as soon as the updater next runs and something new is out). It is set per Sentinel on the
+Sentinels page, with an instance-wide default for every Sentinel that has no value of its own (`GET/PUT sentinels/defaults`, App Admin; until
+one is chosen the default follows the main cvENGINE updater's own Automatic or Manual choice). It is stored with the other managed settings,
+so **the most recent change wins, here or in cvENGINE**: set `CVENGINE_SENTINEL_UPDATE=off|manual|automatic` in `.env` to state this machine's own
+choice, and leave it unset to let cvENGINE decide.
 
-The updater runs on the Docker host and never gets the Docker socket inside a container: it reaches the daemon only through
+**The updater.** `scripts/update.sh` is what acts on the setting, and it runs on the Docker host, hourly. `./setup.sh` installs it for you by
+default (a systemd timer, or a cron.d entry where there is no systemd; it asks for `sudo` when it is not root); `./setup.sh --no-updater` leaves
+it out, and `sudo ./scripts/install-updater.sh` installs it later (`--remove` takes it away). Each run compares this checkout with `origin/main`
+and, when there is something new **and the setting allows it**, drains the Sentinel (it finishes the tasks it holds and takes no new ones),
+fast-forwards the checkout, pulls the images (so a moved Greenbone digest in `docker-compose.yml` reaches the stack too), rebuilds and restarts
+it, waits for the new Sentinel to report the new version, and records each step, which the Sentinels page shows. `scripts/update.sh --check` says
+what it would do; `--now` is a person at this machine asking for an update whatever the setting says. A failed step is reported
+(`update.status: failed`) and the Sentinel is put back to work on the version it had; the checkout must be unmodified to fast-forward.
+
+**A Sentinel that cannot update itself is visible.** Every run of the updater records when it ran and how it went (`ok`, `waiting`, `off`,
+`updated` or `failed`, with a detail) in the state volume, and the Sentinel reports that with its heartbeat. The Sentinels page shows the
+updater as `running`, `stopped` or `not installed` (or `unknown` for a Sentinel too old to say), the last run and its result, and, when the
+setting is Manual or Automatic but no updater is running, a warning with the one-line install command. cvENGINE writes that command itself; it is
+never taken from the Sentinel.
+
+| Updater state | What it means | What to do |
+| --- | --- | --- |
+| `not installed` | No run has ever been recorded and the install script has not marked it. The Sentinel never updates itself. | `sudo ./scripts/install-updater.sh` in this checkout. |
+| `stopped` | Installed, but no run for more than 2.5 hours (the timer or cron stopped, the machine was off, or `update.sh` cannot start). | `systemctl status cvengine-sentinel-update.timer` and `journalctl -u cvengine-sentinel-update`, or the cron log `/var/log/cvengine-sentinel-update.log`. |
+| `running`, last result `failed` | It runs, but a step failed (the detail names it: `docker compose pull`/`up`, a checkout with local changes that cannot fast-forward, running tasks that did not finish while draining, the new Sentinel not reporting its version). | Fix what the detail says; the next run tries again. |
+| `running`, last result `off` | Self-update is Off for this Sentinel. | Set it to Manual or Automatic in cvENGINE (or remove `CVENGINE_SENTINEL_UPDATE=off` from `.env`). |
+| `running`, last result `waiting` | An update is available and the setting is Manual. | An administrator presses **Update now**, or the setting is changed to Automatic. |
+
+The updater never gets the Docker socket inside a container: it reaches the daemon only through
 `docker compose exec sentinel python3 -m client.control` (drain, wait-idle, report), files in the state volume. A drain expires after two
-hours on its own and is cleared whenever the Sentinel starts, so an updater that died half way never leaves a Sentinel idle for good.
-Set the version once on an existing install with `echo "CVENGINE_SENTINEL_VERSION=$(git rev-parse --short=12 HEAD)" >> .env && docker compose up -d`
-(later updates do it themselves).
+hours on its own and is cleared whenever the Sentinel starts, so an updater that died half way never leaves a Sentinel idle for good. Nothing
+changes while the setting is Off, or Manual with nobody having asked. Set the version once on an existing install with
+`echo "CVENGINE_SENTINEL_VERSION=$(git rev-parse --short=12 HEAD)" >> .env && docker compose up -d` (later updates do it themselves).
+An install that predates this has no updater until `sudo ./scripts/install-updater.sh` is run once on its machine.
 
 ## Testing OpenVAS
 

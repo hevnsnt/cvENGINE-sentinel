@@ -68,6 +68,19 @@ enrollment was itself an admin, in which case it starts `active` immediately), t
 recent. If it never appears, read back `docker compose logs` on the target machine for the bootstrap error before
 trying again; a wrong or expired blob fails loudly and says why.
 
+## Updating, and what to check when it does not happen
+
+A Sentinel updates itself only under its **self-update** setting in cvENGINE (`off`, `manual`, `automatic`; per Sentinel, with an instance default;
+`CVENGINE_SENTINEL_UPDATE` here states this machine's own choice, and the most recent change wins). Something on the Docker host has to act on it:
+`scripts/update.sh`, run hourly by the timer `./setup.sh` installs by default (`--no-updater` opts out; `sudo ./scripts/install-updater.sh` installs
+it later). To see whether it is in place, read `list_sentinels` / `get_sentinel`: each Sentinel carries `version`, `self_update` and
+`updater: {state, last_run, last_result, detail, install_command, warning}`. `state` `not_installed` means nothing will ever update it (run the
+install command shown, in the Sentinel's checkout, as root or with sudo); `stopped` means it stopped running; `warning` says so when the setting
+is Manual or Automatic. Setting it: `update_agent {agent_id, settings: {self_update: "automatic"}}`, the instance default with
+`set_sentinel_defaults {self_update}` (App Admin), a one-off `update_agent {agent_id, update: "now"}` (refused while Off). Never run
+`scripts/update.sh --now` on a machine you were not asked to update, and never put the Docker socket in a container for it: the updater
+deliberately reaches the daemon only through `docker compose exec sentinel python3 -m client.control`.
+
 ## What this does and does not do
 
 Provisioning a Sentinel this way only ever registers it and lets it begin claiming scan-stage work

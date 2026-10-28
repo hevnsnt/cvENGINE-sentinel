@@ -19,7 +19,8 @@ def _env(name, default=None):
 
 # Settings the server may manage (agentapi.sentinel_settings.SETTINGS): the most recent change, here or in cvENGINE, wins. ``local_settings`` is what this
 # machine's own configuration says and is what gets reported; ``_overrides`` holds what the server told this Sentinel to run with, and is consulted first.
-SETTING_KEYS = ('name', 'network', 'profile', 'disabled_kinds', 'max_concurrent')
+SETTING_KEYS = ('name', 'network', 'profile', 'disabled_kinds', 'max_concurrent', 'self_update')
+SELF_UPDATE = ('off', 'manual', 'automatic')
 _overrides = {}
 
 
@@ -44,6 +45,8 @@ def clean_settings(raw):
     value = raw.get('max_concurrent')
     if isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= MAX_AUTO_CONCURRENT:
         out['max_concurrent'] = value
+    if raw.get('self_update') in SELF_UPDATE:
+        out['self_update'] = raw['self_update']
     return out
 
 
@@ -73,7 +76,21 @@ def local_settings():
     profile = (_env('CVENGINE_SENTINEL_PROFILE') or '').strip().lower()
     if profile in ('full', 'light'):
         out['profile'] = profile
+    if _local_self_update():  # like the profile, reported only when this machine states one: otherwise cvENGINE's default applies
+        out['self_update'] = _local_self_update()
     return out
+
+
+def _local_self_update():
+    """CVENGINE_SENTINEL_UPDATE: ``off``, ``manual`` or ``automatic`` for this machine, or ``None`` (unset or not one of those)."""
+    value = (_env('CVENGINE_SENTINEL_UPDATE') or '').strip().lower()
+    return value if value in SELF_UPDATE else None
+
+
+def self_update():
+    """The effective self-update setting: the server's when it set one more recently than this machine's, else this machine's own, else ``None``
+    (the updater then follows what cvENGINE says in the heartbeat reply)."""
+    return _overrides.get('self_update') or _local_self_update()
 
 
 def _local_internal():
