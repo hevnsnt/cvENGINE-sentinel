@@ -4,6 +4,7 @@ import platform
 import socket
 
 CAPABILITIES = ['nmap', 'naabu', 'nuclei_light', 'nuclei_targeted', 'nuclei_deep', 'testssl', 'nmap_udp', 'wpscan', 'openvas']
+INTERNAL_CAPABILITY = 'network:internal'  # mirrors agentapi.sentinel_broker.INTERNAL_CAPABILITY
 HEARTBEAT_SECONDS = 60  # matches agentapi.agent_broker.HEARTBEAT_SECONDS; see that constant if it ever changes
 DEFAULT_TOKEN_PATH = '/var/lib/cvengine-sentinel/token.json'
 DEFAULT_POLL_WAIT = 15  # seconds the long poll (sentinel/tasks/next) may block per call
@@ -17,6 +18,20 @@ def _env(name, default=None):
 
 def sentinel_name():
     return _env('CVENGINE_SENTINEL_NAME') or socket.gethostname() or 'sentinel'
+
+
+def is_internal():
+    """Whether this Sentinel was told it sits inside a private network (CVENGINE_SENTINEL_NETWORK=internal). Only then does it
+    declare ``network:internal``, which is what lets the server hand it work for an address of an internal range the project
+    declared; every other Sentinel is never offered such work, because it could not reach it."""
+    return (_env('CVENGINE_SENTINEL_NETWORK') or '').strip().lower() == 'internal'
+
+
+def registered_capabilities(kinds=None):
+    """What this Sentinel tells the server it can do: the scan kinds, plus ``network:internal`` when deployed inside a private network.
+    The poll's own ``kinds`` filter takes only scan kinds, so this is for registration and bootstrap alone."""
+    caps = list(kinds or CAPABILITIES)
+    return caps + [INTERNAL_CAPABILITY] if is_internal() and INTERNAL_CAPABILITY not in caps else caps
 
 
 MAX_AUTO_CONCURRENT = 10  # mirrors agentapi.agent_broker.MAX_CONCURRENT_CAP: no point auto-detecting past what the server will ever grant

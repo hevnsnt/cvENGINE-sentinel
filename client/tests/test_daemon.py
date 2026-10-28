@@ -4,6 +4,7 @@ import stat
 import tempfile
 import threading
 import time
+import os
 import unittest
 from unittest import mock
 
@@ -114,6 +115,21 @@ class RegisterTests(unittest.TestCase):
         with mock.patch('client.tools.detect_tools', return_value=[]):
             daemon.register(fc, 'x', 1, kinds=['nmap'])
         self.assertEqual(fc.body_for('sentinel')['capabilities'], ['nmap'])
+
+    def test_a_sentinel_told_it_is_internal_declares_network_internal_and_only_then(self):
+        for value, expected in ((None, False), ('external', False), (' Internal ', True)):
+            fc = FakeClient()
+            with mock.patch.dict('os.environ'), mock.patch('client.tools.detect_tools', return_value=[]):
+                os.environ.pop('CVENGINE_SENTINEL_NETWORK', None)
+                if value is not None:
+                    os.environ['CVENGINE_SENTINEL_NETWORK'] = value
+                daemon.register(fc, 'x', 1)
+            self.assertEqual(config.INTERNAL_CAPABILITY in fc.body_for('sentinel')['capabilities'], expected, value)
+
+    def test_the_poll_filter_never_carries_the_network_capability(self):
+        with mock.patch.dict('os.environ', {'CVENGINE_SENTINEL_NETWORK': 'internal'}):
+            d = daemon.Daemon('https://x.example', 'tok', client=FakeClient())
+        self.assertNotIn(config.INTERNAL_CAPABILITY, d.kinds)
 
     def test_a_server_error_propagates_to_the_caller(self):
         fc = FakeClient()

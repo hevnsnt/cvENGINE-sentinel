@@ -68,7 +68,7 @@ def bootstrap(blob_raw, name, max_concurrent, client_factory=httpclient.Client):
     payload = blob_mod.decode_blob(blob_raw)
     server_url = payload['server_url']
     client = client_factory(server_url)
-    body = {'enrollment_token': payload['enrollment_token'], 'name': name, 'capabilities': config.CAPABILITIES,
+    body = {'enrollment_token': payload['enrollment_token'], 'name': name, 'capabilities': config.registered_capabilities(),
             'os': [config.os_family()] if config.os_family() else [], 'tools': tools.detect_tools(),
             'max_concurrent': max_concurrent}
     out = client.call('POST', 'sentinels/bootstrap', body)
@@ -84,7 +84,7 @@ def register(client, name, max_concurrent, kinds=None):
     (CVENGINE_SENTINEL_MAX_CONCURRENT, or the host's freshly auto-detected CPU count) instead of whatever was true
     the one time it originally bootstrapped. ``scope`` is left out on purpose: ``PUT sentinel`` only changes fields
     given in the body, so this never touches the scope an enrollment secret already assigned."""
-    body = {'name': name, 'capabilities': list(kinds or config.CAPABILITIES), 'os': [config.os_family()] if config.os_family() else [],
+    body = {'name': name, 'capabilities': config.registered_capabilities(kinds), 'os': [config.os_family()] if config.os_family() else [],
             'tools': tools.detect_tools(), 'max_concurrent': max_concurrent}
     client.call('PUT', 'sentinel', body)
 
