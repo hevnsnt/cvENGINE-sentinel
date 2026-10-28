@@ -99,6 +99,7 @@ Revoking also hands back any task it was mid-run on to the queue immediately.
 | `CVENGINE_SENTINEL_NAME` | No | the container's hostname | The Sentinel's name on the Sentinels page. |
 | `COMPOSE_PROFILES` | No | `openvas` (full) | `openvas` runs the GVM stack too (full); empty is light. See "Full or light" below. |
 | `CVENGINE_SENTINEL_DISABLE` | No | none | Comma-separated scan kinds this Sentinel never declares or polls for (for example `openvas`, or `openvas,wpscan`), whatever tools are installed. |
+| `CVENGINE_SENTINEL_VERSION` | No | unknown | The git commit this checkout is at, shown on the Sentinels page. `scripts/update.sh` sets it. |
 | `CVENGINE_SENTINEL_NETWORK` | No | `external` | Set to `internal` on a Sentinel deployed inside a private network (office LAN, VPC, VPN). It then declares `network:internal`, so the server will hand it work for the internal ranges a project declared (projects/{slug}/internal-ranges); an external Sentinel is never offered that work. |
 | `CVENGINE_SENTINEL_MAX_CONCURRENT` | No | auto-detected from the container's CPU (capped at 10) | How many nmap/naabu/nuclei/testssl/wpscan runs this Sentinel executes at once (an OpenVAS task is one GVM job, counted separately by gvmd itself). Set a number to override the auto-detected value. |
 
@@ -118,6 +119,34 @@ To keep OpenVAS off a box that has the stack, set `CVENGINE_SENTINEL_DISABLE=ope
 The Greenbone images are pinned by digest, and Greenbone publishes no version tags and replaces what `stable` points to, so
 an old pin can vanish from the registry (`artifact ... not found` on `docker compose up`). `./scripts/greenbone-digests.sh`
 prints which pinned digests no longer match `stable`; replace the `sha256` of any that changed in `docker-compose.yml`.
+
+## Managing a Sentinel from cvENGINE
+
+Once a Sentinel has checked in, an administrator can change its settings from the cvENGINE Sentinels page (or `PATCH agents/{id}` with
+`{"settings": {...}}`) with nothing touched on this machine: its **name**, **network** (`external` or `internal`), **profile** (`full` or
+`light`; light never runs OpenVAS), the **kinds it never takes** and its **concurrency**. The same settings can be set here, in `.env`
+(`CVENGINE_SENTINEL_NAME`, `_NETWORK`, `_PROFILE`, `_DISABLE`, `_MAX_CONCURRENT`). **The most recent change wins, wherever it was made**: the
+Sentinel reports this machine's own values at every start and cvENGINE keeps the time each last changed, so restarting with an unchanged `.env`
+never undoes an edit made in cvENGINE, and an edit made in `.env` after the last dashboard edit takes over. Settings are only data: the Sentinel
+checks every value and ignores anything it does not recognise, and what a Sentinel is allowed to scan is still decided by its scope, an
+administrator's approval and limits.
+
+## Updates
+
+A Sentinel updates itself so nothing has to be done by hand on its machine. `scripts/update.sh` (run by the hourly timer that
+`sudo scripts/install-updater.sh` sets up, or by hand) compares this checkout with `origin/main` and, when there is something new **and cvENGINE
+says to**, drains the Sentinel (it finishes the tasks it holds and takes no new ones), fast-forwards the checkout, pulls the images (so a moved
+Greenbone digest in `docker-compose.yml` reaches the stack too), rebuilds and restarts it, waits for the new Sentinel to report the new version,
+and records each step, which the Sentinels page shows. "Says to" is the same Automatic or Manual choice the main cvENGINE updater follows: in
+Automatic a Sentinel updates as soon as the timer next runs; in Manual it waits until an administrator presses **Update now** for it (or
+`PATCH agents/{id}` with `{"update": "now"}`). `scripts/update.sh --check` says what it would do, `--now` updates regardless. A failed step is
+reported (`update.status: failed`) and the Sentinel is put back to work on the version it had; the checkout must be unmodified to fast-forward.
+
+The updater runs on the Docker host and never gets the Docker socket inside a container: it reaches the daemon only through
+`docker compose exec sentinel python3 -m client.control` (drain, wait-idle, report), files in the state volume. A drain expires after two
+hours on its own and is cleared whenever the Sentinel starts, so an updater that died half way never leaves a Sentinel idle for good.
+Set the version once on an existing install with `echo "CVENGINE_SENTINEL_VERSION=$(git rev-parse --short=12 HEAD)" >> .env && docker compose up -d`
+(later updates do it themselves).
 
 ## Testing OpenVAS
 

@@ -22,6 +22,7 @@ import requests
 
 from . import blob as blob_mod
 from . import config
+from . import control
 from . import httpclient
 from . import tools
 
@@ -93,12 +94,23 @@ def bootstrap(blob_raw, name, max_concurrent, client_factory=httpclient.Client):
     client = client_factory(server_url)
     body = {'enrollment_token': payload['enrollment_token'], 'name': name, 'capabilities': declared_kinds(),
             'os': [config.os_family()] if config.os_family() else [], 'tools': tools.detect_tools(),
-            'max_concurrent': max_concurrent}
+            'max_concurrent': max_concurrent, 'settings': config.local_settings()}
     out = client.call('POST', 'sentinels/bootstrap', body)
     token = out.get('token')
     if not isinstance(token, str) or not token:
         raise httpclient.ApiError(502, 'bootstrap did not return a token')
     return token, server_url
+
+
+def info():
+    """What this Sentinel reports about itself: its client version (when known) and its host-side updater's last state."""
+    out = {}
+    if config.version():
+        out['version'] = config.version()
+    update = control.read_update()
+    if update:
+        out['update'] = update
+    return out
 
 
 def register(client, name, max_concurrent, kinds=None):
@@ -108,8 +120,10 @@ def register(client, name, max_concurrent, kinds=None):
     the one time it originally bootstrapped. ``scope`` is left out on purpose: ``PUT sentinel`` only changes fields
     given in the body, so this never touches the scope an enrollment secret already assigned."""
     body = {'name': name, 'capabilities': declared_kinds(kinds), 'os': [config.os_family()] if config.os_family() else [],
-            'tools': tools.detect_tools(), 'max_concurrent': max_concurrent}
-    client.call('PUT', 'sentinel', body)
+            'tools': tools.detect_tools(), 'max_concurrent': max_concurrent, 'settings': config.local_settings()}
+    if info():
+        body['info'] = info()
+    return client.call('PUT', 'sentinel', body)
 
 
 class Daemon:
@@ -119,6 +133,9 @@ class Daemon:
         self.kinds = config.poll_kinds(kinds)
         self._kinds_given = bool(kinds)
         self.reregister = None  # set by the entry point: re-sends this Sentinel's registration when what it can run changes
+        self._update_reply = None  # what cvENGINE last said about updating (mode, requested)
+        self._register_pending = False  # the last settings change has not reached the server yet
+        self._settings_rev = None  # fingerprint of the server's settings this Sentinel last applied
         self._declared = declared_kinds(kinds)  # what startup registered, so a change after it is noticed
         self.heartbeat_seconds = heartbeat_seconds or config.HEARTBEAT_SECONDS
         self.stop_event = threading.Event()
@@ -129,6 +146,8 @@ class Daemon:
     # --- lifecycle --------------------------------------------------------------------------------------------
 
     def run(self):
+        control.set_draining(False)  # a fresh start is never drained, whatever an updater that died half way left behind
+        self._write_control()
         hb = threading.Thread(target=self._heartbeat_loop, name='sentinel-heartbeat', daemon=True)
         hb.start()
         try:
@@ -150,12 +169,52 @@ class Daemon:
     def _heartbeat_loop(self):
         while not self.stop_event.wait(self.heartbeat_seconds):
             try:
-                out = self.client.call('POST', 'sentinel/heartbeat')
+                out = self.client.call('POST', 'sentinel/heartbeat', {'info': info()} if info() else None)
             except (httpclient.ApiError, requests.RequestException) as exc:
                 logger.warning('heartbeat failed: %s', exc)
                 continue
             self._reconcile((out or {}).get('leases'))
+            self.apply_settings((out or {}).get('settings'))
+            self._write_control((out or {}).get('update'))
             self._refresh_registration()
+
+    def apply_settings(self, reply):
+        """Run with the settings the server sent (``{values, rev}``: the most recent of what an administrator set in cvENGINE and what this machine's
+        own configuration says). A change is applied at once, and this Sentinel registers again so the server sees its new name, concurrency and
+        capabilities. This machine's own values are what gets reported, never these, so applying them is not itself seen as a local change."""
+        if not isinstance(reply, dict) or not isinstance(reply.get('values'), dict):
+            return
+        rev = reply.get('rev')
+        if rev is not None and rev == self._settings_rev:
+            return
+        before = config.overrides()
+        config.set_overrides(reply['values'])
+        after = config.overrides()
+        self.max_concurrent = max(1, config.max_concurrent())
+        self._settings_rev = rev
+        if before == after and not self._register_pending:
+            return
+        logger.info('settings from the server: %s', ', '.join(f'{k}={v}' for k, v in sorted(after.items())) or 'none (this machine\'s own)')
+        if self.reregister is not None:
+            try:
+                self.reregister()
+            except (httpclient.ApiError, requests.RequestException) as exc:
+                logger.warning('could not register the new settings: %s', exc)
+                self._settings_rev = None  # try again on the next heartbeat
+                self._register_pending = True
+                return
+            self._register_pending = False
+            self._declared = declared_kinds(self.kinds if self._kinds_given else None)
+
+    def _write_control(self, update_reply=None):
+        """Tell the host-side updater where this Sentinel stands: running tasks, drain state, and what cvENGINE said about updating. Rewritten whenever a
+        task starts or ends, not only at heartbeats, so an updater waiting for it to go idle never reads a stale count."""
+        if update_reply is not None:
+            self._update_reply = update_reply
+        try:
+            control.write_status(config.version(), self._active_count(), self._update_reply)
+        except OSError as exc:
+            logger.warning('could not write the updater status: %s', exc)
 
     def _poll_kinds(self):
         """The kinds worth asking the server for now: the configured ones, less any the operator disabled and ``openvas`` while no GVM stack answers."""
@@ -205,6 +264,9 @@ class Daemon:
     # --- polling and task execution ------------------------------------------------------------------------------
 
     def _poll_once(self):
+        if control.is_draining():  # the host-side updater asked this Sentinel to finish what it has and take nothing new
+            time.sleep(2)
+            return
         if self._active_count() >= self.max_concurrent:
             time.sleep(0.5)
             return
@@ -234,6 +296,7 @@ class Daemon:
         state = {'proc': None, 'done': threading.Event(), 'started': time.monotonic(), 'dropped': False}
         with self._lock:
             self._in_flight[task_id] = state
+        self._write_control()
         logger.info('task %s accepted: %s (%s)', task_id, task.get('kind'), _describe_target(task.get('target')))
         thread = threading.Thread(target=self._run_task, args=(task, state), name=f'sentinel-task-{task_id}', daemon=True)
         thread.start()
@@ -262,6 +325,7 @@ class Daemon:
             state['done'].set()
             with self._lock:
                 self._in_flight.pop(task_id, None)
+            self._write_control()
 
     def _report_unless_dropped(self, task_id, state, result):
         if state.get('dropped'):  # the server took it back: it would refuse the result
