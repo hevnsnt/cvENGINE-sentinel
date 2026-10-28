@@ -340,3 +340,51 @@ class ShutdownTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ReconcileAndLogTests(unittest.TestCase):
+    def _daemon(self):
+        return daemon.Daemon('https://x.example', 'tok', client=FakeClient())
+
+    def _in_flight(self, d, task_id, age=60.0):
+        proc = mock.Mock()
+        proc.poll.return_value = None
+        state = {'proc': proc, 'done': threading.Event(), 'started': time.monotonic() - age, 'dropped': False}
+        d._in_flight[task_id] = state
+        return state, proc
+
+    def test_a_task_the_server_no_longer_lists_is_killed_and_not_reported(self):
+        d = self._daemon()
+        mine, mine_proc = self._in_flight(d, 1)
+        gone, gone_proc = self._in_flight(d, 2)
+        d._reconcile([{'task_id': 1, 'status': 'running'}])
+        self.assertFalse(mine['dropped'])
+        mine_proc.kill.assert_not_called()
+        self.assertTrue(gone['dropped'])
+        gone_proc.kill.assert_called_once()
+        d._report_unless_dropped(2, gone, {'outcome': 'done'})
+        self.assertEqual(d.client.paths(), [])  # nothing sent for a task the server took back
+
+    def test_a_just_accepted_task_and_an_answer_without_a_list_are_left_alone(self):
+        d = self._daemon()
+        young, young_proc = self._in_flight(d, 3, age=1.0)
+        d._reconcile([])
+        self.assertFalse(young['dropped'])
+        old, old_proc = self._in_flight(d, 4)
+        d._reconcile(None)
+        self.assertFalse(old['dropped'])
+        old_proc.kill.assert_not_called()
+
+    def test_start_and_finish_are_logged_at_info_without_the_targets(self):
+        fc = FakeClient()
+        fc.next_responses = [{'task': {'id': 9, 'kind': 'nuclei_light', 'target': {'targets': ['10.0.0.1', '10.0.0.2'], 'tags': [], 'severities': []}}}]
+        d = daemon.Daemon('https://x.example', 'tok', client=fc)
+        with mock.patch.object(d, '_execute', return_value={'outcome': 'done', 'findings': []}), self.assertLogs('sentinel.daemon', level='INFO') as logs:
+            d._poll_once()
+            deadline = time.monotonic() + 5
+            while d._active_count() and time.monotonic() < deadline:
+                time.sleep(0.01)
+        text = '\n'.join(logs.output)
+        self.assertIn('task 9 accepted: nuclei_light (2 target(s))', text)
+        self.assertIn('task 9 finished: nuclei_light, done', text)
+        self.assertNotIn('10.0.0.1', text)

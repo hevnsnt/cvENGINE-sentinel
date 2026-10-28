@@ -27,6 +27,18 @@ from . import tools
 
 logger = logging.getLogger('sentinel.daemon')
 
+
+def _describe_target(target):
+    """A short, safe line about what a task is aimed at, for the log: a count, never the addresses or any secret in the target."""
+    target = target if isinstance(target, dict) else {}
+    for key in ('targets', 'addresses'):
+        if isinstance(target.get(key), list):
+            return f'{len(target[key])} target(s)'
+    if isinstance(target.get('hosts'), (list, dict)):
+        return f'{len(target["hosts"])} host(s)'
+    return 'one target'
+
+RECONCILE_GRACE_SECONDS = 10.0  # a task accepted this recently may not be in the heartbeat's lease list yet
 MIN_BACKOFF = 1.0
 MAX_BACKOFF = 60.0
 
@@ -124,9 +136,32 @@ class Daemon:
     def _heartbeat_loop(self):
         while not self.stop_event.wait(self.heartbeat_seconds):
             try:
-                self.client.call('POST', 'sentinel/heartbeat')
+                out = self.client.call('POST', 'sentinel/heartbeat')
             except (httpclient.ApiError, requests.RequestException) as exc:
                 logger.warning('heartbeat failed: %s', exc)
+                continue
+            self._reconcile((out or {}).get('leases'))
+
+    def _reconcile(self, leases):
+        """The heartbeat answers with the tasks the server still holds for this Sentinel. A task running here that is not among them was
+        taken back (the stage that dispatched it gave up and ran the tool itself, a person cancelled it, this Sentinel was suspended): its
+        result will be refused, so the run is killed instead of burning CPU for nothing. ``leases`` None (an answer with no list) judges nothing."""
+        if not isinstance(leases, list):
+            return
+        held = {lease.get('task_id') for lease in leases if isinstance(lease, dict)}
+        with self._lock:
+            running = dict(self._in_flight)
+        for task_id, state in running.items():
+            if task_id in held or time.monotonic() - state.get('started', time.monotonic()) < RECONCILE_GRACE_SECONDS:
+                continue
+            logger.warning('task %s is no longer assigned to this Sentinel (taken back by the server); stopping it', task_id)
+            state['dropped'] = True
+            proc = state.get('proc')
+            if proc is not None and proc.poll() is None:
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
 
     # --- polling and task execution ------------------------------------------------------------------------------
 
@@ -157,9 +192,10 @@ class Daemon:
         except (httpclient.ApiError, requests.RequestException) as exc:
             logger.warning('could not accept task %s: %s', task_id, exc)
             return
-        state = {'proc': None, 'done': threading.Event()}
+        state = {'proc': None, 'done': threading.Event(), 'started': time.monotonic(), 'dropped': False}
         with self._lock:
             self._in_flight[task_id] = state
+        logger.info('task %s accepted: %s (%s)', task_id, task.get('kind'), _describe_target(task.get('target')))
         thread = threading.Thread(target=self._run_task, args=(task, state), name=f'sentinel-task-{task_id}', daemon=True)
         thread.start()
 
@@ -170,18 +206,28 @@ class Daemon:
 
     def _run_task(self, task, state):
         task_id = task['id']
+        outcome = 'error'
         try:
             result = self._execute(task, self._register_proc(state))
-            self._report(task_id, result)
+            outcome = result.get('outcome', 'done')
+            self._report_unless_dropped(task_id, state, result)
         except tools.TargetError as exc:
-            self._report(task_id, {'outcome': 'error', 'error': str(exc)[:280]})
+            self._report_unless_dropped(task_id, state, {'outcome': 'error', 'error': str(exc)[:280]})
         except Exception as exc:  # noqa: BLE001 - one bad task must never take the daemon down
-            logger.exception('task %s failed', task_id)
-            self._report(task_id, {'outcome': 'error', 'error': str(exc)[:280]})
+            if not state.get('dropped'):
+                logger.exception('task %s failed', task_id)
+            self._report_unless_dropped(task_id, state, {'outcome': 'error', 'error': str(exc)[:280]})
         finally:
+            logger.info('task %s finished: %s, %s, %.1fs', task_id, task.get('kind'), 'dropped by the server' if state.get('dropped') else outcome,
+                        time.monotonic() - state.get('started', time.monotonic()))
             state['done'].set()
             with self._lock:
                 self._in_flight.pop(task_id, None)
+
+    def _report_unless_dropped(self, task_id, state, result):
+        if state.get('dropped'):  # the server took it back: it would refuse the result
+            return
+        self._report(task_id, result)
 
     def _execute(self, task, register):
         kind = task.get('kind')
