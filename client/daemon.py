@@ -199,6 +199,8 @@ class Daemon:
             out = runner(target.get('address') or '', register=register)
         elif kind == 'wpscan':
             out = runner(target.get('url') or '', target.get('token') or '', register=register)
+        elif kind == 'discover':
+            out = runner(target.get('cidr') or '', register=register)
         elif kind == 'openvas':
             out = runner(target.get('hosts') or {}, target.get('excluded_families') or [], target.get('max_hours'), register=register)
         else:

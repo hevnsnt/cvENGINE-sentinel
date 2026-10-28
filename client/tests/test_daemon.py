@@ -187,6 +187,7 @@ class PollAndExecuteTests(unittest.TestCase):
             ('nmap_udp', {'address': '192.0.2.10'}, {'xml': '<nmaprun/>'}, (('192.0.2.10',), {})),
             ('wpscan', {'url': 'https://www.example.test', 'token': 'tok'}, {'report': None, 'returncode': 0, 'stderr_tail': ''},
              (('https://www.example.test', 'tok'), {})),
+            ('discover', {'cidr': '10.20.0.0/24'}, {'hosts': [{'ip': '10.20.0.5', 'hostnames': []}]}, (('10.20.0.0/24',), {})),
             ('openvas', {'hosts': {'192.0.2.10': 'www.example.test'}, 'excluded_families': ['Denial of Service'], 'max_hours': 4},
              {'results': [], 'scanned_addresses': [], 'without_cve': 0, 'unusable': 0},
              (({'192.0.2.10': 'www.example.test'}, ['Denial of Service'], 4), {})),

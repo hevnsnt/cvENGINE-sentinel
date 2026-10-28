@@ -313,3 +313,37 @@ class GvmAvailableTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+DISCOVER_XML = """<?xml version="1.0"?><nmaprun><host><status state="up"/><address addr="10.20.0.5" addrtype="ipv4"/>
+<hostnames><hostname name="files.corp" type="PTR"/></hostnames></host>
+<host><status state="down"/><address addr="10.20.0.6" addrtype="ipv4"/></host>
+<host><status state="up"/><address addr="10.20.0.9" addrtype="ipv4"/><hostnames/></host>
+<host><status state="up"/><address addr="aa:bb:cc:dd:ee:ff" addrtype="mac"/></host></nmaprun>"""
+
+
+class DiscoverTests(unittest.TestCase):
+    def test_only_up_hosts_with_an_ipv4_address_are_reported(self):
+        self.assertEqual(tools.parse_discover_xml(DISCOVER_XML)['hosts'],
+                         [{'ip': '10.20.0.5', 'hostnames': ['files.corp']}, {'ip': '10.20.0.9', 'hostnames': []}])
+        self.assertEqual(tools.parse_discover_xml('not xml'), {'hosts': []})
+        self.assertEqual(tools.parse_discover_xml(''), {'hosts': []})
+
+    def test_the_run_is_a_fixed_ping_sweep_of_the_validated_chunk(self):
+        with mock.patch('client.tools._run', return_value=DISCOVER_XML) as fake_run:
+            out = tools.run_discover('10.20.0.0/24')
+        argv = fake_run.call_args[0][0]
+        self.assertEqual(argv[0], tools.NMAP_BIN)
+        self.assertIn('-sn', argv)
+        self.assertNotIn('-sV', argv)
+        self.assertEqual(argv[-1], '10.20.0.0/24')
+        self.assertEqual(len(out['hosts']), 2)
+
+    def test_a_public_ipv6_oversized_or_malformed_target_is_refused_without_running_anything(self):
+        for bad in ('8.8.8.0/24', '10.0.0.0/8', 'fd00::/112', '10.20.0.5; rm -rf /', '10.20.0.7/24', '', None, '10.20.0.0/24 10.21.0.0/24'):
+            with self.subTest(bad=bad), mock.patch('client.tools._run') as fake_run:
+                with self.assertRaises(tools.TargetError):
+                    tools.run_discover(bad)
+                fake_run.assert_not_called()
+        self.assertEqual(tools.validate_cidr(' 192.168.4.0/24 '), '192.168.4.0/24')
+        self.assertEqual(tools.validate_cidr('100.64.1.0/25'), '100.64.1.0/25')
