@@ -48,6 +48,13 @@ class OpenvasError(RuntimeError):
     """gvmd could not be reached, logged into, or the scan did not finish usably."""
 
 
+def reason(exc):
+    """What gvmd or python-gvm said, for a message: the error type and its own text, clipped. (GMP error text names the failed command, never a
+    password, so it is safe to show and log.)"""
+    text = clean(str(exc), 200)
+    return f'{type(exc).__name__}: {text}' if text else type(exc).__name__
+
+
 def clean(value, limit=MAX_TEXT):
     """Third-party text as plain, bounded text: control characters removed, whitespace kept, clipped."""
     return _CONTROL.sub('', str(value or '')).strip()[:limit]
@@ -111,12 +118,31 @@ def _open_gmp(connection_factory=None):
     return GMP((connection_factory or _connection)(), transform=EtreeCheckCommandTransform())
 
 
+DEDICATED_USER = 'cvengine-sentinel'  # the login this Sentinel makes for itself when it may not change the default one
+
+
+def _create_dedicated_user(gmp, password):
+    """Fall back to a login of this Sentinel's own: an administrator-role user created over the default login, for the case where gvmd will not let
+    the default user change its own password. Returns the user name."""
+    roles = {_text(r, 'name'): r.get('id') for r in gmp.get_roles().findall('role')}
+    role_ids = [roles[name] for name in ('Admin', 'Super Admin') if name in roles][:1]
+    existing = [u for u in gmp.get_users(filter_string=f'name={DEDICATED_USER}').findall('user') if _text(u, 'name') == DEDICATED_USER]
+    if existing:  # left by an earlier attempt whose password was never saved
+        gmp.modify_user(existing[0].get('id'), password=password)
+    else:
+        gmp.create_user(DEDICATED_USER, password=password, role_ids=role_ids or None)
+    return DEDICATED_USER
+
+
 def bootstrap_credentials(connection_factory=None):
-    """Replace the community containers' default login (admin/admin) with a generated password on first use and
-    persist it, exactly like cvENGINE's own ``cveFeed.openvas_scan.bootstrap`` does for its sidecar. The password is
-    set over GMP, so it is never on a command line or logged."""
+    """Replace the community containers' default login (admin/admin) on first use and persist the new one, the way cvENGINE's own
+    ``cveFeed.openvas_scan.bootstrap`` does for its sidecar: first by giving the default user a generated password, and when gvmd refuses that
+    (some gvmd versions answer "Failed to find user" to a user changing itself) by creating a user of this Sentinel's own with a generated
+    password. Either way the password is set over GMP, so it is never on a command line or logged, and the new login is confirmed before it is
+    trusted."""
     from gvm.errors import GvmError
     new = secrets.token_urlsafe(24)
+    username = DEFAULT_LOGIN[0]
     try:
         with _open_gmp(connection_factory) as gmp:
             gmp.authenticate(*DEFAULT_LOGIN)
@@ -124,14 +150,23 @@ def bootstrap_credentials(connection_factory=None):
                      if _text(u, 'name') == DEFAULT_LOGIN[0]]
             if not users:
                 raise OpenvasError('gvmd has no user "admin" to take over')
-            gmp.modify_user(users[0].get('id'), password=new)
+            try:
+                gmp.modify_user(users[0].get('id'), password=new)
+            except GvmError as exc:
+                logger.warning('gvmd would not change the default user\'s password (%s); creating a login of this Sentinel\'s own', reason(exc))
+                try:
+                    username = _create_dedicated_user(gmp, new)
+                except GvmError as second:
+                    raise OpenvasError(f'gvmd would not set a password for the default user ({reason(exc)}) nor create a login of this '
+                                       f'Sentinel\'s own ({reason(second)}); set one by hand and save it to {credentials_path()} as '
+                                       f'{{"username": ..., "password": ...}}') from None
     except GvmError as exc:
-        raise OpenvasError(f'the default GVM login did not work ({type(exc).__name__}); if it was already changed by '
+        raise OpenvasError(f'the default GVM login did not work ({reason(exc)}); if it was already changed by '
                            f'hand, save the working one to {credentials_path()} as {{"username": ..., "password": ...}}') from None
     with _open_gmp(connection_factory) as gmp:
-        gmp.authenticate(DEFAULT_LOGIN[0], new)  # confirm the new password actually works before trusting it
-    save_credentials(DEFAULT_LOGIN[0], new)
-    return DEFAULT_LOGIN[0], new
+        gmp.authenticate(username, new)  # confirm the new password actually works before trusting it
+    save_credentials(username, new)
+    return username, new
 
 
 def ensure_credentials(connection_factory=None):
@@ -150,20 +185,20 @@ def session(connection_factory=None):
             try:
                 gmp = stack.enter_context(_open_gmp(connection_factory))
             except GvmError as exc:
-                raise OpenvasError(f'gvmd could not be reached ({type(exc).__name__}): is the GVM stack up yet?') from None
+                raise OpenvasError(f'gvmd could not be reached ({reason(exc)}): is the GVM stack up yet?') from None
             except (OSError, ValueError) as exc:
-                raise OpenvasError(f'gvmd could not be reached ({type(exc).__name__}): is the GVM stack up yet?') from None
+                raise OpenvasError(f'gvmd could not be reached ({reason(exc)}): is the GVM stack up yet?') from None
             try:
                 gmp.authenticate(username, password)
             except GvmError as exc:
-                raise OpenvasError(f'gvmd refused the GMP login ({type(exc).__name__})') from None
+                raise OpenvasError(f'gvmd refused the GMP login ({reason(exc)})') from None
             yield gmp
     except OpenvasError:
         raise
     except GvmError as exc:
-        raise OpenvasError(f'gvmd answered with an error: {type(exc).__name__}') from None
+        raise OpenvasError(f'gvmd answered with an error: {reason(exc)}') from None
     except OSError as exc:
-        raise OpenvasError(f'the connection to gvmd failed ({type(exc).__name__})') from None
+        raise OpenvasError(f'the connection to gvmd failed ({reason(exc)})') from None
 
 
 # ----------------------------------------------------------------------------- reading GMP XML (ports cveFeed.openvas_scan's own)
@@ -301,6 +336,54 @@ def ensure_config(gmp, excluded_families):
     return config_id
 
 
+def _syncing_feeds(gmp):
+    """The feeds gvmd is still downloading (SCAP, CERT, data objects, vulnerability tests), by name; empty when none is or when gvmd cannot say."""
+    try:
+        feeds = gmp.get_feeds().findall('.//feed')
+    except Exception:  # noqa: BLE001 - an older gvmd without the call: nothing to wait on
+        return []
+    out = []
+    for feed in feeds:
+        words = [(el.text or '').strip().upper() for el in feed.iter()]
+        if feed.find('currently_syncing') is not None or 'SYNCING' in words:
+            out.append(_text(feed, 'type') or _text(feed, 'name') or 'unnamed')
+    return out
+
+
+def _ready_marker():
+    return os.path.join(os.path.dirname(credentials_path()) or '.', 'openvas-ready')
+
+
+def readiness(connection_factory=None):
+    """``(ready, why_not)``: whether this Sentinel's gvmd can run a scan now. The socket exists long before that: gvmd answers while it is still
+    loading feeds (hours on a first start), with no scan configuration, scanner or port list to scan with, so a task dispatched then only fails.
+    Ready means the three things a scan needs are present and, until the first time that is so, that no feed is still syncing; after that a
+    routine daily feed update does not take the capability away (the scan data is already there)."""
+    if not os.path.exists(socket_path()):
+        return False, 'gvmd has not created its socket yet (the GVM stack is starting)'
+    try:
+        with session(connection_factory) as gmp:
+            if _find(gmp.get_scan_configs(), FULL_AND_FAST, 'config') is None:
+                return False, 'GVM is still loading its feeds (the "Full and fast" scan configuration is not there yet)'
+            if _find(gmp.get_scanners(), OPENVAS_SCANNER, 'scanner') is None:
+                return False, 'GVM is still starting (the OpenVAS scanner is not listed yet)'
+            if _find(gmp.get_port_lists(), PORT_LIST, 'port_list') is None:
+                return False, 'GVM is still loading its feeds (the port lists are not there yet)'
+            if not os.path.exists(_ready_marker()):
+                syncing = _syncing_feeds(gmp)
+                if syncing:
+                    return False, f'GVM is still syncing its {", ".join(syncing)} feed(s)'
+                try:
+                    open(_ready_marker(), 'w').close()
+                except OSError:
+                    pass
+    except ImportError:
+        return False, 'python-gvm is not installed'
+    except OpenvasError as exc:
+        return False, str(exc)
+    return True, ''
+
+
 def _wait_for_task(gmp, task_id, deadline):
     while True:
         status = gmp.get_task(task_id)
@@ -332,6 +415,8 @@ def run_openvas(hosts, excluded_families=None, max_hours_=None, register=None, c
     target_id = task_id = None
     with session(connection_factory) as gmp:
         try:
+            if not os.path.exists(_ready_marker()) and (syncing := _syncing_feeds(gmp)):
+                raise OpenvasError(f'GVM is still syncing its {", ".join(syncing)} feed(s); it cannot scan yet')
             config_id = ensure_config(gmp, list(excluded_families or ()))
             scanner = _find(gmp.get_scanners(), OPENVAS_SCANNER, 'scanner')
             if scanner is None:

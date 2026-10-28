@@ -195,7 +195,7 @@ services:
 
   # writes the scanner's configuration (notus, and where openvasd listens) into a volume, then exits
   openvas-configure:
-    image: "registry.community.greenbone.net/community/openvas-scanner:stable@sha256:5067aa68bdb63038180cbdbb5cdc199c1908ec6b7d55997a41b6a51b14c12eee"
+    image: "registry.community.greenbone.net/community/openvas-scanner:stable@sha256:4873aa9478545d589dd853d41a6076bc0265c2de90bf30e563d805c56937ed52"
     volumes:
       - openvas_data_vol:/mnt
       - openvas_log_data_vol:/var/log/openvas
@@ -215,7 +215,7 @@ services:
   # notus, the static vulnerability engine for authenticated package checks (OPENVASD_MODE service_notus: nothing else), reachable only by name inside this stack's own network
   openvas-openvasd:
     restart: always
-    image: "registry.community.greenbone.net/community/openvas-scanner:stable@sha256:5067aa68bdb63038180cbdbb5cdc199c1908ec6b7d55997a41b6a51b14c12eee"
+    image: "registry.community.greenbone.net/community/openvas-scanner:stable@sha256:4873aa9478545d589dd853d41a6076bc0265c2de90bf30e563d805c56937ed52"
     environment:
       OPENVASD_MODE: service_notus
       GNUPGHOME: /etc/openvas/gnupg

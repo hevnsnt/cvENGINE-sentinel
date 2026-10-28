@@ -93,7 +93,8 @@ Revoking also hands back any task it was mid-run on to the queue immediately.
 | --- | --- | --- | --- |
 | `CVENGINE_SENTINEL_BLOB` | Only for the first start | - | The one-time provisioning blob from the Sentinels page. Ignored once a token is persisted. |
 | `CVENGINE_SENTINEL_NAME` | No | the container's hostname | The Sentinel's name on the Sentinels page. |
-| `CVENGINE_SENTINEL_NETWORK` | No | `external` | Set to `internal` on a Sentinel deployed inside a private network (office LAN, VPC, VPN). It then declares `network:internal`, so the server will hand it work for the internal ranges a project declared (projects/{slug}/internal-ranges); an external Sentinel is never offered that work. An internal Sentinel also takes the `discover` task: a ping sweep (`nmap -sn`) of one /24 chunk of a declared range, reporting which addresses answered so the server can add them as targets. It only ever sweeps a private IPv4 network of at most 512 addresses, whatever the server sends. |
+| `CVENGINE_SENTINEL_DISABLE` | No | none | Comma-separated scan kinds this Sentinel never declares or polls for (for example `openvas`, or `openvas,wpscan`), whatever tools are installed. |
+| `CVENGINE_SENTINEL_NETWORK` | No | `external` | Set to `internal` on a Sentinel deployed inside a private network (office LAN, VPC, VPN). It then declares `network:internal`, so the server will hand it work for the internal ranges a project declared (projects/{slug}/internal-ranges); an external Sentinel is never offered that work. |
 | `CVENGINE_SENTINEL_MAX_CONCURRENT` | No | auto-detected from the container's CPU (capped at 10) | How many nmap/naabu/nuclei/testssl/wpscan runs this Sentinel executes at once (an OpenVAS task is one GVM job, counted separately by gvmd itself). Set a number to override the auto-detected value. |
 
 `docker-compose.yml` adds `NET_RAW`/`NET_ADMIN` (not `--privileged`) to the `sentinel` service, which nmap's OS
@@ -105,8 +106,31 @@ default route, not through the `sentinel` container.
 
 Only want the lightweight tools on a particular box, without the OpenVAS/GVM stack? Remove the `openvas-*` services
 from `docker-compose.yml` and the `sentinel` service's `openvas_gvmd_socket_vol` mount and `depends_on`. The daemon
-never requires gvmd to be present: it simply never declares the `openvas` capability once the socket never appears
-(`client/tools.gvm_available`), so that Sentinel just never gets handed OpenVAS work.
+never requires gvmd to be present: it declares the `openvas` capability only while gvmd's socket exists
+(`client/tools.gvm_available`), and registers again by itself when that changes (a first start can take hours to sync the
+feeds), so a Sentinel without a working GVM stack is never handed OpenVAS work. To keep OpenVAS off a box that has the stack,
+set `CVENGINE_SENTINEL_DISABLE=openvas`.
+
+The Greenbone images are pinned by digest, and Greenbone publishes no version tags and replaces what `stable` points to, so
+an old pin can vanish from the registry (`artifact ... not found` on `docker compose up`). `./scripts/greenbone-digests.sh`
+prints which pinned digests no longer match `stable`; replace the `sha256` of any that changed in `docker-compose.yml`.
+
+## Testing OpenVAS
+
+CI runs the client tests on every change, and `.github/workflows/openvas-integration.yml` brings up the pinned `gvmd` and runs the login
+bootstrap and the readiness check against it with the pinned `python-gvm` (when the OpenVAS client, the compose pins or `requirements.txt`
+change, weekly, and on demand), because a mock cannot catch gvmd refusing a request. It does not run a scan: a scan needs the vulnerability-test
+feeds, which take hours and tens of GB to sync. To prove the whole path on a machine with Docker, once, after a change to the OpenVAS pins:
+
+    docker compose up -d --build
+    docker compose exec sentinel python3 scripts/ci_openvas_bootstrap.py     # logs in, saves the login, prints whether GVM can scan yet
+    docker compose logs -f sentinel                                          # "capabilities changed: now ..., openvas" once the feeds finished syncing
+
+then dispatch an OpenVAS task from cvENGINE (Hosts, run an OpenVAS scan) and watch it finish. The Sentinel declares `openvas` only once gvmd has
+loaded its scan configuration, scanner and port lists and has stopped its first feed sync, and a task that arrives earlier fails with
+"GVM is still syncing its ... feed(s)". The first sync downloads tens of GB. If gvmd will not let the default `admin` user change its own password
+(it answers "Failed to find user", 404, on some versions) the Sentinel creates a login of its own (`cvengine-sentinel`) instead; to use a login you
+made by hand, save it to `/var/lib/cvengine-sentinel/openvas-credentials.json` as `{"username": ..., "password": ...}` (mode 600).
 
 ## What it will and will not do
 

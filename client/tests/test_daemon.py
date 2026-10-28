@@ -54,7 +54,7 @@ class BootstrapTests(unittest.TestCase):
             def call(self, method, path, body=None, timeout=None):
                 fc.call(method, path, body, timeout)
                 return {'token': 'cve_newtoken', 'id': 1, 'status': 'pending'}
-        with mock.patch('client.tools.detect_tools', return_value=['nmap']):
+        with mock.patch('client.tools.detect_tools', return_value=['nmap']), mock.patch('client.tools.gvm_ready', return_value=True):
             token, server_url = daemon.bootstrap(self._blob(), 'my-sentinel', 2, client_factory=Fake)
         self.assertEqual(token, 'cve_newtoken')
         self.assertEqual(server_url, 'https://cve.example.test')
@@ -99,7 +99,7 @@ class RegisterTests(unittest.TestCase):
 
     def test_sends_name_capabilities_tools_and_max_concurrent_but_no_scope(self):
         fc = FakeClient()
-        with mock.patch('client.tools.detect_tools', return_value=['nmap', 'naabu']):
+        with mock.patch('client.tools.detect_tools', return_value=['nmap', 'naabu']), mock.patch('client.tools.gvm_ready', return_value=True):
             daemon.register(fc, 'my-sentinel', 5)
         self.assertEqual(fc.paths(), [('PUT', 'sentinel')])
         body = fc.body_for('sentinel')
@@ -108,6 +108,62 @@ class RegisterTests(unittest.TestCase):
         self.assertEqual(body['tools'], ['nmap', 'naabu'])
         self.assertEqual(sorted(body['capabilities']), sorted(config.CAPABILITIES))
         self.assertNotIn('scope', body)
+
+    def test_openvas_is_declared_only_while_the_gvm_stack_answers(self):
+        for gvm, expected in ((True, True), (False, False)):
+            fc = FakeClient()
+            with mock.patch('client.tools.detect_tools', return_value=[]), mock.patch('client.tools.gvm_ready', return_value=gvm):
+                daemon.register(fc, 'x', 1)
+            self.assertEqual('openvas' in fc.body_for('sentinel')['capabilities'], expected, gvm)
+
+    def test_an_operator_can_turn_a_kind_off(self):
+        fc = FakeClient()
+        with mock.patch.dict('os.environ', {'CVENGINE_SENTINEL_DISABLE': 'openvas, wpscan'}), \
+                mock.patch('client.tools.detect_tools', return_value=[]), mock.patch('client.tools.gvm_ready', return_value=True):
+            daemon.register(fc, 'x', 1)
+            d = daemon.Daemon('https://x.example', 'tok', client=fc)
+            kinds = d._poll_kinds()
+        caps = fc.body_for('sentinel')['capabilities']
+        self.assertTrue({'openvas', 'wpscan'}.isdisjoint(caps) and {'openvas', 'wpscan'}.isdisjoint(kinds))
+        self.assertIn('nmap', caps)
+
+    def test_the_poll_leaves_out_openvas_while_no_gvm_stack_answers(self):
+        d = daemon.Daemon('https://x.example', 'tok', client=FakeClient())
+        with mock.patch('client.tools.gvm_ready', return_value=False):
+            self.assertNotIn('openvas', d._poll_kinds())
+        with mock.patch('client.tools.gvm_ready', return_value=True):
+            self.assertIn('openvas', d._poll_kinds())
+
+    def test_registration_is_sent_again_when_the_gvm_stack_comes_up_or_goes_away(self):
+        sent = []
+        with mock.patch('client.tools.gvm_ready', return_value=False):
+            d = daemon.Daemon('https://x.example', 'tok', client=FakeClient())
+        d.reregister = lambda: sent.append(1)
+        with mock.patch('client.tools.gvm_ready', return_value=False):
+            d._refresh_registration()
+        self.assertEqual(sent, [])  # nothing changed since startup
+        with mock.patch('client.tools.gvm_ready', return_value=True):
+            d._refresh_registration()
+            d._refresh_registration()
+        self.assertEqual(len(sent), 1)  # told the server once, not on every heartbeat
+        with mock.patch('client.tools.gvm_ready', return_value=False):
+            d._refresh_registration()
+        self.assertEqual(len(sent), 2)
+
+    def test_a_failed_reregistration_is_retried_on_the_next_heartbeat(self):
+        calls = []
+
+        def flaky():
+            calls.append(1)
+            if len(calls) == 1:
+                raise httpclient.ApiError(503, 'down')
+        with mock.patch('client.tools.gvm_ready', return_value=False):
+            d = daemon.Daemon('https://x.example', 'tok', client=FakeClient())
+        d.reregister = flaky
+        with mock.patch('client.tools.gvm_ready', return_value=True):
+            d._refresh_registration()
+            d._refresh_registration()
+        self.assertEqual(len(calls), 2)
 
     def test_a_custom_kinds_list_overrides_the_default_capabilities(self):
         fc = FakeClient()
@@ -353,3 +409,51 @@ class ShutdownTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ReconcileAndLogTests(unittest.TestCase):
+    def _daemon(self):
+        return daemon.Daemon('https://x.example', 'tok', client=FakeClient())
+
+    def _in_flight(self, d, task_id, age=60.0):
+        proc = mock.Mock()
+        proc.poll.return_value = None
+        state = {'proc': proc, 'done': threading.Event(), 'started': time.monotonic() - age, 'dropped': False}
+        d._in_flight[task_id] = state
+        return state, proc
+
+    def test_a_task_the_server_no_longer_lists_is_killed_and_not_reported(self):
+        d = self._daemon()
+        mine, mine_proc = self._in_flight(d, 1)
+        gone, gone_proc = self._in_flight(d, 2)
+        d._reconcile([{'task_id': 1, 'status': 'running'}])
+        self.assertFalse(mine['dropped'])
+        mine_proc.kill.assert_not_called()
+        self.assertTrue(gone['dropped'])
+        gone_proc.kill.assert_called_once()
+        d._report_unless_dropped(2, gone, {'outcome': 'done'})
+        self.assertEqual(d.client.paths(), [])  # nothing sent for a task the server took back
+
+    def test_a_just_accepted_task_and_an_answer_without_a_list_are_left_alone(self):
+        d = self._daemon()
+        young, young_proc = self._in_flight(d, 3, age=1.0)
+        d._reconcile([])
+        self.assertFalse(young['dropped'])
+        old, old_proc = self._in_flight(d, 4)
+        d._reconcile(None)
+        self.assertFalse(old['dropped'])
+        old_proc.kill.assert_not_called()
+
+    def test_start_and_finish_are_logged_at_info_without_the_targets(self):
+        fc = FakeClient()
+        fc.next_responses = [{'task': {'id': 9, 'kind': 'nuclei_light', 'target': {'targets': ['10.0.0.1', '10.0.0.2'], 'tags': [], 'severities': []}}}]
+        d = daemon.Daemon('https://x.example', 'tok', client=fc)
+        with mock.patch.object(d, '_execute', return_value={'outcome': 'done', 'findings': []}), self.assertLogs('sentinel.daemon', level='INFO') as logs:
+            d._poll_once()
+            deadline = time.monotonic() + 5
+            while d._active_count() and time.monotonic() < deadline:
+                time.sleep(0.01)
+        text = '\n'.join(logs.output)
+        self.assertIn('task 9 accepted: nuclei_light (2 target(s))', text)
+        self.assertIn('task 9 finished: nuclei_light, done', text)
+        self.assertNotIn('10.0.0.1', text)
