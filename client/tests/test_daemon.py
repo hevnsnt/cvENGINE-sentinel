@@ -125,6 +125,18 @@ class RegisterTests(unittest.TestCase):
                 daemon.register(fc, 'x', 1)
             self.assertEqual(config.INTERNAL_CAPABILITY in fc.body_for('sentinel')['capabilities'], expected, value)
 
+    def test_discover_is_declared_and_polled_only_by_an_internal_sentinel(self):
+        for value, expected in ((None, False), ('internal', True)):
+            fc = FakeClient()
+            with mock.patch.dict('os.environ'), mock.patch('client.tools.detect_tools', return_value=[]):
+                os.environ.pop('CVENGINE_SENTINEL_NETWORK', None)
+                if value is not None:
+                    os.environ['CVENGINE_SENTINEL_NETWORK'] = value
+                daemon.register(fc, 'x', 1)
+                d = daemon.Daemon('https://x.example', 'tok', client=fc)
+            self.assertEqual('discover' in fc.body_for('sentinel')['capabilities'], expected, value)
+            self.assertEqual('discover' in d.kinds, expected, value)
+
     def test_the_poll_filter_never_carries_the_network_capability(self):
         with mock.patch.dict('os.environ', {'CVENGINE_SENTINEL_NETWORK': 'internal'}):
             d = daemon.Daemon('https://x.example', 'tok', client=FakeClient())

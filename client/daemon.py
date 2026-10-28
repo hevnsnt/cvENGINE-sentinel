@@ -93,7 +93,7 @@ class Daemon:
     def __init__(self, server_url, token, max_concurrent=1, kinds=None, client=None, heartbeat_seconds=None):
         self.client = client or httpclient.Client(server_url, token)
         self.max_concurrent = max(1, max_concurrent)
-        self.kinds = list(kinds or config.CAPABILITIES)
+        self.kinds = config.poll_kinds(kinds)
         self.heartbeat_seconds = heartbeat_seconds or config.HEARTBEAT_SECONDS
         self.stop_event = threading.Event()
         self._lock = threading.Lock()
