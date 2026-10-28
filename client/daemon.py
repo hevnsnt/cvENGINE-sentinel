@@ -111,6 +111,9 @@ def info():
     if update:
         out['update'] = update
     out['updater'] = control.updater_info()  # installed or not, running or not, and how its last run went: a Sentinel that cannot update itself shows
+    if 'openvas' in config.registered_capabilities(None) and 'openvas' not in config.disabled_kinds():
+        ready, why = tools.gvm_status()  # cached for a minute; lets cvENGINE say why a Sentinel is not scanning (still syncing feeds, no scan config)
+        out['openvas'] = {'ready': bool(ready), 'reason': '' if ready else str(why or '')[:200]}
     return out
 
 
@@ -352,7 +355,8 @@ class Daemon:
         elif kind == 'discover':
             out = runner(target.get('cidr') or '', register=register)
         elif kind == 'openvas':
-            out = runner(target.get('hosts') or {}, target.get('excluded_families') or [], target.get('max_hours'), register=register)
+            out = runner(target.get('hosts') or {}, target.get('excluded_families') or [], target.get('max_hours'), register=register,
+                         preferences=target.get('preferences'))
         else:
             raise tools.TargetError(f'unknown task kind {kind!r}')
         return {'outcome': 'done', **out}

@@ -116,6 +116,8 @@ default route, not through the `sentinel` container.
 
 To keep OpenVAS off a box that has the stack, set `CVENGINE_SENTINEL_DISABLE=openvas`. The daemon never requires gvmd to be present: it declares the `openvas` capability only while gvmd is ready (`client/tools.gvm_ready`), and registers again by itself when that changes.
 
+**Time budget and partial results.** cvENGINE sends one host per OpenVAS task, with a time budget (24 hours per host by default) and `max_checks` (4 by default; both are cvENGINE's to set, in the task). A task that runs past its budget is stopped and what it found so far is reported with `partial: true`, so cvENGINE keeps it (and closes nothing an earlier scan found); with nothing found it fails as before. The heartbeat also reports whether this Sentinel's GVM stack can scan, and why not (still syncing its feeds, no scan configuration), so cvENGINE can show it.
+
 The Greenbone images are pinned by digest, and Greenbone publishes no version tags and replaces what `stable` points to, so
 an old pin can vanish from the registry (`artifact ... not found` on `docker compose up`). `./scripts/greenbone-digests.sh`
 prints which pinned digests no longer match `stable`; replace the `sha256` of any that changed in `docker-compose.yml`.

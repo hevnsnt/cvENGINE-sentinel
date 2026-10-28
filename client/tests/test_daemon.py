@@ -116,6 +116,15 @@ class RegisterTests(unittest.TestCase):
                 daemon.register(fc, 'x', 1)
             self.assertEqual('openvas' in fc.body_for('sentinel')['capabilities'], expected, gvm)
 
+    def test_the_heartbeat_info_says_whether_this_sentinels_gvm_can_scan_and_why_not(self):
+        for ready, why in ((True, ''), (False, 'GVM is still syncing its nvt feed(s)')):
+            with mock.patch('client.tools.gvm_status', return_value=(ready, why)), mock.patch('client.tools.gvm_ready', return_value=ready):
+                self.assertEqual(daemon.info()['openvas'], {'ready': ready, 'reason': why})
+
+    def test_a_sentinel_without_openvas_reports_nothing_about_it(self):
+        with mock.patch.dict(os.environ, {'CVENGINE_SENTINEL_DISABLE': 'openvas'}):
+            self.assertNotIn('openvas', daemon.info())
+
     def test_an_operator_can_turn_a_kind_off(self):
         fc = FakeClient()
         with mock.patch.dict('os.environ', {'CVENGINE_SENTINEL_DISABLE': 'openvas, wpscan'}), \
@@ -258,7 +267,10 @@ class PollAndExecuteTests(unittest.TestCase):
             ('discover', {'cidr': '10.20.0.0/24'}, {'hosts': [{'ip': '10.20.0.5', 'hostnames': []}]}, (('10.20.0.0/24',), {})),
             ('openvas', {'hosts': {'192.0.2.10': 'www.example.test'}, 'excluded_families': ['Denial of Service'], 'max_hours': 4},
              {'results': [], 'scanned_addresses': [], 'without_cve': 0, 'unusable': 0},
-             (({'192.0.2.10': 'www.example.test'}, ['Denial of Service'], 4), {})),
+             (({'192.0.2.10': 'www.example.test'}, ['Denial of Service'], 4), {'preferences': None})),
+            ('openvas', {'hosts': {'192.0.2.10': 'www.example.test'}, 'excluded_families': [], 'max_hours': 24, 'preferences': {'max_checks': 3}},
+             {'results': [], 'scanned_addresses': [], 'without_cve': 0, 'unusable': 0, 'partial': True},
+             (({'192.0.2.10': 'www.example.test'}, [], 24), {'preferences': {'max_checks': 3}})),
         ]
         for kind, target, fake_result, expected_call in cases:
             with self.subTest(kind=kind):

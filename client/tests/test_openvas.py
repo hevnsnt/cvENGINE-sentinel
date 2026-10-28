@@ -253,8 +253,9 @@ class WaitForTaskTests(unittest.TestCase):
     def test_stops_the_task_and_raises_once_the_deadline_passes(self):
         running = xml('<get_tasks_response><task><status>Running</status></task></get_tasks_response>')
         gmp = FakeGMP(get_task=lambda *a: running, stop_task=lambda *a: None)
-        with self.assertRaises(openvas.OpenvasError):
+        with self.assertRaises(openvas.OutOfBudget) as raised:
             openvas._wait_for_task(gmp, 'task-1', deadline=0)  # already past
+        self.assertIsInstance(raised.exception, openvas.OpenvasError)
         self.assertIn('stop_task', gmp.names())
 
 
@@ -296,6 +297,47 @@ class RunOpenvasTests(unittest.TestCase):
         self.assertIn('delete_target', gmp.names())
         create_target_call = next(c for c in gmp.calls if c[0] == 'create_target')
         self.assertEqual(create_target_call[2]['hosts'], ['192.0.2.10'])
+
+    def test_the_result_is_not_partial_when_the_task_finished(self):
+        with mock.patch('client.openvas.session', return_value=_ctx(self._happy_gmp())):
+            self.assertIs(openvas.run_openvas({'192.0.2.10': 'www.example.test'})['partial'], False)
+
+    def _out_of_budget_gmp(self, results=True):
+        gmp = self._happy_gmp()
+        gmp.responses['get_task'] = lambda *a: xml('<get_tasks_response><task><status>Running</status></task></get_tasks_response>')
+        gmp.responses['stop_task'] = lambda *a: None
+        if not results:
+            gmp.responses['get_results'] = lambda **kw: xml('<get_results_response><results></results></get_results_response>')
+        return gmp
+
+    def test_a_task_past_its_budget_is_stopped_and_what_it_found_is_returned_as_partial(self):
+        gmp = self._out_of_budget_gmp()
+        with mock.patch('client.openvas.session', return_value=_ctx(gmp)), mock.patch('client.openvas.time.monotonic', side_effect=[0, 10 ** 9, 10 ** 9]):
+            result = openvas.run_openvas({'192.0.2.10': 'www.example.test'}, max_hours_=1)
+        self.assertIs(result['partial'], True)
+        self.assertEqual(result['results'][0]['cves'], ['CVE-2024-12345'])
+        self.assertEqual(result['scanned_addresses'], ['192.0.2.10'])  # only a host that has a result counts as scanned
+        self.assertIn('stop_task', gmp.names())
+        self.assertIn('delete_task', gmp.names())  # still cleaned up
+
+    def test_a_task_past_its_budget_with_nothing_found_is_a_failure(self):
+        gmp = self._out_of_budget_gmp(results=False)
+        with mock.patch('client.openvas.session', return_value=_ctx(gmp)), mock.patch('client.openvas.time.monotonic', side_effect=[0, 10 ** 9, 10 ** 9]):
+            with self.assertRaises(openvas.OpenvasError) as raised:
+                openvas.run_openvas({'192.0.2.10': 'www.example.test'}, max_hours_=1)
+        self.assertIn('time budget', str(raised.exception))
+        self.assertIn('delete_target', gmp.names())
+
+    def test_the_servers_max_checks_is_used_within_bounds_and_one_host_at_a_time_always(self):
+        self.assertEqual(openvas.task_preferences(None), {'max_checks': '4', 'max_hosts': '1'})
+        self.assertEqual(openvas.task_preferences({'max_checks': 2, 'max_hosts': 9}), {'max_checks': '2', 'max_hosts': '1'})
+        self.assertEqual(openvas.task_preferences({'max_checks': '99'})['max_checks'], '10')
+        self.assertEqual(openvas.task_preferences({'max_checks': 0})['max_checks'], '1')
+        self.assertEqual(openvas.task_preferences({'max_checks': 'many'})['max_checks'], '4')
+        gmp = self._happy_gmp()
+        with mock.patch('client.openvas.session', return_value=_ctx(gmp)):
+            openvas.run_openvas({'192.0.2.10': 'www.example.test'}, preferences={'max_checks': 3})
+        self.assertEqual(next(c for c in gmp.calls if c[0] == 'create_task')[2]['preferences'], {'max_checks': '3', 'max_hosts': '1'})
 
     def test_no_hosts_raises_without_opening_a_session(self):
         with mock.patch('client.openvas.session') as session_mock:
