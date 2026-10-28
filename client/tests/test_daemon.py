@@ -4,7 +4,6 @@ import stat
 import tempfile
 import threading
 import time
-import os
 import unittest
 from unittest import mock
 
