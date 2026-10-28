@@ -129,6 +129,26 @@ class RunnerArgvTests(unittest.TestCase):
         self.assertEqual(captured['targets_file_contents'], '192.0.2.10\n198.51.100.20\n')
         self.assertEqual(len(result['hosts']), 2)
 
+    def test_an_ipv6_address_runs_nmap_with_dash_6_on_its_own_and_the_hosts_come_back_together(self):
+        runs = []
+
+        def fake_run(argv, timeout, register=None):
+            with open(argv[argv.index('-iL') + 1], encoding='utf-8') as handle:
+                runs.append((argv, handle.read()))
+            return _read('sample_nmap.xml') if len(runs) == 1 else '<nmaprun/>'
+        with mock.patch('client.tools._run', side_effect=fake_run):
+            result = tools.run_nmap(['192.0.2.10', '2001:db8::5'])
+        self.assertEqual(len(runs), 2)
+        self.assertNotIn('-6', runs[0][0])
+        self.assertEqual(runs[0][1], '192.0.2.10\n')
+        self.assertEqual(runs[1][0][:3], [tools.NMAP_BIN, '-6', *tools.NMAP_FLAGS[:1]])
+        self.assertEqual(runs[1][1], '2001:db8::5\n')
+        self.assertEqual(len(result['hosts']), 2)  # the sample report's two hosts, from the IPv4 run
+        with mock.patch('client.tools._run', return_value='<nmaprun/>') as only_v6:
+            tools.run_nmap(['2001:db8::5'])
+        self.assertEqual(only_v6.call_count, 1)
+        self.assertEqual(only_v6.call_args[0][0][1], '-6')
+
     def test_run_naabu_builds_a_fixed_argv_and_parses_its_stdout(self):
         with mock.patch('client.tools._run', return_value=_read('sample_naabu.jsonl')) as fake_run:
             result = tools.run_naabu(['192.0.2.10'])
@@ -225,6 +245,15 @@ class UdpRunnerTests(unittest.TestCase):
         self.assertIn('-sU', argv)
         self.assertIn('192.0.2.10', argv)
         self.assertEqual(result, {'xml': '<nmaprun/>'})
+
+    def test_an_ipv6_address_is_scanned_with_dash_6(self):
+        with mock.patch('client.tools._run', return_value='<nmaprun/>') as fake_run:
+            tools.run_nmap_udp('2606:4700:20::681a:907')
+        argv = fake_run.call_args[0][0]
+        self.assertEqual(argv[:3], [tools.NMAP_BIN, '-6', '-sU'])
+        with mock.patch('client.tools._run', return_value='<nmaprun/>') as v4:
+            tools.run_nmap_udp('192.0.2.10')
+        self.assertNotIn('-6', v4.call_args[0][0])
 
     def test_a_malicious_address_never_reaches_subprocess(self):
         with mock.patch('client.tools._run') as fake_run:

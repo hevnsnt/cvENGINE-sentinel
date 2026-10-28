@@ -150,14 +150,28 @@ def parse_nmap_xml(xml_text):
     return {'hosts': hosts}
 
 
-def run_nmap(addresses, timeout=600, register=None):
-    addresses = validate_targets(addresses)
-    path = _targets_file(addresses)
+def _is_ipv6(address):
     try:
-        argv = [NMAP_BIN, *NMAP_FLAGS, '-oX', '-', '-iL', path]
-        return parse_nmap_xml(_run(argv, timeout, register))
-    finally:
-        os.unlink(path)
+        return ipaddress.ip_address(str(address).strip().strip('[]')).version == 6
+    except ValueError:
+        return False
+
+
+def run_nmap(addresses, timeout=600, register=None):
+    """nmap scans one address family per run and needs ``-6`` for IPv6 (without it the address is "failed to resolve" and the report has no host),
+    so the IPv4 and IPv6 addresses of the task run separately and their hosts are returned together."""
+    addresses = validate_targets(addresses)
+    out = []
+    for group, flags in (([a for a in addresses if not _is_ipv6(a)], []), ([a for a in addresses if _is_ipv6(a)], ['-6'])):
+        if not group:
+            continue
+        path = _targets_file(group)
+        try:
+            argv = [NMAP_BIN, *flags, *NMAP_FLAGS, '-oX', '-', '-iL', path]
+            out.extend(parse_nmap_xml(_run(argv, timeout, register))['hosts'])
+        finally:
+            os.unlink(path)
+    return {'hosts': out}
 
 
 # --- discover: which addresses of an internal network answer -------------------------------------------------------
@@ -388,8 +402,8 @@ def run_nmap_udp(address, timeout=1500, register=None):
     address = _validate_host(address, 'address')
     ports = ','.join(str(p) for p in UDP_PORTS)
     scripts = ','.join(('nbstat', *UDP_NSE_SCRIPTS))
-    argv = [NMAP_BIN, '-sU', '-sV', '--version-intensity', '3', '-Pn', '-n', '--max-retries', '1', '--max-rate', '20',
-            '--script', scripts, '--script-timeout', '30s', '-p', f'U:{ports}', '-oX', '-', address]
+    argv = [NMAP_BIN, *(['-6'] if _is_ipv6(address) else []), '-sU', '-sV', '--version-intensity', '3', '-Pn', '-n', '--max-retries', '1',
+            '--max-rate', '20', '--script', scripts, '--script-timeout', '30s', '-p', f'U:{ports}', '-oX', '-', address]
     return {'xml': _run(argv, timeout, register)}
 
 
