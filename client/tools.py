@@ -409,6 +409,28 @@ def gvm_available():
     return os.path.exists(openvas.socket_path())
 
 
+_GVM_STATUS = {'at': 0.0, 'value': (False, 'not checked yet')}
+GVM_STATUS_TTL = 60  # seconds a readiness answer is reused: it is asked at every poll and heartbeat, and each check is a GMP login
+
+
+def gvm_status(now=None):
+    """``(ready, why_not)`` for this Sentinel's own GVM stack, cached for a minute. Not ready while the socket is missing, python-gvm is not installed,
+    or gvmd has not finished loading what a scan needs (see ``client.openvas.readiness``)."""
+    import time
+    now = time.monotonic() if now is None else now
+    if not gvm_available():
+        return False, 'the GVM stack is not running here (no gvmd socket, or python-gvm is not installed)'
+    if now - _GVM_STATUS['at'] < GVM_STATUS_TTL and _GVM_STATUS['value'][0] is not None:
+        return _GVM_STATUS['value']
+    _GVM_STATUS.update(at=now, value=openvas.readiness())
+    return _GVM_STATUS['value']
+
+
+def gvm_ready():
+    """Whether this Sentinel can run an OpenVAS task now: what decides whether it declares the ``openvas`` capability."""
+    return gvm_status()[0]
+
+
 def detect_tools():
     """The tool names whose binary actually ran when probed with its own version flag, plus ``gvm`` once this
     Sentinel's own GVM stack is reachable: what a Sentinel declares in ``tools`` at bootstrap. Never raises; a

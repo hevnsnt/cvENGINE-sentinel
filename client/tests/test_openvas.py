@@ -365,6 +365,163 @@ class BootstrapCredentialsTests(unittest.TestCase):
                 openvas.bootstrap_credentials()
 
 
+class BootstrapFallbackTests(unittest.TestCase):
+    """gvmd answers "Failed to find user" (404) when the default user changes its own password; the Sentinel then makes a login of its own."""
+
+    def _gvm(self, **extra):
+        from gvm.errors import GvmResponseError
+        admin_user = xml('<get_users_response><user id="u1"><name>admin</name></user></get_users_response>')
+        roles = xml('<get_roles_response><role id="r-admin"><name>Admin</name></role><role id="r-user"><name>User</name></role></get_roles_response>')
+        calls = {'users': [admin_user]}
+
+        def get_users(**kw):
+            return calls['users'][-1] if kw.get('filter_string') == 'name=admin' else xml('<get_users_response/>')
+
+        def modify_user(user_id, **kw):
+            if user_id == 'u1':
+                raise GvmResponseError('Failed to find user u1', 404)
+        responses = dict(authenticate=lambda *a: None, get_users=get_users, modify_user=modify_user, get_roles=roles,
+                         create_user=lambda *a, **kw: None)
+        responses.update(extra)
+        return FakeGMP(**responses)
+
+    def _run(self, gmp):
+        with mock.patch('client.openvas._open_gmp', side_effect=lambda *a, **kw: _ctx(gmp)), \
+                mock.patch('client.openvas.save_credentials') as save:
+            result = openvas.bootstrap_credentials()
+        return result, save
+
+    def test_a_refused_password_change_falls_back_to_a_login_of_the_sentinels_own(self):
+        gmp = self._gvm()
+        (username, password), save = self._run(gmp)
+        self.assertEqual(username, openvas.DEDICATED_USER)
+        save.assert_called_once_with(openvas.DEDICATED_USER, password)
+        create = next(c for c in gmp.calls if c[0] == 'create_user')
+        self.assertEqual((create[1], create[2]['role_ids']), ((openvas.DEDICATED_USER,), ['r-admin']))
+        self.assertIn(('authenticate', (openvas.DEDICATED_USER, password), {}), gmp.calls)  # confirmed before it is trusted
+
+    def test_a_dedicated_user_left_by_an_earlier_attempt_gets_a_new_password_instead(self):
+        mine = xml(f'<get_users_response><user id="u2"><name>{openvas.DEDICATED_USER}</name></user></get_users_response>')
+        admin_user = xml('<get_users_response><user id="u1"><name>admin</name></user></get_users_response>')
+        gmp = self._gvm(get_users=lambda **kw: admin_user if kw.get('filter_string') == 'name=admin' else mine)
+        (username, _), _save = self._run(gmp)
+        self.assertEqual(username, openvas.DEDICATED_USER)
+        self.assertNotIn('create_user', gmp.names())
+        self.assertIn('u2', [c[1][0] for c in gmp.calls if c[0] == 'modify_user'])
+
+    def test_when_both_are_refused_the_error_carries_what_gvmd_said_and_never_the_password(self):
+        from gvm.errors import GvmResponseError
+
+        def refuse(*a, **kw):
+            raise GvmResponseError('Permission denied for create_user', 403)
+        gmp = self._gvm(create_user=refuse)
+        with mock.patch('client.openvas._open_gmp', side_effect=lambda *a, **kw: _ctx(gmp)), mock.patch('client.openvas.save_credentials') as save:
+            with self.assertRaises(openvas.OpenvasError) as raised:
+                openvas.bootstrap_credentials()
+        message = str(raised.exception)
+        self.assertIn('Failed to find user u1', message)
+        self.assertIn('Permission denied for create_user', message)
+        self.assertIn('GvmResponseError', message)
+        save.assert_not_called()
+        passwords = [c[2].get('password') for c in gmp.calls if c[0] in ('modify_user', 'create_user')]
+        self.assertTrue(passwords and not any(p in message for p in passwords if p))
+
+    def test_a_default_login_that_does_not_work_says_why(self):
+        from gvm.errors import GvmResponseError
+        gmp = FakeGMP(authenticate=mock.Mock(side_effect=GvmResponseError('Authentication failed', 400)))
+        with mock.patch('client.openvas._open_gmp', side_effect=lambda *a, **kw: _ctx(gmp)):
+            with self.assertRaises(openvas.OpenvasError) as raised:
+                openvas.bootstrap_credentials()
+        self.assertIn('Authentication failed', str(raised.exception))
+
+
+class ReadinessTests(unittest.TestCase):
+    CONFIGS = '<get_configs_response><config id="daba56c8-73ec-11df-a475-002264764cea"><name>Full and fast</name></config></get_configs_response>'
+    SCANNERS = '<get_scanners_response><scanner id="08b69003-5fc2-4037-a479-93b440211c73"><name>OpenVAS Default</name></scanner></get_scanners_response>'
+    PORTS = '<get_port_lists_response><port_list id="33d0cd82-57c6-11e1-8ed1-406186ea4fc5"><name>All IANA assigned TCP</name></port_list></get_port_lists_response>'
+    EMPTY = '<get_configs_response/>'
+    SYNCING = '<get_feeds_response><feed><type>SCAP</type><currently_syncing><timestamp>2026</timestamp></currently_syncing></feed></get_feeds_response>'
+    SYNCED = '<get_feeds_response><feed><type>SCAP</type><name>SCAP</name></feed><feed><type>CERT</type></feed></get_feeds_response>'
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        env = mock.patch.dict('os.environ', {'CVENGINE_OPENVAS_CREDENTIALS_FILE': os.path.join(self.dir.name, 'creds.json'),
+                                             'CVENGINE_OPENVAS_SOCKET': os.path.join(self.dir.name, 'gvmd.sock')})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def socket(self):
+        open(os.path.join(self.dir.name, 'gvmd.sock'), 'w').close()
+
+    def check(self, configs=CONFIGS, scanners=SCANNERS, ports=PORTS, feeds=SYNCED):
+        gmp = FakeGMP(get_scan_configs=xml(configs), get_scanners=xml(scanners), get_port_lists=xml(ports), get_feeds=xml(feeds))
+        with mock.patch('client.openvas.session', return_value=_ctx(gmp)):
+            return openvas.readiness()
+
+    def test_no_socket_is_not_ready_and_says_the_stack_is_starting(self):
+        ready, why = openvas.readiness()
+        self.assertFalse(ready)
+        self.assertIn('socket', why)
+
+    def test_a_socket_with_no_scan_configuration_is_still_loading_feeds(self):
+        self.socket()
+        ready, why = self.check(configs=self.EMPTY, feeds=self.SYNCING)
+        self.assertFalse(ready)
+        self.assertIn('still loading its feeds', why)
+
+    def test_missing_scanner_or_port_list_is_not_ready(self):
+        self.socket()
+        self.assertIn('scanner', self.check(scanners='<get_scanners_response/>')[1])
+        self.assertIn('port lists', self.check(ports='<get_port_lists_response/>')[1])
+
+    def test_feeds_still_syncing_for_the_first_time_block_readiness_with_a_clear_reason(self):
+        self.socket()
+        ready, why = self.check(feeds=self.SYNCING)
+        self.assertEqual((ready, why), (False, 'GVM is still syncing its SCAP feed(s)'))
+        self.assertFalse(os.path.exists(openvas._ready_marker()))
+
+    def test_ready_once_everything_is_loaded_and_a_later_routine_sync_does_not_take_it_away(self):
+        self.socket()
+        self.assertEqual(self.check(), (True, ''))
+        self.assertTrue(os.path.exists(openvas._ready_marker()))
+        self.assertEqual(self.check(feeds=self.SYNCING), (True, ''))  # the daily feed update: the scan data is already there
+        self.assertFalse(self.check(configs=self.EMPTY)[0])  # but a wiped scan configuration is not ready
+
+    def test_a_gmp_failure_is_a_reason_not_a_crash(self):
+        self.socket()
+        with mock.patch('client.openvas.session', side_effect=openvas.OpenvasError('gvmd refused the GMP login (GvmResponseError: nope)')):
+            ready, why = openvas.readiness()
+        self.assertEqual((ready, why), (False, 'gvmd refused the GMP login (GvmResponseError: nope)'))
+
+    def test_a_task_dispatched_while_feeds_sync_fails_with_that_reason_before_building_anything(self):
+        gmp = FakeGMP(get_feeds=xml(self.SYNCING))
+        with mock.patch('client.openvas.session', return_value=_ctx(gmp)):
+            with self.assertRaises(openvas.OpenvasError) as raised:
+                openvas.run_openvas({'192.0.2.10': 'x'})
+        self.assertIn('still syncing its SCAP feed', str(raised.exception))
+        self.assertEqual(gmp.names(), ['get_feeds'])
+
+
+class SessionErrorTextTests(unittest.TestCase):
+    def test_gvmd_errors_keep_their_own_text(self):
+        from gvm.errors import GvmResponseError
+
+        class ClosingFakeGMP(FakeGMP):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+        gmp = ClosingFakeGMP(authenticate=mock.Mock(side_effect=GvmResponseError('Failed to find user', 404)))
+        with mock.patch('client.openvas.ensure_credentials', return_value=('u', 'p')), mock.patch('client.openvas._open_gmp', return_value=gmp):
+            with self.assertRaises(openvas.OpenvasError) as raised:
+                with openvas.session():
+                    pass
+        self.assertIn('Failed to find user', str(raised.exception))
+        self.assertIn('404', str(raised.exception))
+
+
 class SessionTests(unittest.TestCase):
     def test_yields_an_authenticated_gmp_and_closes_it(self):
         closed = {'value': False}
