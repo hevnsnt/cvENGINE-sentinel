@@ -104,9 +104,28 @@ class UpdateReportTests(Base):
 
     def test_an_unknown_or_odd_version_is_not_reported(self):
         for value in ('', 'has space', 'a' * 80, 'semi;colon'):
-            with mock.patch.dict('os.environ', {'CVENGINE_SENTINEL_VERSION': value}):
+            with mock.patch.dict('os.environ', {'CVENGINE_SENTINEL_VERSION': value}), mock.patch.object(config, 'build_version', return_value=None):
                 self.assertIsNone(config.version(), value)
                 self.assertNotIn('version', daemon.info())
+
+    def test_the_commit_stamped_at_build_time_is_the_version_when_no_setting_names_one(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            stamp = os.path.join(tmp, 'VERSION')
+            with open(stamp, 'w', encoding='utf-8') as handle:
+                handle.write('47ffd47d2969')
+            self.assertEqual(config.build_version(stamp), '47ffd47d2969')
+            with mock.patch.object(config, 'BUILD_VERSION_FILE', stamp):
+                with mock.patch.dict('os.environ', {'CVENGINE_SENTINEL_VERSION': ''}):
+                    self.assertEqual(config.version(), '47ffd47d2969')
+                with mock.patch.dict('os.environ', {'CVENGINE_SENTINEL_VERSION': 'abc123def456'}):
+                    self.assertEqual(config.version(), 'abc123def456')  # the setting wins, as the updater writes it
+
+    def test_a_missing_or_empty_build_stamp_is_unknown(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            empty = os.path.join(tmp, 'VERSION')
+            open(empty, 'w').close()
+            self.assertIsNone(config.build_version(empty))
+            self.assertIsNone(config.build_version(os.path.join(tmp, 'nope')))
 
     def test_the_command_line_drives_the_same_files(self):
         out = io.StringIO()

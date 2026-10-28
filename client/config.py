@@ -193,10 +193,28 @@ def _local_max_concurrent():
     return max(1, min(_detected_cpus(), MAX_AUTO_CONCURRENT))
 
 
-def version():
-    """The client version this image was built from (CVENGINE_SENTINEL_VERSION, the git commit the updater builds), or ``None`` when unknown."""
-    value = (_env('CVENGINE_SENTINEL_VERSION') or '').strip()
+BUILD_VERSION_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'VERSION')
+
+
+def _clean_version(value):
+    value = (value or '').strip()
     return value if value and len(value) <= 64 and all(c.isalnum() or c in '.-_+' for c in value) else None
+
+
+def build_version(path=None):
+    """The git commit stamped into this image by the Dockerfile (``VERSION``, the first 12 characters of the checkout's HEAD at build time), or
+    ``None`` when the image was built without a git checkout."""
+    try:
+        with open(path or BUILD_VERSION_FILE, encoding='utf-8') as handle:
+            return _clean_version(handle.read(200))
+    except OSError:
+        return None
+
+
+def version():
+    """The client version: CVENGINE_SENTINEL_VERSION when set (the updater writes it), else the commit this image was built from, else ``None``
+    when neither is known."""
+    return _clean_version(_env('CVENGINE_SENTINEL_VERSION')) or build_version()
 
 
 def token_path():

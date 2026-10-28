@@ -99,7 +99,7 @@ Revoking also hands back any task it was mid-run on to the queue immediately.
 | `CVENGINE_SENTINEL_NAME` | No | the container's hostname | The Sentinel's name on the Sentinels page. |
 | `COMPOSE_PROFILES` | No | `openvas` (full) | `openvas` runs the GVM stack too (full); empty is light. See "Full or light" below. |
 | `CVENGINE_SENTINEL_DISABLE` | No | none | Comma-separated scan kinds this Sentinel never declares or polls for (for example `openvas`, or `openvas,wpscan`), whatever tools are installed. |
-| `CVENGINE_SENTINEL_VERSION` | No | unknown | The git commit this checkout is at, shown on the Sentinels page. `scripts/update.sh` sets it. |
+| `CVENGINE_SENTINEL_VERSION` | No | the commit the image was built from | The version shown on the Sentinels page. The image build stamps the checkout's git commit (the first 12 characters of HEAD) into it, so a plain `docker compose up -d --build` reports a version; `scripts/update.sh` sets this variable, which then wins. An image built from a download with no `.git` reports unknown. |
 | `CVENGINE_SENTINEL_NETWORK` | No | `external` | Set to `internal` on a Sentinel deployed inside a private network (office LAN, VPC, VPN). It then declares `network:internal`, so the server will hand it work for the internal ranges a project declared (projects/{slug}/internal-ranges); an external Sentinel is never offered that work. |
 | `CVENGINE_SENTINEL_MAX_CONCURRENT` | No | auto-detected from the container's CPU (capped at 10) | How many nmap/naabu/nuclei/testssl/wpscan runs this Sentinel executes at once (an OpenVAS task is one GVM job, counted separately by gvmd itself). Set a number to override the auto-detected value. |
 
@@ -167,8 +167,8 @@ never taken from the Sentinel.
 The updater never gets the Docker socket inside a container: it reaches the daemon only through
 `docker compose exec sentinel python3 -m client.control` (drain, wait-idle, report), files in the state volume. A drain expires after two
 hours on its own and is cleared whenever the Sentinel starts, so an updater that died half way never leaves a Sentinel idle for good. Nothing
-changes while the setting is Off, or Manual with nobody having asked. Set the version once on an existing install with
-`echo "CVENGINE_SENTINEL_VERSION=$(git rev-parse --short=12 HEAD)" >> .env && docker compose up -d` (later updates do it themselves).
+changes while the setting is Off, or Manual with nobody having asked. The version is stamped into the image when it is built (see the
+`CVENGINE_SENTINEL_VERSION` row), so an install only needs to be rebuilt once (`docker compose up -d --build`) to report it.
 An install that predates this has no updater until `sudo ./scripts/install-updater.sh` is run once on its machine.
 
 ## Testing OpenVAS
