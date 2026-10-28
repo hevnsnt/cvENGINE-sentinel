@@ -168,6 +168,12 @@ def _local_max_concurrent():
     return max(1, min(_detected_cpus(), MAX_AUTO_CONCURRENT))
 
 
+def version():
+    """The client version this image was built from (CVENGINE_SENTINEL_VERSION, the git commit the updater builds), or ``None`` when unknown."""
+    value = (_env('CVENGINE_SENTINEL_VERSION') or '').strip()
+    return value if value and len(value) <= 64 and all(c.isalnum() or c in '.-_+' for c in value) else None
+
+
 def token_path():
     return _env('CVENGINE_SENTINEL_TOKEN_FILE', DEFAULT_TOKEN_PATH)
 
