@@ -96,7 +96,9 @@ class UpdateReportTests(Base):
     def test_the_daemon_reports_its_version_and_the_updaters_state(self):
         with mock.patch.dict('os.environ', {'CVENGINE_SENTINEL_VERSION': 'abc123def456'}):
             control.record_update('done', 'up', 'ok', 'old', 'abc123def456')
-            self.assertEqual(daemon.info(), {'version': 'abc123def456', 'update': control.read_update(), 'updater': {'installed': False, 'running': False}})
+            info = daemon.info()
+            info.pop('openvas', None)  # the GVM readiness has its own test (test_daemon)
+            self.assertEqual(info, {'version': 'abc123def456', 'update': control.read_update(), 'updater': {'installed': False, 'running': False}})
             fc = FakeClient()
             with mock.patch('client.tools.detect_tools', return_value=[]):
                 daemon.register(fc, 'x', 1)

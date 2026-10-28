@@ -23,7 +23,7 @@ logger = logging.getLogger('sentinel.openvas')
 DEFAULT_SOCKET = '/run/gvmd/gvmd.sock'
 DEFAULT_LOGIN = ('admin', 'admin')  # the Greenbone community containers' own default login, replaced on first use
 DEFAULT_CREDENTIALS_PATH = '/var/lib/cvengine-sentinel/openvas-credentials.json'
-DEFAULT_MAX_HOURS = 12
+DEFAULT_MAX_HOURS = 24  # per task of one host; the server's task names its own budget
 
 MAX_RESULTS = 5000  # matches cveFeed.openvas_scan.MAX_RESULTS and agentapi.sentinel_broker.MAX_OPENVAS_RESULTS
 RESULT_PAGE = 100
@@ -37,7 +37,18 @@ FULL_AND_FAST = ('daba56c8-73ec-11df-a475-002264764cea', 'Full and fast')
 OPENVAS_SCANNER = ('08b69003-5fc2-4037-a479-93b440211c73', 'OpenVAS Default')
 PORT_LIST = ('33d0cd82-57c6-11e1-8ed1-406186ea4fc5', 'All IANA assigned TCP')
 CONFIG_NAME = 'cvengine-sentinel safe scan'
-TASK_PREFERENCES = {'max_checks': '2', 'max_hosts': '1'}  # two NVTs at a time against one host at a time: slow on purpose
+TASK_PREFERENCES = {'max_checks': '4', 'max_hosts': '1'}  # the defaults (Greenbone's own 4 NVTs at a time); the server's task may set max_checks
+
+
+def task_preferences(wanted=None):
+    """The GVM task preferences: ``max_checks`` from the server's task when it names a whole number from 1 to 10, else the default; one host at a time
+    always (a task carries one host)."""
+    checks = (wanted or {}).get('max_checks') if isinstance(wanted, dict) else None
+    try:
+        checks = int(checks)
+    except (TypeError, ValueError):
+        checks = int(TASK_PREFERENCES['max_checks'])
+    return {'max_checks': str(min(10, max(1, checks))), 'max_hosts': '1'}
 ACTIVE_STATUSES = ('New', 'Requested', 'Queued', 'Running', 'Processing', 'Stop Requested')
 
 CVE_RE = re.compile(r'^CVE-\d{4}-\d{4,}$')
@@ -386,6 +397,14 @@ def readiness(connection_factory=None):
     return True, ''
 
 
+class OutOfBudget(OpenvasError):
+    """The task ran past its time budget and was stopped; ``status`` is gvmd's last answer for it."""
+
+    def __init__(self, status):
+        super().__init__('the task ran past its time budget')
+        self.status = status
+
+
 def _wait_for_task(gmp, task_id, deadline):
     while True:
         status = gmp.get_task(task_id)
@@ -399,13 +418,15 @@ def _wait_for_task(gmp, task_id, deadline):
                 gmp.stop_task(task_id)
             except Exception:  # noqa: BLE001 - the task may already be over
                 logger.info('could not stop the timed-out GVM task %s', task_id)
-            raise OpenvasError('the task ran past its time budget')
+            raise OutOfBudget(status)
         time.sleep(POLL_INTERVAL)
 
 
-def run_openvas(hosts, excluded_families=None, max_hours_=None, register=None, connection_factory=None):
+def run_openvas(hosts, excluded_families=None, max_hours_=None, register=None, connection_factory=None, preferences=None):
     """Run one GVM task against ``hosts`` (``{ip: hostname}``) and return ``{'results', 'scanned_addresses',
-    'without_cve', 'unusable'}``, the exact shape ``agentapi.sentinel_broker._clean_openvas_result`` expects.
+    'without_cve', 'unusable', 'partial'}``, the exact shape ``agentapi.sentinel_broker._clean_openvas_result`` expects. A task that runs past its
+    time budget is stopped and what it found so far is returned with ``partial: True`` (the server keeps it and closes nothing an earlier scan found);
+    with nothing found it is the failure it always was. ``preferences`` is the server's task preferences (``max_checks``).
     ``register`` is accepted for the same signature every other tool runner has, but is never called: unlike a
     subprocess there is nothing here for the daemon's shutdown handler to kill, and a SIGTERM during a scan simply
     releases the task back to the server (which retries it elsewhere) while this Sentinel's own gvmd finishes the
@@ -431,13 +452,19 @@ def run_openvas(hosts, excluded_families=None, max_hours_=None, register=None, c
                                        comment='cvENGINE Sentinel: a server-vetted host set; created and removed by this Sentinel')
             target_id = target.get('id')
             task = gmp.create_task(name, config_id, target_id, scanner.get('id'), comment='cvENGINE Sentinel scan',
-                                   preferences=TASK_PREFERENCES)
+                                   preferences=task_preferences(preferences))
             task_id = task.get('id')
             gmp.start_task(task_id)
-            status = _wait_for_task(gmp, task_id, deadline)
+            partial = False
+            try:
+                status = _wait_for_task(gmp, task_id, deadline)
+            except OutOfBudget as exc:
+                status, partial = exc.status, True
             items, no_cve, unusable = fetch_results(gmp, task_id)
-            scanned = scanned_addresses(gmp, status, items)
-            return {'results': items, 'scanned_addresses': sorted(scanned), 'without_cve': no_cve, 'unusable': unusable}
+            if partial and not items:
+                raise OpenvasError('the task ran past its time budget and found nothing')
+            scanned = {i['address'] for i in items} if partial else scanned_addresses(gmp, status, items)
+            return {'results': items, 'scanned_addresses': sorted(scanned), 'without_cve': no_cve, 'unusable': unusable, 'partial': partial}
         finally:
             if task_id:
                 try:
