@@ -210,7 +210,9 @@ services:
     networks:
       - openvas_network
 
-  # writes the scanner's configuration (notus, and where openvasd listens) into a volume, then exits
+  # writes the scanner's configuration (notus, and where openvasd listens) into a volume, then exits. The scanner's own log is
+  # kept at the image's default level (127, no debug lines): level 128 wrote about 130,000 lines (50 MB) for one 40 minute scan of
+  # one host. Set OPENVAS_LOG_LEVEL=128 in .env only to debug a scan, then `docker compose up -d` again.
   openvas-configure:
     profiles: ["openvas"]
     image: "registry.community.greenbone.net/community/openvas-scanner:stable@sha256:4873aa9478545d589dd853d41a6076bc0265c2de90bf30e563d805c56937ed52"
@@ -222,7 +224,7 @@ services:
       - -c
       - |
         printf "table_driven_lsc = yes\nopenvasd_server = http://openvasd:80\n" > /mnt/openvas.conf
-        sed "s/127/128/" /etc/openvas/openvas_log.conf | sed 's/gvm/openvas/' > /mnt/openvas_log.conf
+        sed "s/^level=.*/level=${OPENVAS_LOG_LEVEL:-127}/" /etc/openvas/openvas_log.conf | sed 's/gvm/openvas/' > /mnt/openvas_log.conf
         chmod 644 /mnt/openvas.conf
         chmod 644 /mnt/openvas_log.conf
         touch /var/log/openvas/openvas.log
