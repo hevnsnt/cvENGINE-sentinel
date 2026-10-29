@@ -642,7 +642,7 @@ _URL = re.compile(r'^https?://[A-Za-z0-9][A-Za-z0-9.:_-]{0,252}(/.*)?$')
 # Same options cveFeed.wpscan_scan.wpscan_args builds for a passive pass: mixed detection, no TLS verification (the
 # target is whatever the server named, already vetted there), a bounded max-scan-duration so a slow site still
 # reports what it found before the process would be killed.
-WPSCAN_ARGS = ['--format', 'json', '--no-banner', '--random-user-agent', '--throttle', '0', '--request-timeout', '30',
+WPSCAN_ARGS = ['--format', 'json', '--no-banner', '--random-user-agent', '--throttle', '100', '--request-timeout', '30',
                '--connect-timeout', '15', '--detection-mode', 'mixed', '--plugins-detection', 'passive',
                '--themes-detection', 'passive', '--disable-tls-checks', '--enumerate', 'vp,vt,cb,dbe,u1-5']
 
