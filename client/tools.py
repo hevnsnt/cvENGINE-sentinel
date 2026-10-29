@@ -518,11 +518,17 @@ def _clean_words(values, pattern):
     return sorted({v for v in values if isinstance(v, str) and pattern.fullmatch(v)})
 
 
-def run_nuclei(targets, tags=None, severities=None, timeout=3600, register=None):
+def run_nuclei(targets, tags=None, severities=None, timeout=3600, register=None, templates=None):
     """Host names are passed to nuclei as names, because each finding reports the host it was given. They were judged by scope (and by
-    every address they resolved to) just before; nuclei resolves them again, so a name whose DNS answer changes in between is the one gap."""
+    every address they resolved to) just before; nuclei resolves them again, so a name whose DNS answer changes in between is the one gap.
+    ``templates`` is a directory of approved templates (the server's verified bundle, ``client.templates``): nuclei then runs exactly that set and
+    nothing else; without it nuclei uses the templates baked into this image."""
     targets = validate_targets(targets, endpoint=True)
     flags = list(NUCLEI_FLAGS)
+    if templates is not None:
+        if not isinstance(templates, str) or not os.path.isabs(templates) or not os.path.isdir(templates):
+            raise TargetError('the approved template directory is not usable')
+        flags += ['-t', templates]
     clean_tags = _clean_words(tags, _TAG)
     if tags and not clean_tags:  # a filter was asked for and none of it is usable: never fall back to every template
         raise TargetError('none of the nuclei tags this task names is usable')

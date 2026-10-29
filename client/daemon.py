@@ -29,6 +29,7 @@ from . import config
 from . import control
 from . import httpclient
 from . import openvas
+from . import templates
 from . import tools
 
 logger = logging.getLogger('sentinel.daemon')
@@ -294,7 +295,9 @@ class Daemon:
             self._retry_token_save()
             asked_at = time.monotonic()
             try:
-                out = self.client.call('POST', 'sentinel/heartbeat', {'info': info()})
+                with self._lock:
+                    running = sorted(self._in_flight, key=str)
+                out = self.client.call('POST', 'sentinel/heartbeat', {'info': info(), 'running': running})
             except (httpclient.ApiError, requests.RequestException) as exc:
                 if not self._auth_failed(exc):
                     logger.warning('heartbeat failed: %s', exc)
@@ -566,7 +569,8 @@ class Daemon:
         if kind in ('nmap', 'naabu'):
             out = runner(target.get('addresses') or [], register=register)
         elif kind in ('nuclei_light', 'nuclei_targeted', 'nuclei_deep'):
-            out = runner(target.get('targets') or [], tags=target.get('tags'), severities=target.get('severities'), register=register)
+            out = runner(target.get('targets') or [], tags=target.get('tags'), severities=target.get('severities'), register=register,
+                         templates=self._approved_templates(target))
         elif kind == 'testssl':
             out = runner(target.get('host') or '', target.get('ip') or '', target.get('port'), target.get('starttls') or '', register=register)
         elif kind == 'nmap_udp':
@@ -579,6 +583,21 @@ class Daemon:
             out = runner(target.get('hosts') or {}, target.get('excluded_families') or [], target.get('max_hours'), register=register,
                          preferences=target.get('preferences'))
         return {'outcome': 'done', **out}
+
+    def _approved_templates(self, target):
+        """The directory of the server's approved nuclei templates a task must run on, or ``None`` when the task names no bundle and the server asks
+        for no policy (an older server: the templates baked into this image are used). A task under the read-only policy that names no bundle, or a
+        bundle that cannot be fetched or verified, is an error: nothing unapproved is ever run in its place."""
+        sha256 = target.get('bundle_sha256')
+        policy = target.get('template_policy')
+        if sha256:
+            try:
+                return templates.ensure_bundle(self.client, sha256)
+            except templates.TemplateError as exc:
+                raise tools.TargetError(str(exc)) from None
+        if isinstance(policy, dict) and policy.get('read_only'):
+            raise tools.TargetError('the task requires the approved template set but names no template bundle')
+        return None
 
     def _report(self, task_id, result):
         """POST the result, retrying a network error, a server error or rate limiting with exponential backoff and jitter (at most
