@@ -11,17 +11,17 @@ ARG GO_SHA256_AMD64=65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e37
 ARG GO_SHA256_ARM64=a06e99309dbcbdca1a8ccd2282c3ee146e55930886e26b4f1193269587165f49
 ARG NMAPVERSION=7.993
 ARG NUCLEI_VERSION=3.11.1
-ARG NAABU_VERSION=2.6.1
+ARG NAABU_VERSION=2.7.0
 # nmap: amd64 installs the project's own x86_64 release RPM (its libraries are linked in statically), arm64 builds the
 # source tarball, because nmap.org publishes no arm64 binary. Both checksums are published beside the files at
 # nmap.org/dist/sigs/ (identical to the server repository's web/Dockerfile pins).
 ARG NMAP_SHA256=270e55f04915bfcecb5db8feb959d4c5ba86a48c094520a4f1c07571e1c79c59
 ARG NMAP_RPM_SHA256_AMD64=997cb830c84a429aaa1d41708a1ebb9b1cc36e75d21801c9d359fe930a8c1f93
-ARG WPSCAN_VERSION=4.1.0
+ARG WPSCAN_VERSION=4.2.0
 # testssl.sh (GPLv2, run as a separate program) audits the TLS configuration of every TLS port, mirroring
 # cveFeed/testssl_scan.py's own invocation. Pinned tarball with its checksum, never a branch.
-ARG TESTSSL_VERSION=3.2.3
-ARG TESTSSL_SHA256=1c4bb10185a67592164eb870c717b8bdd03f290c8d68f9a8c658335ff5ac8b91
+ARG TESTSSL_VERSION=3.2.4
+ARG TESTSSL_SHA256=98528f8a0ac07f1e226efaa8ead438247df8efcb8fee4e056a937ab82a305490
 # The nuclei templates baked into the image: a pinned community release with its checksum, used only for a task that names no approved bundle
 # (an older server). Tasks under the server's template policy run on the server's own verified bundle instead (client/templates.py).
 ARG NUCLEI_TEMPLATES_VERSION=v10.5.1
