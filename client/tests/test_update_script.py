@@ -341,5 +341,57 @@ class UpdateScriptTests(unittest.TestCase):
         self.assertEqual(control.updater_info()['last_result'], 'failed')
 
 
+FEEDS_SHIM = """#!/bin/sh
+echo "docker $*" >> "$SHIM_LOG"
+case "$2" in
+  ps) printf '%s\\n' $SHIM_RUNNING ;;
+  exec) echo "$SHIM_STATUS" ;;
+esac
+"""
+
+
+@unittest.skipUnless(shutil.which('sh') and shutil.which('flock'), 'needs sh and flock')
+class RefreshFeedsTests(unittest.TestCase):
+    """scripts/refresh-feeds.sh with a stand-in `docker` that says which services run and what the Sentinel's status is."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix='sentinel-feeds-')
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        os.makedirs(os.path.join(self.tmp, 'scripts'))
+        os.makedirs(os.path.join(self.tmp, 'bin'))
+        shutil.copy(os.path.join(ROOT, 'scripts', 'refresh-feeds.sh'), os.path.join(self.tmp, 'scripts'))
+        put(os.path.join(self.tmp, 'bin', 'docker'), FEEDS_SHIM)
+        os.chmod(os.path.join(self.tmp, 'bin', 'docker'), 0o755)
+        self.log = os.path.join(self.tmp, 'docker.log')
+
+    def refresh(self, running, in_flight):
+        env = {**os.environ, 'PATH': f'{self.tmp}/bin:{os.environ["PATH"]}', 'SHIM_LOG': self.log, 'SHIM_RUNNING': running,
+               'SHIM_STATUS': '{"version": "abc", "in_flight": %d}' % in_flight}
+        out = run(['sh', os.path.join(self.tmp, 'scripts', 'refresh-feeds.sh')], self.tmp, env)
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        with open(self.log) as handle:
+            return out.stdout, handle.read()
+
+    def test_an_idle_openvas_stack_pulls_and_recreates_only_the_feeds(self):
+        _, calls = self.refresh('sentinel openvas-gvmd openvas-ospd', 0)
+        self.assertIn('compose pull --quiet openvas-vulnerability-tests openvas-notus-data', calls)
+        up = [line for line in calls.splitlines() if ' up ' in line]
+        self.assertEqual(len(up), 1)
+        self.assertIn('up -d --no-deps', up[0])
+        for program in ('openvas-gvmd', 'openvas-ospd', 'openvas-pg-gvm', 'sentinel '):
+            self.assertNotIn(program, up[0])
+
+    def test_a_running_task_leaves_everything_alone(self):
+        out, calls = self.refresh('sentinel openvas-gvmd', 1)
+        self.assertEqual(out, '')
+        self.assertNotIn('pull', calls)
+
+    def test_a_light_stack_leaves_everything_alone(self):
+        out, calls = self.refresh('sentinel', 0)
+        self.assertEqual(out, '')
+        self.assertNotIn('pull', calls)
+        self.assertNotIn('exec', calls)
+
+
 if __name__ == '__main__':
     unittest.main()
