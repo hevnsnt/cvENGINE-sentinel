@@ -57,6 +57,7 @@ REPORT_ATTEMPTS = 5  # a result POST is tried this many times at most
 REPORT_BACKOFF = 2.0  # seconds before the first retry, doubling each time
 REPORT_MAX_DELAY = 30.0
 REPORT_RETRY_SECONDS = 120.0  # and never for longer than this in all, so a dead server cannot hold a finished task forever
+MAX_RESULT_BYTES = 23 * 1024 * 1024  # the server's result route refuses a body over 24 MB with a 400 that would end the task
 RELEASE_WAIT_SECONDS = 10.0  # after the grace period, how long shutdown waits for a task thread that is still delivering its result
 AUTH_STATUSES = (401, 403)  # the server no longer accepts this Sentinel's token
 _TASK_ID = re.compile(r'[A-Za-z0-9_-]{1,64}')  # an id goes into URL paths, thread names and log lines
@@ -583,6 +584,13 @@ class Daemon:
         """POST the result, retrying a network error, a server error or rate limiting with exponential backoff and jitter (at most
         ``REPORT_ATTEMPTS`` tries within ``REPORT_RETRY_SECONDS``, and none once the shutdown grace period is over). Any other refusal is final.
         A result that still cannot be delivered releases the task so the server can run it again now rather than wait for the lease to expire."""
+        try:
+            size = len(json.dumps(result))
+        except (TypeError, ValueError):
+            size = 0
+        if size > MAX_RESULT_BYTES:  # better an error the server can act on than a refused body
+            logger.error('the result for task %s is %s bytes, over the server\'s limit; reporting an error instead', task_id, size)
+            result = {'outcome': 'error', 'error': 'the result was larger than the server accepts'}
         give_up_at = time.monotonic() + REPORT_RETRY_SECONDS
         for attempt in range(REPORT_ATTEMPTS):
             try:

@@ -181,12 +181,16 @@ class NucleiParsingTests(unittest.TestCase):
         self.assertEqual((findings[2]['host'], findings[2]['extracted_results'], findings[2]['tags']), ('', [], []))
         self.assertEqual((findings[3]['host'], findings[3]['extracted_results'], findings[3]['tags']), ('', ['ok'], ['t']))
 
+    def test_the_number_of_findings_is_capped(self):
+        small = {'template-id': 't', 'host': 'www.example.test', 'info': {'name': 'n', 'severity': 'low'}}
+        findings = tools.parse_nuclei_jsonl('\n'.join([json.dumps(small)] * (tools.MAX_FINDINGS + 5)))
+        self.assertEqual(len(findings), tools.MAX_FINDINGS)
+
     def test_findings_and_their_fields_are_capped(self):
         row = {'template-id': 't' * 1000, 'host': 'www.example.test', 'matched-at': 'm' * 5000, 'matcher-name': 'n' * 1000,
                'extracted-results': ['e' * 1000] * 50,
                'info': {'name': 'x' * 5000, 'severity': 's' * 100, 'description': 'd' * 10000, 'tags': [f'tag{i}' for i in range(50)]}}
-        findings = tools.parse_nuclei_jsonl('\n'.join([json.dumps(row)] * (tools.MAX_FINDINGS + 5)))
-        self.assertEqual(len(findings), tools.MAX_FINDINGS)
+        findings = tools.parse_nuclei_jsonl('\n'.join([json.dumps(row)] * 3))
         first = findings[0]
         self.assertEqual(len(first['description']), 4000)
         self.assertEqual(len(first['matched_at']), 500)

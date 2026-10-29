@@ -100,5 +100,32 @@ class InternalGrantTests(unittest.TestCase):
         self.assertIn('CVENGINE_SENTINEL_NETWORK=internal', warnings[0])
 
 
+class ResultSizeTests(unittest.TestCase):
+    def test_a_result_over_the_servers_limit_is_replaced_by_an_error(self):
+        fc = FakeClient()
+        d = daemon.Daemon('https://x.example', 'tok', client=fc)
+        d._report(5, {'outcome': 'done', 'blob': 'x' * (daemon.MAX_RESULT_BYTES + 10)})
+        body = fc.body_for('sentinel/tasks/5/result')
+        self.assertEqual(body['outcome'], 'error')
+        self.assertIn('larger than the server accepts', body['error'])
+        self.assertEqual(fc.count('sentinel/tasks/5/release'), 0)  # a final answer, not a retry loop or a release
+
+    def test_a_normal_result_is_sent_unchanged(self):
+        fc = FakeClient()
+        d = daemon.Daemon('https://x.example', 'tok', client=fc)
+        d._report(6, {'outcome': 'done', 'hosts': []})
+        self.assertEqual(fc.body_for('sentinel/tasks/6/result'), {'outcome': 'done', 'hosts': []})
+
+    def test_nuclei_findings_stop_before_the_servers_limit(self):
+        import json
+        from client import tools
+        row = {'template-id': 't', 'info': {'name': 'n' * 400, 'severity': 'high', 'description': 'd' * 4000, 'tags': ['a'] * 20},
+               'host': 'example.com', 'matched-at': 'm' * 400, 'extracted-results': ['e' * 480] * 20}
+        text = '\n'.join(json.dumps(row) for _ in range(tools.MAX_FINDINGS))
+        findings = tools.parse_nuclei_jsonl(text)
+        self.assertLess(len(findings), tools.MAX_FINDINGS)
+        self.assertLessEqual(len(json.dumps(findings)), tools.MAX_FINDINGS_BYTES + 100_000)
+
+
 if __name__ == '__main__':
     unittest.main()
