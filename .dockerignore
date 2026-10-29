@@ -1,0 +1,16 @@
+# Keep secrets, tests and history out of the build context. .env and its .env.bak.* backups hold the provisioning blob.
+.env*
+.deployed-commit*
+.update.lock
+docker-compose.override.yml
+client/tests
+**/__pycache__
+**/*.pyc
+docs
+**/*.md
+.github
+# The Dockerfile stamps the commit it builds from: only git's HEAD, packed-refs and refs are needed, never the history.
+.git/*
+!.git/HEAD
+!.git/packed-refs
+!.git/refs

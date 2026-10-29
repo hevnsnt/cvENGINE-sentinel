@@ -138,10 +138,51 @@ class CheckUrlTests(unittest.TestCase):
                 self.assertRaises(ScopeError, scope.check_url, url, False, False)
 
 
+class InterfaceAddressesTests(unittest.TestCase):
+    FIB = """Local:
+  +-- 0.0.0.0/0 3 0 5
+     |-- 0.0.0.0
+        /0 universe UNICAST
+     +-- 127.0.0.0/8 2 0 2
+        +-- 127.0.0.0/31 1 0 0
+           |-- 127.0.0.0
+              /32 link BROADCAST
+              /8 host LOCAL
+           |-- 127.0.0.1
+              /32 host LOCAL
+        |-- 127.255.255.255
+           /32 link BROADCAST
+     +-- 192.168.1.0/24 2 0 2
+        |-- 192.168.1.225
+           /32 host LOCAL
+        |-- 192.168.1.255
+           /32 link BROADCAST
+     |-- 172.17.0.1
+        /32 host LOCAL
+"""
+    INET6 = "00000000000000000000000000000001 01 80 10 80       lo\nfe80000000000000a00027fffe4e5f2a 02 40 20 80   eth0\n"
+
+    def test_interface_addresses_are_read_from_the_proc_tables(self):
+        found = scope.interface_addresses(self.FIB, self.INET6)
+        self.assertTrue({'127.0.0.1', '192.168.1.225', '172.17.0.1', '::1', 'fe80::a000:27ff:fe4e:5f2a'} <= found)
+        self.assertNotIn('192.168.1.255', found)  # a broadcast address is not an interface address
+        self.assertNotIn('0.0.0.0', found)
+
+    def test_garbage_and_empty_tables_give_nothing(self):
+        self.assertEqual(scope.interface_addresses('', ''), set())
+        self.assertEqual(scope.interface_addresses('nonsense\n|-- \n/32 host LOCAL', 'zz\n\n'), set())
+
+    def test_an_internal_sentinel_never_scans_its_own_lan_address(self):
+        with mock.patch.object(scope, 'own_addresses', return_value=frozenset(scope.interface_addresses(self.FIB, self.INET6))):
+            for own in ('192.168.1.225', '172.17.0.1'):
+                self.assertRaises(ScopeError, scope.check_ip, own, True)
+            self.assertEqual(scope.check_ip('192.168.1.50', True), '192.168.1.50')  # a neighbour on the same LAN is a legitimate target
+
+
 class OwnAddressesTests(unittest.TestCase):
     def test_it_is_looked_up_once_and_tolerates_a_failing_lookup(self):
         scope._own_cache['value'] = None
-        with mock.patch.object(scope.socket, 'getaddrinfo', side_effect=OSError('no dns')):
+        with mock.patch.object(scope, '_read', return_value=''), mock.patch.object(scope.socket, 'getaddrinfo', side_effect=OSError('no dns')):
             self.assertEqual(scope.own_addresses(), frozenset())
         with mock.patch.object(scope.socket, 'getaddrinfo', side_effect=AssertionError('must not be called again')):
             self.assertEqual(scope.own_addresses(), frozenset())

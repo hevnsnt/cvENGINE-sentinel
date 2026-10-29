@@ -9,10 +9,16 @@ material, no signing. It is exactly the payload one of the server's three enroll
 documents and produces in ``agentapi.sentinel_broker.encode_enrollment_blob``/``decode_enrollment_blob``; the two are
 not a shared import (this client has no Django dependency and ships separately from the server), so both sides
 implement the same few lines independently, documented identically in both places.
+
+``server_url`` is validated on decode (``httpclient.validate_server_url``): it must be ``https`` unless the operator set
+``CVENGINE_SENTINEL_ALLOW_INSECURE=1``, and may carry no userinfo, query or fragment, so a blob can never point the
+enrollment token at a cleartext or credential-bearing URL.
 """
 import base64
 import binascii
 import json
+
+from . import httpclient
 
 REQUIRED_FIELDS = ('enrollment_token', 'server_url')
 
@@ -25,7 +31,8 @@ class BlobError(ValueError):
 def decode_blob(raw):
     """``CVENGINE_SENTINEL_BLOB`` -> ``{enrollment_token, server_url, expires_at, scope, project|org}`` (``project``/``org``
     present only where ``scope`` names one; absent for an instance-wide blob). Raises ``BlobError`` (never anything
-    else) on anything that is not valid base64-encoded JSON, or that is missing a field the client needs."""
+    else) on anything that is not valid base64-encoded JSON, that is missing a field the client needs, or whose
+    ``server_url`` is not one this client will talk to (see the module docstring)."""
     if not isinstance(raw, str) or not raw.strip():
         raise BlobError('CVENGINE_SENTINEL_BLOB is empty')
     try:
@@ -37,6 +44,10 @@ def decode_blob(raw):
     missing = [key for key in REQUIRED_FIELDS if not isinstance(data.get(key), str) or not data[key]]
     if missing:
         raise BlobError(f'CVENGINE_SENTINEL_BLOB is missing: {", ".join(missing)}')
+    try:
+        httpclient.validate_server_url(data['server_url'])
+    except httpclient.ServerURLError as exc:
+        raise BlobError(f'CVENGINE_SENTINEL_BLOB has an unusable server_url: {exc}') from None
     return data
 
 

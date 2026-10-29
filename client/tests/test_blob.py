@@ -1,5 +1,6 @@
 import base64
 import unittest
+from unittest import mock
 
 from client import blob
 
@@ -50,6 +51,40 @@ class DecodeBlobTests(unittest.TestCase):
             self.fail('expected a BlobError')
         except blob.BlobError as exc:
             self.assertNotIn(secret_looking_blob, str(exc))
+
+
+class ServerUrlTests(unittest.TestCase):
+    """The blob's server_url must be https (http only with an explicit local opt-in), with no userinfo, query or fragment."""
+
+    def setUp(self):
+        patch = mock.patch.dict('os.environ', {'CVENGINE_SENTINEL_ALLOW_INSECURE': ''})
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def _blob(self, url):
+        return blob.encode_blob({'enrollment_token': 'senr_abc', 'server_url': url})
+
+    def test_plain_http_is_refused(self):
+        with self.assertRaises(blob.BlobError) as ctx:
+            blob.decode_blob(self._blob('http://evil.example'))
+        self.assertIn('https', str(ctx.exception))
+
+    def test_plain_http_is_allowed_only_with_the_opt_in_and_warns(self):
+        with mock.patch.dict('os.environ', {'CVENGINE_SENTINEL_ALLOW_INSECURE': '1'}), self.assertLogs('sentinel.http', 'WARNING') as logs:
+            self.assertEqual(blob.decode_blob(self._blob('http://cve.lab.test'))['server_url'], 'http://cve.lab.test')
+        self.assertIn('INSECURE', logs.output[0])
+        with mock.patch.dict('os.environ', {'CVENGINE_SENTINEL_ALLOW_INSECURE': 'yes'}), self.assertRaises(blob.BlobError):
+            blob.decode_blob(self._blob('http://cve.lab.test'))  # only an explicit 1 opts in
+
+    def test_credentials_queries_fragments_and_odd_schemes_are_refused_without_echoing_the_url(self):
+        for url in ('https://user:hunter2@cve.example.test', 'https://cve.example.test/?token=hunter2', 'https://cve.example.test/#hunter2',
+                    'https://', 'ftp://cve.example.test', 'javascript:hunter2', 'https://cve.example.test:99999/', 'https://cve example.test'):
+            with self.subTest(url=url), self.assertRaises(blob.BlobError) as ctx:
+                blob.decode_blob(self._blob(url))
+            self.assertNotIn('hunter2', str(ctx.exception))
+
+    def test_https_with_a_path_and_port_is_fine(self):
+        self.assertEqual(blob.decode_blob(self._blob('https://CVE.example.test:8443/cvengine/'))['server_url'], 'https://CVE.example.test:8443/cvengine/')
 
 
 if __name__ == '__main__':

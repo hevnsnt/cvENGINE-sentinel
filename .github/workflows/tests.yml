@@ -10,14 +10,42 @@ permissions:
 
 jobs:
   client:
-    name: Client tests
+    name: Client tests (Python ${{ matrix.python }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.13", "3.14"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
-          python-version: "3.13"
+          python-version: ${{ matrix.python }}
       - run: pip install -r requirements.txt
       - run: python -m unittest discover -s client/tests -t .
-      - name: Shell scripts parse
-        run: for f in scripts/*.sh; do sh -n "$f"; done
+
+  shell:
+    name: Shell scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Scripts parse
+        run: |
+          for f in scripts/*.sh docker-entrypoint.sh; do sh -n "$f"; done
+          bash -n setup.sh
+      - name: shellcheck
+        run: |
+          command -v shellcheck >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q shellcheck; }
+          shellcheck --severity=warning scripts/*.sh docker-entrypoint.sh setup.sh
+
+  compose:
+    name: Compose file
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Light (no profile)
+        run: docker compose config -q
+      - name: Full (openvas profile)
+        run: docker compose config -q
+        env:
+          COMPOSE_PROFILES: openvas

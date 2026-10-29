@@ -57,10 +57,40 @@ MAX_NAME = 253
 _own_cache = {'value': None}
 
 
+def interface_addresses(fib_trie='', if_inet6=''):
+    """The addresses configured on this machine's interfaces, read from the text of /proc/net/fib_trie (IPv4: a ``|-- addr`` line followed by a
+    ``/32 host LOCAL`` line) and /proc/net/if_inet6 (IPv6: 32 hex digits first on each line). With host networking these are the machine's own
+    addresses, its LAN address and the Docker bridge's included."""
+    found, previous = set(), None
+    for line in fib_trie.splitlines():
+        text = line.strip()
+        if text.startswith('|--'):
+            previous = text[3:].strip()
+        elif text.startswith('/32 host LOCAL') and previous:
+            found.add(previous)
+    for line in if_inet6.splitlines():
+        word = line.split()[0] if line.split() else ''
+        if len(word) == 32:
+            try:
+                found.add(str(ipaddress.IPv6Address(int(word, 16))))
+            except ValueError:
+                continue
+    return found
+
+
+def _read(path):
+    try:
+        with open(path, encoding='utf-8') as handle:
+            return handle.read()
+    except OSError:
+        return ''
+
+
 def own_addresses():
-    """The addresses of this container (or this machine, with host networking): never a scan target. Looked up once."""
+    """The addresses of this container (or this machine, with host networking): never a scan target. What the host name resolves to plus every
+    interface address. Looked up once."""
     if _own_cache['value'] is None:
-        found = set()
+        found = interface_addresses(_read('/proc/net/fib_trie'), _read('/proc/net/if_inet6'))
         try:
             name = socket.gethostname()
             for info in socket.getaddrinfo(name, None):
@@ -72,8 +102,9 @@ def own_addresses():
 
 
 def internal_allowed():
-    """Whether this machine was told, by its own configuration, that it sits inside a private network."""
-    return config._local_internal()
+    """Whether this Sentinel may scan private space: this machine's own configuration says it sits inside a private network, and the server has
+    not pulled it back to external. The server can never grant it (``config.is_internal`` is a ceiling)."""
+    return config.is_internal()
 
 
 def _unwrap(ip):
