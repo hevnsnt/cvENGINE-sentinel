@@ -65,6 +65,11 @@ class TargetError(ValueError):
     Always reported back as ``{'outcome': 'error', ...}``, never retried blindly, and the raw target is never passed to a shell."""
 
 
+class ToolExitError(RuntimeError):
+    """A tool exited with a non-zero status or was killed. Its output, if any, is incomplete, so the run is reported as an error, never as an
+    empty result ("no open ports", "no findings")."""
+
+
 class ToolOutputError(RuntimeError):
     """A tool wrote more output than this Sentinel holds in memory. The run was stopped; the task is reported as an error."""
 
@@ -261,10 +266,12 @@ def _run(argv, timeout, register=None, max_bytes=None):
     _join(proc, readers)
     if too_big.is_set():
         raise ToolOutputError(f'{os.path.basename(argv[0])} wrote more than {max_bytes} bytes of output; the run was stopped')
-    text = out.decode('utf-8', errors='replace')
-    if proc.returncode not in (0, None) and not text:
-        logger.warning('%s exited %s: %s', argv[0], proc.returncode, err.decode('utf-8', errors='replace')[:300])
-    return text
+    if proc.returncode not in (0, None):
+        # A crashed or killed tool leaves nothing, or something incomplete: returning that would read as "no open ports" or "no findings".
+        tail = ''.join(ch for ch in err.decode('utf-8', errors='replace')[:300] if ch.isprintable() or ch == ' ').strip()
+        logger.warning('%s exited %s: %s', os.path.basename(argv[0]), proc.returncode, tail)
+        raise ToolExitError(f'{os.path.basename(argv[0])} exited with status {proc.returncode}' + (f': {tail[:200]}' if tail else ''))
+    return out.decode('utf-8', errors='replace')
 
 
 # --- nmap -----------------------------------------------------------------------------------------------------------
@@ -437,6 +444,7 @@ def run_naabu(addresses, timeout=900, register=None):
 # --- nuclei -----------------------------------------------------------------------------------------------------------
 
 MAX_FINDINGS = 5000
+MAX_FINDINGS_BYTES = 20 * 1024 * 1024  # the server's result route takes 24 MB; the findings stay well under it
 MAX_LIST_ITEMS = 20  # tags and extracted results kept per finding
 _LIMITS = {'template_id': 200, 'name': 500, 'severity': 20, 'host': 255, 'matched_at': 500, 'description': 4000, 'matcher_name': 200,
            'extracted': 500, 'tag': 100}
@@ -472,7 +480,7 @@ def _strings(value, limit, split=False):
 def parse_nuclei_jsonl(text):
     """Findings from nuclei's JSONL output. A line that is not an object is skipped and a field of the wrong type is read as empty, so one
     odd line never fails the task; every field is clipped and at most ``MAX_FINDINGS`` are kept."""
-    findings = []
+    findings, size = [], 0
     for line in (text or '').splitlines():
         line = line.strip()
         if not line:
@@ -487,15 +495,20 @@ def parse_nuclei_jsonl(text):
             logger.warning('nuclei reported more than %s findings; the rest were dropped', MAX_FINDINGS)
             break
         info = row.get('info') if isinstance(row.get('info'), dict) else {}
-        findings.append({'template_id': _clip(row.get('template-id'), _LIMITS['template_id']),
-                         'name': _clip(info.get('name'), _LIMITS['name']),
-                         'severity': _clip(info.get('severity'), _LIMITS['severity']) or 'unknown',
-                         'host': host_of(row)[:_LIMITS['host']],
-                         'matched_at': _clip(row.get('matched-at'), _LIMITS['matched_at']),
-                         'description': _clip(info.get('description'), _LIMITS['description']),
-                         'matcher_name': _clip(row.get('matcher-name'), _LIMITS['matcher_name']),
-                         'extracted_results': _strings(row.get('extracted-results'), _LIMITS['extracted']),
-                         'tags': _strings(info.get('tags'), _LIMITS['tag'], split=True)})
+        finding = {'template_id': _clip(row.get('template-id'), _LIMITS['template_id']),
+                   'name': _clip(info.get('name'), _LIMITS['name']),
+                   'severity': _clip(info.get('severity'), _LIMITS['severity']) or 'unknown',
+                   'host': host_of(row)[:_LIMITS['host']],
+                   'matched_at': _clip(row.get('matched-at'), _LIMITS['matched_at']),
+                   'description': _clip(info.get('description'), _LIMITS['description']),
+                   'matcher_name': _clip(row.get('matcher-name'), _LIMITS['matcher_name']),
+                   'extracted_results': _strings(row.get('extracted-results'), _LIMITS['extracted']),
+                   'tags': _strings(info.get('tags'), _LIMITS['tag'], split=True)}
+        size += len(json.dumps(finding))
+        if size > MAX_FINDINGS_BYTES:
+            logger.warning('nuclei findings passed %s bytes; the rest were dropped so the result fits the server\'s limit', MAX_FINDINGS_BYTES)
+            break
+        findings.append(finding)
     return findings
 
 
@@ -505,11 +518,17 @@ def _clean_words(values, pattern):
     return sorted({v for v in values if isinstance(v, str) and pattern.fullmatch(v)})
 
 
-def run_nuclei(targets, tags=None, severities=None, timeout=3600, register=None):
+def run_nuclei(targets, tags=None, severities=None, timeout=3600, register=None, templates=None):
     """Host names are passed to nuclei as names, because each finding reports the host it was given. They were judged by scope (and by
-    every address they resolved to) just before; nuclei resolves them again, so a name whose DNS answer changes in between is the one gap."""
+    every address they resolved to) just before; nuclei resolves them again, so a name whose DNS answer changes in between is the one gap.
+    ``templates`` is a directory of approved templates (the server's verified bundle, ``client.templates``): nuclei then runs exactly that set and
+    nothing else; without it nuclei uses the templates baked into this image."""
     targets = validate_targets(targets, endpoint=True)
     flags = list(NUCLEI_FLAGS)
+    if templates is not None:
+        if not isinstance(templates, str) or not os.path.isabs(templates) or not os.path.isdir(templates):
+            raise TargetError('the approved template directory is not usable')
+        flags += ['-t', templates]
     clean_tags = _clean_words(tags, _TAG)
     if tags and not clean_tags:  # a filter was asked for and none of it is usable: never fall back to every template
         raise TargetError('none of the nuclei tags this task names is usable')

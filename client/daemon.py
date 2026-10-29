@@ -29,6 +29,7 @@ from . import config
 from . import control
 from . import httpclient
 from . import openvas
+from . import templates
 from . import tools
 
 logger = logging.getLogger('sentinel.daemon')
@@ -57,6 +58,7 @@ REPORT_ATTEMPTS = 5  # a result POST is tried this many times at most
 REPORT_BACKOFF = 2.0  # seconds before the first retry, doubling each time
 REPORT_MAX_DELAY = 30.0
 REPORT_RETRY_SECONDS = 120.0  # and never for longer than this in all, so a dead server cannot hold a finished task forever
+MAX_RESULT_BYTES = 23 * 1024 * 1024  # the server's result route refuses a body over 24 MB with a 400 that would end the task
 RELEASE_WAIT_SECONDS = 10.0  # after the grace period, how long shutdown waits for a task thread that is still delivering its result
 AUTH_STATUSES = (401, 403)  # the server no longer accepts this Sentinel's token
 _TASK_ID = re.compile(r'[A-Za-z0-9_-]{1,64}')  # an id goes into URL paths, thread names and log lines
@@ -160,6 +162,15 @@ def detected_tools():
     return _detected['tools']
 
 
+def _cap_concurrency(value):
+    """``value`` as a whole number between 1 and the most the server grants (``config.MAX_AUTO_CONCURRENT``): whatever reaches a bootstrap, a
+    registration or the daemon is held to it, so the server never answers 400 to an over-large explicit setting."""
+    try:
+        return max(1, min(int(value), config.MAX_AUTO_CONCURRENT))
+    except (TypeError, ValueError):
+        return 1
+
+
 def bootstrap(blob_raw, name, max_concurrent, client_factory=httpclient.Client):
     """Decode the provisioning blob and trade it for this Sentinel's own token. Returns ``(token, server_url)``; the
     caller persists it. Raises ``blob.BlobError`` on a bad blob, ``httpclient.ApiError``/``requests.RequestException``
@@ -169,7 +180,7 @@ def bootstrap(blob_raw, name, max_concurrent, client_factory=httpclient.Client):
     client = client_factory(server_url)
     body = {'enrollment_token': payload['enrollment_token'], 'name': name, 'capabilities': declared_kinds(),
             'os': [config.os_family()] if config.os_family() else [], 'tools': detected_tools(),
-            'max_concurrent': max_concurrent, 'settings': config.local_settings()}
+            'max_concurrent': _cap_concurrency(max_concurrent), 'settings': config.local_settings()}
     out = client.call('POST', 'sentinels/bootstrap', body)
     token = out.get('token')
     if not isinstance(token, str) or not token:
@@ -199,20 +210,21 @@ def register(client, name, max_concurrent):
     the one time it originally bootstrapped. ``scope`` is left out on purpose: ``PUT sentinel`` only changes fields
     given in the body, so this never touches the scope an enrollment secret already assigned."""
     body = {'name': name, 'capabilities': declared_kinds(), 'os': [config.os_family()] if config.os_family() else [],
-            'tools': detected_tools(), 'max_concurrent': max_concurrent, 'settings': config.local_settings(), 'info': info()}
+            'tools': detected_tools(), 'max_concurrent': _cap_concurrency(max_concurrent), 'settings': config.local_settings(), 'info': info()}
     return client.call('PUT', 'sentinel', body)
 
 
 class Daemon:
     def __init__(self, server_url, token, max_concurrent=1, client=None, heartbeat_seconds=None):
         self.client = client or httpclient.Client(server_url, token)
-        self.max_concurrent = max(1, max_concurrent)
+        self.max_concurrent = _cap_concurrency(max_concurrent)
         self.reregister = None  # set by the entry point: sends this Sentinel's registration and returns the server's reply
         self.exit_code = 0  # non-zero once the server stopped accepting this Sentinel's token
         self._update_reply = None  # what cvENGINE last said about updating (mode, requested)
         self._register_pending = False  # the last registration did not reach the server: retried at every heartbeat until it does
         self._settings_rev = None  # fingerprint of the server's settings this Sentinel last applied
         self._registered = self._registration()  # what the server was last told, so a change after it is noticed
+        self._warned_internal = False  # the "granted internal, configured external" warning is logged once
         self._gvm_swept = False  # the one-time sweep of leftover GVM tasks has run (or been started)
         self._unsaved_token = None  # (path, token, server_url) when saving a freshly bootstrapped token failed: retried at every heartbeat
         self.heartbeat_seconds = heartbeat_seconds or config.HEARTBEAT_SECONDS
@@ -263,7 +275,8 @@ class Daemon:
         if getattr(exc, 'status', None) not in AUTH_STATUSES:
             return False
         if not self.exit_code:
-            logger.error("this Sentinel's token was revoked or is invalid; stopping")
+            logger.error("this Sentinel's token is expired, revoked or invalid: re-enroll it (generate a new enrollment blob in cvENGINE and run "
+                         "./setup.sh with it); a Sentinel switched off for more than 90 days must be re-enrolled. Stopping")
         self.exit_code = 1
         self.stop_event.set()
         return True
@@ -282,7 +295,9 @@ class Daemon:
             self._retry_token_save()
             asked_at = time.monotonic()
             try:
-                out = self.client.call('POST', 'sentinel/heartbeat', {'info': info()})
+                with self._lock:
+                    running = sorted(self._in_flight, key=str)
+                out = self.client.call('POST', 'sentinel/heartbeat', {'info': info(), 'running': running})
             except (httpclient.ApiError, requests.RequestException) as exc:
                 if not self._auth_failed(exc):
                     logger.warning('heartbeat failed: %s', exc)
@@ -335,8 +350,12 @@ class Daemon:
         before = config.overrides()
         config.set_overrides(reply['values'])
         after = config.overrides()
-        self.max_concurrent = max(1, config.max_concurrent())
+        self.max_concurrent = _cap_concurrency(config.max_concurrent())
         self._settings_rev = rev
+        if after.get('network') == 'internal' and not config._local_internal() and not self._warned_internal:
+            self._warned_internal = True
+            logger.warning('cvENGINE grants this Sentinel the internal network, but this machine is configured as external, so internal-range work '
+                           'is refused here; set CVENGINE_SENTINEL_NETWORK=internal (./setup.sh with the internal flag) if it really sits inside the network')
         if before != after:
             logger.info('settings from the server: %s', ', '.join(f'{k}={v}' for k, v in sorted(after.items())) or 'none (this machine\'s own)')
         self._refresh_registration()
@@ -550,7 +569,8 @@ class Daemon:
         if kind in ('nmap', 'naabu'):
             out = runner(target.get('addresses') or [], register=register)
         elif kind in ('nuclei_light', 'nuclei_targeted', 'nuclei_deep'):
-            out = runner(target.get('targets') or [], tags=target.get('tags'), severities=target.get('severities'), register=register)
+            out = runner(target.get('targets') or [], tags=target.get('tags'), severities=target.get('severities'), register=register,
+                         templates=self._approved_templates(target))
         elif kind == 'testssl':
             out = runner(target.get('host') or '', target.get('ip') or '', target.get('port'), target.get('starttls') or '', register=register)
         elif kind == 'nmap_udp':
@@ -564,10 +584,32 @@ class Daemon:
                          preferences=target.get('preferences'))
         return {'outcome': 'done', **out}
 
+    def _approved_templates(self, target):
+        """The directory of the server's approved nuclei templates a task must run on, or ``None`` when the task names no bundle and the server asks
+        for no policy (an older server: the templates baked into this image are used). A task under the read-only policy that names no bundle, or a
+        bundle that cannot be fetched or verified, is an error: nothing unapproved is ever run in its place."""
+        sha256 = target.get('bundle_sha256')
+        policy = target.get('template_policy')
+        if sha256:
+            try:
+                return templates.ensure_bundle(self.client, sha256)
+            except templates.TemplateError as exc:
+                raise tools.TargetError(str(exc)) from None
+        if isinstance(policy, dict) and policy.get('read_only'):
+            raise tools.TargetError('the task requires the approved template set but names no template bundle')
+        return None
+
     def _report(self, task_id, result):
         """POST the result, retrying a network error, a server error or rate limiting with exponential backoff and jitter (at most
         ``REPORT_ATTEMPTS`` tries within ``REPORT_RETRY_SECONDS``, and none once the shutdown grace period is over). Any other refusal is final.
         A result that still cannot be delivered releases the task so the server can run it again now rather than wait for the lease to expire."""
+        try:
+            size = len(json.dumps(result))
+        except (TypeError, ValueError):
+            size = 0
+        if size > MAX_RESULT_BYTES:  # better an error the server can act on than a refused body
+            logger.error('the result for task %s is %s bytes, over the server\'s limit; reporting an error instead', task_id, size)
+            result = {'outcome': 'error', 'error': 'the result was larger than the server accepts'}
         give_up_at = time.monotonic() + REPORT_RETRY_SECONDS
         for attempt in range(REPORT_ATTEMPTS):
             try:

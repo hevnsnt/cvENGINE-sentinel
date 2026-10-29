@@ -223,6 +223,7 @@ container. "Not passed by compose" below means a value in `.env` has no effect; 
 | `CVENGINE_SENTINEL_ALLOW_INSECURE`                                                                              | No               | unset                                                 | Exactly `1` allows a plain `http` server address (lab use only).                                                                                                                                  | daemon                                                                    |
 | `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY`                                                                         | No               | unset                                                 | A proxy for the Sentinel's connection to cvENGINE. testssl.sh and WPScan run with a minimal environment that leaves these out.                                                                    | daemon (through `requests`)                                               |
 | `CVENGINE_OPENVAS_KEEP_TASKS`                                                                                   | No               | unset                                                 | `1` (or `true`, `yes`, `on`) keeps each GVM task, target and report after a run, to investigate a scan.                                                                                           | daemon (`client/openvas.py`)                                              |
+| `CVENGINE_SENTINEL_UPDATE_TEMPLATES`                                                                            | No               | empty (no refresh)                                    | `1` refreshes the nuclei templates baked into the image at every start (two minute limit), for tasks without the server's template policy                                                         | `docker-entrypoint.sh` (not passed by compose; set it in a compose override if you want it)|
 | `OPENVAS_LOG_LEVEL`                                                                                             | No               | `127`                                                 | The OpenVAS scanner's own log level. `128` is debug (about 50 MB for one 40 minute scan of one host); set it only while debugging, then `docker compose up -d`.                                   | Docker Compose (`openvas-configure`)                                      |
 | `CVENGINE_OPENVAS_MAX_HOURS`                                                                                    | No               | `24`                                                  | This machine's ceiling on one OpenVAS task's time budget, in hours (at least 1). **Not passed by compose.**                                                                                       | daemon                                                                    |
 | `CVENGINE_SENTINEL_VERSION`                                                                                     | No               | the commit stamped into the image                     | Used only when the image has no stamp (built without `.git`). **Not passed by compose**, and `scripts/update.sh` deletes the line from `.env`.                                                    | daemon                                                                    |
@@ -276,7 +277,7 @@ Windows handles it differently.
 | Setting                     | Value                                                                                           | Why                                                                                                        |
 | --------------------------- | ----------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
 | `image`                     | `cvengine-sentinel-local:latest`, `pull_policy: build`                                          | Built locally, never pulled from a registry. A plain `docker compose pull` does not ask Docker Hub for it. |
-| `cap_add`                   | `NET_RAW`, `NET_ADMIN` (no `--privileged`)                                                      | Raw sockets for nmap, naabu and the UDP sweep.                                                             |
+| `cap_add`                   | `NET_RAW`, `NET_ADMIN` (no `--privileged`)                                                      | Raw sockets for nmap, naabu and the UDP sweep. The Sentinel runs as an unprivileged user (uid 10001) and only nmap and naabu carry file capabilities that use these; no other process in the image holds a capability.                                                             |
 | `init`, `stop_grace_period` | `true`, `75s`                                                                                   | See [Shutdown](#shutdown).                                                                                 |
 | `pids_limit`, `mem_limit`   | `512`, `2g`                                                                                     | Bounds a runaway tool.                                                                                     |
 | `healthcheck`               | `python3 -m client.control health` every 60 s                                                   | See [Health check](#health-check).                                                                         |
@@ -669,7 +670,15 @@ before the stack is ready fails with "GVM is still syncing its ... feed(s)".
 - This machine's policy as ceilings: network (internal only if `.env` says so), disabled kinds (a veto), self-update
   (`off` or `manual` here cannot be raised).
 - Only known task kinds, each run as a fixed argument list with no shell; a kind it does not run now is refused.
-- nuclei never runs denial-of-service templates; OpenVAS never runs the Denial of Service or Brute force families.
+- nuclei never runs denial-of-service templates; a nuclei task that names the server's approved template bundle (`bundle_sha256`) runs on exactly
+  that set: the bundle is downloaded from this Sentinel's own server, its hash checked, unpacked defensively (regular files and directories only,
+  every path inside the target, bounded size) and kept in the state volume; if it cannot be fetched or does not verify, the task is an error and
+  nothing unapproved runs. A task under the read-only policy that names no bundle is an error too; a task with no policy uses the pinned templates
+  in the image. OpenVAS never runs the Denial of Service or Brute force families.
+- The container runs as an unprivileged user (uid 10001). Raw sockets come from file capabilities on nmap and naabu only; a one-shot
+  `sentinel-init` service (root, no capabilities, no network) hands an older state volume to that user before the Sentinel starts.
+- A tool that exits with an error or is killed is reported as an error, never as an empty result; a result over the server's 24 MB limit is
+  reported as an error instead of being sent; the heartbeat lists the ids of the tasks this Sentinel is running.
 - Bounded output, findings and result sizes; whole process groups killed on stop.
 - Secrets are never logged: the token, the GVM password, the blob, the WPScan API token.
 
@@ -685,8 +694,9 @@ again when they run, so a DNS answer that changes in between is not caught (nmap
   Automatic Sentinel within about an hour. Keep `origin` pointed at
   `https://github.com/hevnsnt/cvengine-sentinel.git` (or a fork you control), protect that repository, and use Manual
   or Off (`CVENGINE_SENTINEL_UPDATE=manual`) where that is not enough.
-- **Mind other unpinned inputs.** nuclei templates are fetched at build time and refreshed at every start; the
-  Greenbone feed images follow moving tags; Python packages are pinned by version, not hash.
+- **Mind other unpinned inputs.** The nuclei templates in the image are a pinned release (checksum-verified at build) and are not
+  refreshed at start (`CVENGINE_SENTINEL_UPDATE_TEMPLATES=1` opts in); the Greenbone feed images follow moving tags; Python packages
+  are pinned by version, not hash.
 - **Set `CVENGINE_SENTINEL_NETWORK=internal` only on machines meant to scan private space.** An internal Sentinel may
   scan any private address, which includes this Docker host's bridge gateway and, with host networking, the
   machine's LAN neighbours.

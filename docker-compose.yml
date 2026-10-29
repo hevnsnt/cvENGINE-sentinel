@@ -20,7 +20,26 @@ x-logging: &logging
     max-file: "3"
 
 services:
+  # The Sentinel runs as an unprivileged user (uid 10001). A state volume made by an older image holds files owned by root (the token, the GVM login),
+  # which that user could not read: this one-shot service hands them over before the Sentinel starts. It runs as root for that one command, with no
+  # capabilities, no network and nothing but the state volume mounted.
+  sentinel-init:
+    image: cvengine-sentinel-local:latest
+    pull_policy: never
+    user: "0:0"
+    entrypoint: ["chown", "-R", "10001:10001", "/var/lib/cvengine-sentinel"]
+    network_mode: none
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
+    restart: "no"
+    volumes:
+      - sentinel-state:/var/lib/cvengine-sentinel
+    logging: *logging
+
   sentinel:
+    depends_on:
+      sentinel-init:
+        condition: service_completed_successfully
     build:
       context: .
       dockerfile: Dockerfile

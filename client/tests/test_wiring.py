@@ -70,5 +70,62 @@ class BackgroundKillTests(unittest.TestCase):
         daemon.Daemon._kill(None)
 
 
+class ConcurrencyCapTests(unittest.TestCase):
+    def test_no_request_to_the_server_carries_more_than_the_cap(self):
+        fc = FakeClient()
+        with mock.patch('client.tools.detect_tools', return_value=[]):
+            daemon.register(fc, 'box', 50)
+        self.assertEqual(fc.body_for('sentinel')['max_concurrent'], 10)
+
+    def test_bootstrap_and_the_daemon_hold_to_the_cap_and_a_floor_of_one(self):
+        self.assertEqual(daemon._cap_concurrency(50), 10)
+        self.assertEqual(daemon._cap_concurrency(0), 1)
+        self.assertEqual(daemon._cap_concurrency(-3), 1)
+        self.assertEqual(daemon._cap_concurrency('7'), 7)
+        self.assertEqual(daemon._cap_concurrency(None), 1)
+        self.assertEqual(daemon._cap_concurrency('many'), 1)
+        self.assertEqual(daemon.Daemon('https://x.example', 'tok', max_concurrent=99, client=FakeClient()).max_concurrent, 10)
+
+
+class InternalGrantTests(unittest.TestCase):
+    def test_a_grant_of_internal_on_a_machine_configured_external_is_warned_about_once(self):
+        d = make_daemon()
+        d.reregister = lambda: None
+        self.addCleanup(daemon.config.set_overrides, {})
+        with mock.patch.object(daemon.config, '_local_internal', return_value=False), self.assertLogs('sentinel.daemon', level='WARNING') as logs:
+            d.apply_settings({'values': {'network': 'internal'}, 'rev': 'r1'})
+            d.apply_settings({'values': {'network': 'internal', 'max_concurrent': 2}, 'rev': 'r2'})
+        warnings = [line for line in logs.output if 'configured as external' in line]
+        self.assertEqual(len(warnings), 1)
+        self.assertIn('CVENGINE_SENTINEL_NETWORK=internal', warnings[0])
+
+
+class ResultSizeTests(unittest.TestCase):
+    def test_a_result_over_the_servers_limit_is_replaced_by_an_error(self):
+        fc = FakeClient()
+        d = daemon.Daemon('https://x.example', 'tok', client=fc)
+        d._report(5, {'outcome': 'done', 'blob': 'x' * (daemon.MAX_RESULT_BYTES + 10)})
+        body = fc.body_for('sentinel/tasks/5/result')
+        self.assertEqual(body['outcome'], 'error')
+        self.assertIn('larger than the server accepts', body['error'])
+        self.assertEqual(fc.count('sentinel/tasks/5/release'), 0)  # a final answer, not a retry loop or a release
+
+    def test_a_normal_result_is_sent_unchanged(self):
+        fc = FakeClient()
+        d = daemon.Daemon('https://x.example', 'tok', client=fc)
+        d._report(6, {'outcome': 'done', 'hosts': []})
+        self.assertEqual(fc.body_for('sentinel/tasks/6/result'), {'outcome': 'done', 'hosts': []})
+
+    def test_nuclei_findings_stop_before_the_servers_limit(self):
+        import json
+        from client import tools
+        row = {'template-id': 't', 'info': {'name': 'n' * 400, 'severity': 'high', 'description': 'd' * 4000, 'tags': ['a'] * 20},
+               'host': 'example.com', 'matched-at': 'm' * 400, 'extracted-results': ['e' * 480] * 20}
+        text = '\n'.join(json.dumps(row) for _ in range(tools.MAX_FINDINGS))
+        findings = tools.parse_nuclei_jsonl(text)
+        self.assertLess(len(findings), tools.MAX_FINDINGS)
+        self.assertLessEqual(len(json.dumps(findings)), tools.MAX_FINDINGS_BYTES + 100_000)
+
+
 if __name__ == '__main__':
     unittest.main()

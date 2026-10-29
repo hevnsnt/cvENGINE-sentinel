@@ -8,6 +8,7 @@ every result travel encrypted, and redirects are never followed: a 3xx is an ``A
 turns into a GET elsewhere. The session keeps ``trust_env`` on, so ``HTTPS_PROXY``/``NO_PROXY`` still work behind a
 corporate proxy.
 """
+import hashlib
 import json
 import logging
 from urllib.parse import urlsplit
@@ -100,3 +101,29 @@ class Client:
             message = (payload.get('error') if isinstance(payload, dict) else None) or f'HTTP {response.status_code}'
             raise ApiError(response.status_code, str(message)[:300])
         return payload if isinstance(payload, dict) else {}
+
+    def download(self, path, destination, max_bytes, timeout=None):
+        """GET ``path`` and write the body to ``destination`` (a binary file object), at most ``max_bytes`` of it; returns ``(sha256 hex of exactly the
+        bytes written, their count)``. Same rules as ``call``: redirects are never followed and any 3xx/4xx/5xx is an ``ApiError``; a body past
+        ``max_bytes`` is an ``ApiError`` too, so a hostile or broken server cannot fill the disk."""
+        url = self.base + path.lstrip('/')
+        headers = {'Accept': 'application/octet-stream, application/gzip, */*'}
+        if self.token:
+            headers['Authorization'] = f'Bearer {self.token}'
+        response = self.session.request('GET', url, headers=headers, allow_redirects=False, stream=True,
+                                        timeout=timeout if timeout is not None else self.timeout)
+        try:
+            if 300 <= response.status_code < 400:
+                raise ApiError(response.status_code, 'the server answered with a redirect, which this Sentinel never follows')
+            if response.status_code >= 400:
+                raise ApiError(response.status_code, f'HTTP {response.status_code}')
+            digest, size = hashlib.sha256(), 0
+            for chunk in response.iter_content(chunk_size=64 * 1024):
+                size += len(chunk)
+                if size > max_bytes:
+                    raise ApiError(413, f'the download is larger than the {max_bytes} bytes this Sentinel accepts')
+                digest.update(chunk)
+                destination.write(chunk)
+            return digest.hexdigest(), size
+        finally:
+            response.close()
