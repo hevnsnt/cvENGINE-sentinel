@@ -543,17 +543,18 @@ class WpscanRunnerTests(unittest.TestCase):
     class _FakeProc:
         pid = 55555
 
-        def __init__(self, argv, env, report, returncode=0, stderr=''):
+        def __init__(self, argv, env, report, returncode=0, stderr='', stdout=''):
             self.argv, self.env = argv, env
             self.returncode = returncode
             self._stderr = stderr
+            self._stdout = stdout
             if report is not None:
                 out = argv[argv.index('-o') + 1]
                 with open(out, 'w', encoding='utf-8') as handle:
                     json.dump(report, handle)
 
         def communicate(self, timeout=None):
-            return ('', self._stderr)
+            return (self._stdout, self._stderr)
 
     def test_builds_argv_reads_the_report_and_puts_the_token_only_in_the_environment(self):
         report = {'version': {'number': '6.4'}}
@@ -580,6 +581,31 @@ class WpscanRunnerTests(unittest.TestCase):
         self.assertIsNone(result['report'])
         self.assertEqual(result['returncode'], 4)
         self.assertEqual(result['stderr_tail'], 'Scan Aborted: not running WordPress')
+
+    def _run_fake(self, token='', **fake):
+        report = fake.pop('report', None)
+        with mock.patch('client.tools.subprocess.Popen', side_effect=lambda argv, env=None, **kw: self._FakeProc(argv, env, report, **fake)):
+            return tools.run_wpscan('https://www.example.test', token=token)
+
+    def test_a_failure_wpscan_prints_on_stdout_is_reported_when_stderr_is_empty(self):
+        result = self._run_fake(returncode=1, stdout='[i] starting\nScan Aborted: invalid option: --x\n')
+        self.assertEqual(result['stderr_tail'], 'Scan Aborted: invalid option: --x')
+
+    def test_stderr_wins_over_stdout(self):
+        result = self._run_fake(returncode=1, stdout='Scan Aborted: from stdout\n', stderr='boom from stderr\n\n')
+        self.assertEqual(result['stderr_tail'], 'boom from stderr')
+
+    def test_a_vulnerable_exit_code_keeps_the_report_and_returncode(self):
+        report = {'version': {'number': '6.4'}}
+        result = self._run_fake(returncode=4, report=report, stdout='lots of output\n')
+        self.assertEqual(result['report'], report)
+        self.assertEqual(result['returncode'], 4)
+
+    def test_the_token_and_long_lines_never_come_back(self):
+        result = self._run_fake(token='tok-123', returncode=1, stdout='Scan Aborted: bad token tok-123 ' + 'x' * 500 + '\n')
+        self.assertNotIn('tok-123', result['stderr_tail'])
+        self.assertIn('***', result['stderr_tail'])
+        self.assertLessEqual(len(result['stderr_tail']), 300)
 
     def test_a_timeout_kills_the_whole_group(self):
         class Slow(self._FakeProc):
