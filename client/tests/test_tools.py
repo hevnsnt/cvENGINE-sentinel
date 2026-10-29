@@ -740,5 +740,44 @@ class GvmStatusTests(unittest.TestCase):
         self.assertEqual(tools.gvm_status(now=11), (True, ''))
 
 
+class ToolExitTests(unittest.TestCase):
+    """A tool that crashed or was killed must never read as an empty result."""
+
+    def script(self, body):
+        handle = tempfile.NamedTemporaryFile('w', suffix='.sh', delete=False)
+        handle.write('#!/bin/sh\n' + body + '\n')
+        handle.close()
+        os.chmod(handle.name, 0o755)
+        self.addCleanup(os.unlink, handle.name)
+        return handle.name
+
+    def test_a_non_zero_exit_is_an_error_even_with_no_output(self):
+        with self.assertRaises(tools.ToolExitError) as ctx:
+            tools._run(['sh', '-c', 'echo boom >&2; exit 3'], 10)
+        self.assertIn('status 3', str(ctx.exception))
+        self.assertIn('boom', str(ctx.exception))
+
+    def test_a_non_zero_exit_with_partial_output_is_still_an_error(self):
+        with self.assertRaises(tools.ToolExitError):
+            tools._run(['sh', '-c', 'echo partial; exit 1'], 10)
+
+    def test_a_killed_tool_is_an_error(self):
+        with self.assertRaises(tools.ToolExitError) as ctx:
+            tools._run(['sh', '-c', 'kill -9 $$'], 10)
+        self.assertIn('-9', str(ctx.exception))
+
+    def test_a_clean_exit_returns_its_output(self):
+        self.assertEqual(tools._run(['sh', '-c', 'echo ok'], 10).strip(), 'ok')
+
+    def test_naabu_nmap_and_nuclei_report_a_crash_not_an_empty_answer(self):
+        crash = self.script('exit 2')
+        with mock.patch.object(tools, 'NAABU_BIN', crash), self.assertRaises(tools.ToolExitError):
+            tools.run_naabu(['8.8.8.8'])
+        with mock.patch.object(tools, 'NMAP_BIN', crash), self.assertRaises(tools.ToolExitError):
+            tools.run_nmap(['8.8.8.8'])
+        with mock.patch.object(tools, 'NUCLEI_BIN', crash), self.assertRaises(tools.ToolExitError):
+            tools.run_nuclei(['8.8.8.8'])
+
+
 if __name__ == '__main__':
     unittest.main()

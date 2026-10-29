@@ -65,6 +65,11 @@ class TargetError(ValueError):
     Always reported back as ``{'outcome': 'error', ...}``, never retried blindly, and the raw target is never passed to a shell."""
 
 
+class ToolExitError(RuntimeError):
+    """A tool exited with a non-zero status or was killed. Its output, if any, is incomplete, so the run is reported as an error, never as an
+    empty result ("no open ports", "no findings")."""
+
+
 class ToolOutputError(RuntimeError):
     """A tool wrote more output than this Sentinel holds in memory. The run was stopped; the task is reported as an error."""
 
@@ -261,10 +266,12 @@ def _run(argv, timeout, register=None, max_bytes=None):
     _join(proc, readers)
     if too_big.is_set():
         raise ToolOutputError(f'{os.path.basename(argv[0])} wrote more than {max_bytes} bytes of output; the run was stopped')
-    text = out.decode('utf-8', errors='replace')
-    if proc.returncode not in (0, None) and not text:
-        logger.warning('%s exited %s: %s', argv[0], proc.returncode, err.decode('utf-8', errors='replace')[:300])
-    return text
+    if proc.returncode not in (0, None):
+        # A crashed or killed tool leaves nothing, or something incomplete: returning that would read as "no open ports" or "no findings".
+        tail = ''.join(ch for ch in err.decode('utf-8', errors='replace')[:300] if ch.isprintable() or ch == ' ').strip()
+        logger.warning('%s exited %s: %s', os.path.basename(argv[0]), proc.returncode, tail)
+        raise ToolExitError(f'{os.path.basename(argv[0])} exited with status {proc.returncode}' + (f': {tail[:200]}' if tail else ''))
+    return out.decode('utf-8', errors='replace')
 
 
 # --- nmap -----------------------------------------------------------------------------------------------------------

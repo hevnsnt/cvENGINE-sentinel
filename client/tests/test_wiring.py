@@ -70,5 +70,35 @@ class BackgroundKillTests(unittest.TestCase):
         daemon.Daemon._kill(None)
 
 
+class ConcurrencyCapTests(unittest.TestCase):
+    def test_no_request_to_the_server_carries_more_than_the_cap(self):
+        fc = FakeClient()
+        with mock.patch('client.tools.detect_tools', return_value=[]):
+            daemon.register(fc, 'box', 50)
+        self.assertEqual(fc.body_for('sentinel')['max_concurrent'], 10)
+
+    def test_bootstrap_and_the_daemon_hold_to_the_cap_and_a_floor_of_one(self):
+        self.assertEqual(daemon._cap_concurrency(50), 10)
+        self.assertEqual(daemon._cap_concurrency(0), 1)
+        self.assertEqual(daemon._cap_concurrency(-3), 1)
+        self.assertEqual(daemon._cap_concurrency('7'), 7)
+        self.assertEqual(daemon._cap_concurrency(None), 1)
+        self.assertEqual(daemon._cap_concurrency('many'), 1)
+        self.assertEqual(daemon.Daemon('https://x.example', 'tok', max_concurrent=99, client=FakeClient()).max_concurrent, 10)
+
+
+class InternalGrantTests(unittest.TestCase):
+    def test_a_grant_of_internal_on_a_machine_configured_external_is_warned_about_once(self):
+        d = make_daemon()
+        d.reregister = lambda: None
+        self.addCleanup(daemon.config.set_overrides, {})
+        with mock.patch.object(daemon.config, '_local_internal', return_value=False), self.assertLogs('sentinel.daemon', level='WARNING') as logs:
+            d.apply_settings({'values': {'network': 'internal'}, 'rev': 'r1'})
+            d.apply_settings({'values': {'network': 'internal', 'max_concurrent': 2}, 'rev': 'r2'})
+        warnings = [line for line in logs.output if 'configured as external' in line]
+        self.assertEqual(len(warnings), 1)
+        self.assertIn('CVENGINE_SENTINEL_NETWORK=internal', warnings[0])
+
+
 if __name__ == '__main__':
     unittest.main()

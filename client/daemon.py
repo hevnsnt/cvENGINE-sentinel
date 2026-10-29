@@ -160,6 +160,15 @@ def detected_tools():
     return _detected['tools']
 
 
+def _cap_concurrency(value):
+    """``value`` as a whole number between 1 and the most the server grants (``config.MAX_AUTO_CONCURRENT``): whatever reaches a bootstrap, a
+    registration or the daemon is held to it, so the server never answers 400 to an over-large explicit setting."""
+    try:
+        return max(1, min(int(value), config.MAX_AUTO_CONCURRENT))
+    except (TypeError, ValueError):
+        return 1
+
+
 def bootstrap(blob_raw, name, max_concurrent, client_factory=httpclient.Client):
     """Decode the provisioning blob and trade it for this Sentinel's own token. Returns ``(token, server_url)``; the
     caller persists it. Raises ``blob.BlobError`` on a bad blob, ``httpclient.ApiError``/``requests.RequestException``
@@ -169,7 +178,7 @@ def bootstrap(blob_raw, name, max_concurrent, client_factory=httpclient.Client):
     client = client_factory(server_url)
     body = {'enrollment_token': payload['enrollment_token'], 'name': name, 'capabilities': declared_kinds(),
             'os': [config.os_family()] if config.os_family() else [], 'tools': detected_tools(),
-            'max_concurrent': max_concurrent, 'settings': config.local_settings()}
+            'max_concurrent': _cap_concurrency(max_concurrent), 'settings': config.local_settings()}
     out = client.call('POST', 'sentinels/bootstrap', body)
     token = out.get('token')
     if not isinstance(token, str) or not token:
@@ -199,20 +208,21 @@ def register(client, name, max_concurrent):
     the one time it originally bootstrapped. ``scope`` is left out on purpose: ``PUT sentinel`` only changes fields
     given in the body, so this never touches the scope an enrollment secret already assigned."""
     body = {'name': name, 'capabilities': declared_kinds(), 'os': [config.os_family()] if config.os_family() else [],
-            'tools': detected_tools(), 'max_concurrent': max_concurrent, 'settings': config.local_settings(), 'info': info()}
+            'tools': detected_tools(), 'max_concurrent': _cap_concurrency(max_concurrent), 'settings': config.local_settings(), 'info': info()}
     return client.call('PUT', 'sentinel', body)
 
 
 class Daemon:
     def __init__(self, server_url, token, max_concurrent=1, client=None, heartbeat_seconds=None):
         self.client = client or httpclient.Client(server_url, token)
-        self.max_concurrent = max(1, max_concurrent)
+        self.max_concurrent = _cap_concurrency(max_concurrent)
         self.reregister = None  # set by the entry point: sends this Sentinel's registration and returns the server's reply
         self.exit_code = 0  # non-zero once the server stopped accepting this Sentinel's token
         self._update_reply = None  # what cvENGINE last said about updating (mode, requested)
         self._register_pending = False  # the last registration did not reach the server: retried at every heartbeat until it does
         self._settings_rev = None  # fingerprint of the server's settings this Sentinel last applied
         self._registered = self._registration()  # what the server was last told, so a change after it is noticed
+        self._warned_internal = False  # the "granted internal, configured external" warning is logged once
         self._gvm_swept = False  # the one-time sweep of leftover GVM tasks has run (or been started)
         self._unsaved_token = None  # (path, token, server_url) when saving a freshly bootstrapped token failed: retried at every heartbeat
         self.heartbeat_seconds = heartbeat_seconds or config.HEARTBEAT_SECONDS
@@ -263,7 +273,8 @@ class Daemon:
         if getattr(exc, 'status', None) not in AUTH_STATUSES:
             return False
         if not self.exit_code:
-            logger.error("this Sentinel's token was revoked or is invalid; stopping")
+            logger.error("this Sentinel's token is expired, revoked or invalid: re-enroll it (generate a new enrollment blob in cvENGINE and run "
+                         "./setup.sh with it); a Sentinel switched off for more than 90 days must be re-enrolled. Stopping")
         self.exit_code = 1
         self.stop_event.set()
         return True
@@ -335,8 +346,12 @@ class Daemon:
         before = config.overrides()
         config.set_overrides(reply['values'])
         after = config.overrides()
-        self.max_concurrent = max(1, config.max_concurrent())
+        self.max_concurrent = _cap_concurrency(config.max_concurrent())
         self._settings_rev = rev
+        if after.get('network') == 'internal' and not config._local_internal() and not self._warned_internal:
+            self._warned_internal = True
+            logger.warning('cvENGINE grants this Sentinel the internal network, but this machine is configured as external, so internal-range work '
+                           'is refused here; set CVENGINE_SENTINEL_NETWORK=internal (./setup.sh with the internal flag) if it really sits inside the network')
         if before != after:
             logger.info('settings from the server: %s', ', '.join(f'{k}={v}' for k, v in sorted(after.items())) or 'none (this machine\'s own)')
         self._refresh_registration()

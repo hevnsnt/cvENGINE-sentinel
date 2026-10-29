@@ -880,7 +880,7 @@ class RevokedTokenTests(DaemonTestCase):
                 d._poll_once()
             self.assertTrue(d.stop_event.is_set())
             self.assertEqual(d.exit_code, 1)
-            self.assertIn('revoked or is invalid', '\n'.join(logs.output))
+            self.assertIn('re-enroll', '\n'.join(logs.output))
 
     def test_a_revoked_token_on_the_heartbeat_stops_the_daemon(self):
         self.fc.script[('POST', 'sentinel/heartbeat')] = [httpclient.ApiError(401, 'no')]
