@@ -127,5 +127,66 @@ class ResultSizeTests(unittest.TestCase):
         self.assertLessEqual(len(json.dumps(findings)), tools.MAX_FINDINGS_BYTES + 100_000)
 
 
+class OrphanedLeaseTests(unittest.TestCase):
+    def make(self):
+        fc = FakeClient()
+        return daemon.Daemon('https://x.example', 'tok', client=fc), fc
+
+    def releases(self, fc):
+        return [(path, body) for method, path, body in fc.calls if path.endswith('/release')]
+
+    def test_a_lease_the_server_holds_but_this_sentinel_is_not_running_is_released_when_seen_twice(self):
+        d, fc = self.make()
+        d._reconcile([{'task_id': 53}, {'task_id': 90}])
+        self.assertEqual(self.releases(fc), [])  # a first sighting could be a task accepted a moment ago
+        d._reconcile([{'task_id': 53}, {'task_id': 90}])
+        self.assertEqual([p for p, _ in self.releases(fc)], ['sentinel/tasks/53/release', 'sentinel/tasks/90/release'])
+        self.assertIn('not running the task', self.releases(fc)[0][1]['reason'])
+
+    def test_a_task_that_is_running_here_is_never_released(self):
+        d, fc = self.make()
+        d._in_flight = {7: {'kind': 'nmap', 'started': time.monotonic(), 'done': threading.Event()}}
+        for _ in range(3):
+            d._reconcile([{'task_id': 7}])
+        self.assertEqual(self.releases(fc), [])
+
+    def test_a_lease_that_goes_away_in_between_is_forgotten(self):
+        d, fc = self.make()
+        d._reconcile([{'task_id': 5}])
+        d._reconcile([])  # the server let it go
+        d._reconcile([{'task_id': 5}])  # a new lease with the same id is a first sighting again
+        self.assertEqual(self.releases(fc), [])
+
+    def test_a_task_that_starts_running_here_between_heartbeats_is_not_released(self):
+        d, fc = self.make()
+        d._reconcile([{'task_id': 9}])
+        d._in_flight = {9: {'kind': 'naabu', 'started': time.monotonic(), 'done': threading.Event()}}
+        d._reconcile([{'task_id': 9}])
+        self.assertEqual(self.releases(fc), [])
+
+    def test_ids_are_compared_as_text_so_a_string_and_an_int_agree(self):
+        d, fc = self.make()
+        d._in_flight = {'12': {'kind': 'nmap', 'started': time.monotonic(), 'done': threading.Event()}}
+        d._reconcile([{'task_id': 12}])
+        d._reconcile([{'task_id': 12}])
+        self.assertEqual(self.releases(fc), [])
+
+    def test_no_list_judges_nothing_and_a_failing_release_never_raises(self):
+        d, fc = self.make()
+        d._reconcile(None)
+        d._reconcile('nonsense')
+        self.assertEqual(self.releases(fc), [])
+        fc.fail_on.add(('POST', 'sentinel/tasks/3/release'))
+        d._reconcile([{'task_id': 3}])
+        d._reconcile([{'task_id': 3}])  # the release fails: logged, not raised
+
+    def test_at_most_a_bounded_number_are_released_per_heartbeat(self):
+        d, fc = self.make()
+        leases = [{'task_id': i} for i in range(daemon.MAX_ORPHAN_RELEASES + 15)]
+        d._reconcile(leases)
+        d._reconcile(leases)
+        self.assertEqual(len(self.releases(fc)), daemon.MAX_ORPHAN_RELEASES)
+
+
 if __name__ == '__main__':
     unittest.main()

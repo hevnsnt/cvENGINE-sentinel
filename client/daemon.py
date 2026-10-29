@@ -51,6 +51,7 @@ def _clip(value, limit=40):
     return ''.join(c for c in str(value) if c.isprintable())[:limit]
 
 
+MAX_ORPHAN_RELEASES = 20  # leases released per heartbeat, so a server with many stale ones cannot make one heartbeat very long
 RECONCILE_GRACE_SECONDS = 10.0  # a task accepted this recently may not be in the heartbeat's lease list yet
 MIN_BACKOFF = 1.0
 MAX_BACKOFF = 60.0
@@ -225,6 +226,7 @@ class Daemon:
         self._settings_rev = None  # fingerprint of the server's settings this Sentinel last applied
         self._registered = self._registration()  # what the server was last told, so a change after it is noticed
         self._warned_internal = False  # the "granted internal, configured external" warning is logged once
+        self._orphans_seen = set()  # leases the server held for this Sentinel, not running here, at the last heartbeat
         self._gvm_swept = False  # the one-time sweep of leftover GVM tasks has run (or been started)
         self._unsaved_token = None  # (path, token, server_url) when saving a freshly bootstrapped token failed: retried at every heartbeat
         self.heartbeat_seconds = heartbeat_seconds or config.HEARTBEAT_SECONDS
@@ -407,6 +409,21 @@ class Daemon:
         for task_id, proc in stale:
             logger.warning('task %s is no longer assigned to this Sentinel (taken back by the server); stopping it', task_id)
             self._kill(proc, background=True)
+        self._release_orphaned_leases(held)
+
+    def _release_orphaned_leases(self, held):
+        """The other half of reconciling: a lease the server still holds for this Sentinel that it is not running (left by a restart, a crash or a
+        result that never arrived). The server counts it against this Sentinel's capacity and keeps extending it at every heartbeat, so unreleased
+        ghosts add up until it believes the Sentinel is full and sends it nothing. A lease is released once it has been seen, and not running here, in
+        two consecutive heartbeats, so a task accepted a moment ago is never released."""
+        with self._lock:
+            running = {str(task_id) for task_id in self._in_flight}
+        orphans = {task_id for task_id in held if str(task_id) not in running}
+        confirmed = [task_id for task_id in orphans if task_id in self._orphans_seen]
+        self._orphans_seen = orphans  # a lease that went away, or is running here after all, is forgotten
+        for task_id in sorted(confirmed, key=str)[:MAX_ORPHAN_RELEASES]:
+            logger.warning('the server holds task %s for this Sentinel but it is not running here; releasing it', task_id)
+            self._release(task_id, 'this Sentinel is not running the task (a lease left by a restart)')
 
     def _write_control(self, update_reply=None):
         """Tell the host-side updater where this Sentinel stands: running tasks (plus one while a poll that may return a task is outstanding),
