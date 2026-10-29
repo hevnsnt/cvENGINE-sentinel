@@ -67,8 +67,9 @@ class ComposeTests(unittest.TestCase):
             text = handle.read()
         self.assertRegex(text, r'(?m)^USER sentinel$')
         self.assertIn('--uid 10001', text)
-        self.assertRegex(text, r'setcap cap_net_raw,cap_net_admin\+eip /usr/local/bin/nmap /usr/local/bin/naabu')
-        self.assertEqual(text.count('setcap'), 1)  # one command: nothing else is given a capability
+        for binary in ('nmap', 'naabu'):  # one setcap per file: libcap's setcap takes a single file for each capability spec
+            self.assertRegex(text, rf'setcap cap_net_raw,cap_net_admin\+eip /usr/local/bin/{binary}\b')
+        self.assertEqual(text.count('setcap'), 2)  # exactly these two: nothing else is given a capability
         self.assertIn('NMAP_PRIVILEGED=1', text)
         self.assertIn('GOBIN=/usr/local/bin', text)  # the tools are installed where the unprivileged user can run them
         self.assertLess(text.index('RUN useradd'), text.index('USER sentinel'))

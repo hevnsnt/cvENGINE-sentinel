@@ -155,7 +155,8 @@ RUN h="$(cat /tmp/gitmeta/HEAD 2>/dev/null || true)"; v=""; \
 # discovery, naabu's SYN scan). They only take effect because the container is given NET_RAW and NET_ADMIN (docker-compose.yml); no other process in
 # the image holds any capability. NMAP_PRIVILEGED tells nmap to use them although it does not run as root.
 RUN apt-get update -y && apt-get install -y --no-install-recommends libcap2-bin && rm -rf /var/lib/apt/lists/* \
-    && setcap cap_net_raw,cap_net_admin+eip /usr/local/bin/nmap /usr/local/bin/naabu \
+    && setcap cap_net_raw,cap_net_admin+eip /usr/local/bin/nmap \
+    && setcap cap_net_raw,cap_net_admin+eip /usr/local/bin/naabu \
     && getcap /usr/local/bin/nmap /usr/local/bin/naabu
 ENV NMAP_PRIVILEGED=1 \
     HOME=/home/sentinel
