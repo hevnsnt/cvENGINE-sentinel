@@ -33,7 +33,7 @@ class DrainTests(Base):
         fc = FakeClient()
         d = daemon.Daemon('https://x.example', 'tok', client=fc)
         control.set_draining(True)
-        with mock.patch('time.sleep') as sleep:
+        with mock.patch.object(d.stop_event, 'wait') as sleep:  # the wait is the stop event's, so SIGTERM ends it at once
             d._poll_once()
         self.assertEqual(fc.paths(), [])
         sleep.assert_called()
