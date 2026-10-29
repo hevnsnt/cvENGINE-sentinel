@@ -3,15 +3,29 @@ name: OpenVAS integration
 # Brings up the pinned Greenbone gvmd and runs the Sentinel's login bootstrap and readiness check against it, because a mock cannot catch gvmd
 # refusing a request python-gvm builds (the default user changing its own password answered "Failed to find user", 404, and shipped untested).
 # It does NOT run a scan: a scan needs the vulnerability-test feeds, which take hours and tens of GB to sync; see README.md, "Testing OpenVAS".
-# Runs when the OpenVAS client, the compose pins or the pinned python-gvm change, weekly (Greenbone replaces what its images point to), and on demand.
+# Runs when the OpenVAS client, the compose pins, the image or the pinned python-gvm change, weekly (Greenbone replaces what its images point
+# to, so a pin can vanish from the registry), and on demand.
 on:
   pull_request:
     paths:
       - client/openvas.py
       - client/tools.py
       - docker-compose.yml
+      - Dockerfile
       - requirements.txt
       - scripts/ci_openvas_bootstrap.py
+      - scripts/greenbone-digests.sh
+      - .github/workflows/openvas-integration.yml
+  push:
+    branches: [main]
+    paths:
+      - client/openvas.py
+      - client/tools.py
+      - docker-compose.yml
+      - Dockerfile
+      - requirements.txt
+      - scripts/ci_openvas_bootstrap.py
+      - scripts/greenbone-digests.sh
       - .github/workflows/openvas-integration.yml
   schedule:
     - cron: "23 5 * * 1"
@@ -20,6 +34,11 @@ on:
 permissions:
   contents: read
 
+# bash with pipefail: a failing command piped into tee fails the step.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   bootstrap:
     name: gvmd login bootstrap
@@ -27,21 +46,25 @@ jobs:
     timeout-minutes: 45
     env:
       COMPOSE_PROJECT_NAME: sentinelci
+      COMPOSE_PROFILES: openvas
     steps:
-      - uses: actions/checkout@v4
-      - name: Free disk space (the Greenbone data images are large)
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Pinned digests still exist in the registry (drift from stable is only reported)
         run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost
-          docker system prune -af >/dev/null
-          df -h /
-      - name: Pinned digests still exist
-        run: ./scripts/greenbone-digests.sh | tee digests.txt; ! grep -q '^CHANGED' digests.txt
-      - name: Start gvmd and what it needs
-        run: docker compose up -d openvas-gvmd
+          ./scripts/greenbone-digests.sh | tee digests.txt
+          if grep -q '^CHANGED' digests.txt; then
+            echo "::warning::a Greenbone stable tag has moved since its pin; refresh the pins with scripts/greenbone-digests.sh"
+            grep '^CHANGED' digests.txt >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Start gvmd and its database only (no feeds, which the bootstrap does not use)
+        run: |
+          docker compose up -d --no-deps openvas-pg-gvm-migrator
+          docker compose wait openvas-pg-gvm-migrator
+          docker compose up -d --no-deps openvas-pg-gvm openvas-gvmd
       - name: Wait for gvmd's socket
         run: |
           for i in $(seq 1 120); do
-            if docker run --rm -v sentinelci_openvas_gvmd_socket_vol:/run/gvmd alpine test -S /run/gvmd/gvmd.sock; then echo "gvmd is up after $((i * 15))s"; exit 0; fi
+            if docker compose exec -T openvas-gvmd test -S /run/gvmd/gvmd.sock; then echo "gvmd is up after $((i * 15))s"; exit 0; fi
             sleep 15
           done
           docker compose ps; docker compose logs --tail=80 openvas-gvmd; exit 1
@@ -49,8 +72,9 @@ jobs:
         run: |
           PYGVM=$(grep -o 'python-gvm==[0-9.]*' requirements.txt)
           docker run --rm -v "$PWD":/app -w /app -v sentinelci_openvas_gvmd_socket_vol:/run/gvmd \
-            -e CVENGINE_OPENVAS_CREDENTIALS_FILE=/tmp/openvas-credentials.json python:3.13-slim \
+            -e CVENGINE_OPENVAS_CREDENTIALS_FILE=/tmp/openvas-credentials.json \
+            python:3.13-slim@sha256:2d44738ebf4ce5f63b9d9ea871e9c7cfdc0426f7b0c97cac915fd88ded1d86bb \
             sh -c "pip install -q $PYGVM && python scripts/ci_openvas_bootstrap.py"
       - name: gvmd logs on failure
         if: failure()
-        run: docker compose logs --tail=120 openvas-gvmd
+        run: docker compose logs --tail=120 openvas-pg-gvm openvas-gvmd

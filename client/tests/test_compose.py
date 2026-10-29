@@ -1,9 +1,12 @@
 """docker-compose.yml as compose itself reads it (`docker compose config`, which validates and starts nothing), with and without the openvas
 profile: every container's log is capped, and the sentinel service stops gracefully, reaps its children and reports its health. Also what
-.dockerignore keeps out of the build context."""
+.dockerignore keeps out of the build context, the pins in the Dockerfile and the CI workflows, and scripts/greenbone-digests.sh against a
+stand-in registry."""
 import fnmatch
+import glob
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -109,6 +112,102 @@ class DockerignoreTests(unittest.TestCase):
         for path in ('client/daemon.py', 'requirements.txt', 'docker-entrypoint.sh', 'scripts/ci_openvas_bootstrap.py', 'Dockerfile',
                      '.git/HEAD', '.git/packed-refs', '.git/refs/heads/main'):
             self.assertFalse(dockerignored(path, self.rules), path)
+
+
+def text(*path):
+    with open(os.path.join(ROOT, *path)) as handle:
+        return handle.read()
+
+
+class PinTests(unittest.TestCase):
+    def test_the_base_image_is_pinned_by_digest(self):
+        self.assertRegex(text('Dockerfile'), r'(?m)^FROM ubuntu:[0-9.]+@sha256:[0-9a-f]{64}$')
+
+    def test_the_pip_bootstrap_is_pinned(self):
+        line = next(l for l in text('Dockerfile').splitlines() if 'pip install' in l and 'requirements' not in l)
+        for package in ('pip==', 'setuptools==', 'wheel=='):
+            self.assertIn(package, line)
+        self.assertNotIn('--upgrade', line)
+
+    def test_the_go_toolchain_and_caches_leave_with_the_layer_that_used_them(self):
+        dockerfile = text('Dockerfile')
+        step = next(block for block in dockerfile.split('\nRUN ') if 'go install' in block)
+        self.assertIn('go.dev/dl/', step)
+        self.assertIn('go clean -cache -modcache', step)
+        self.assertIn('rm -rf "${GOROOT}" "${GOPATH}/pkg"', step)
+        self.assertNotIn('/go/pkg/*', dockerfile)
+
+    def test_the_openvas_bootstrap_check_is_in_the_image(self):
+        self.assertIn('COPY scripts/ci_openvas_bootstrap.py /opt/sentinel/scripts/', text('Dockerfile'))
+
+    def test_the_template_refresh_at_start_is_bounded(self):
+        entrypoint = text('docker-entrypoint.sh')
+        self.assertIn('timeout 120 nuclei -update-templates', entrypoint)
+        self.assertTrue(entrypoint.rstrip().endswith('exec "$@"'))
+
+    def test_every_action_is_pinned_by_commit(self):
+        for path in glob.glob(os.path.join(ROOT, '.github', 'workflows', '*.yml')):
+            for ref in re.findall(r'uses:\s*(\S+)', text(path)):
+                self.assertRegex(ref, r'@[0-9a-f]{40}$', path)
+
+    def test_every_container_image_in_ci_is_pinned_by_digest(self):
+        for path in glob.glob(os.path.join(ROOT, '.github', 'workflows', '*.yml')):
+            for image in re.findall(r'\b((?:python|alpine):[0-9][\w.-]*\S*)', text(path)):
+                self.assertIn('@sha256:', image, path)
+
+    def test_the_digest_check_fails_its_step(self):
+        workflow = text('.github', 'workflows', 'openvas-integration.yml')
+        self.assertRegex(workflow, r'defaults:\s+run:\s+shell: bash\n')  # explicit bash runs with pipefail
+        for trigger_path in ('Dockerfile', 'scripts/greenbone-digests.sh', '.github/workflows/openvas-integration.yml'):
+            self.assertEqual(workflow.count(f'- {trigger_path}\n'), 2, trigger_path)  # pull requests and pushes to main
+
+
+REGISTRY_SHIM = """#!/bin/sh
+# stand-in curl: a token for any image, the manifest of a digest exists unless it is listed in GONE, stable points to STABLE_<image>
+url=""
+for arg in "$@"; do case "$arg" in https://*) url="$arg" ;; esac; done
+case "$url" in
+  */service/token*) echo '{"token": "t"}' ;;
+  */manifests/stable) image=${url%/manifests/stable}; image=${image##*/}; image=$(echo "$image" | tr - _)
+    eval "digest=\\${STABLE_$image:-}"; printf 'HTTP/1.1 200 OK\\r\\ndocker-content-digest: %s\\r\\n' "$digest" ;;
+  */manifests/*) case " $GONE " in *" ${url##*/} "*) exit 22 ;; esac; printf 'HTTP/1.1 200 OK\\r\\n' ;;
+esac
+"""
+
+
+@unittest.skipUnless(shutil.which('sh') and shutil.which('python3'), 'needs sh and python3')
+class GreenboneDigestTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix='sentinel-digests-')
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        os.makedirs(os.path.join(self.tmp, 'scripts'))
+        os.makedirs(os.path.join(self.tmp, 'bin'))
+        shutil.copy(os.path.join(ROOT, 'scripts', 'greenbone-digests.sh'), os.path.join(self.tmp, 'scripts'))
+        with open(os.path.join(self.tmp, 'bin', 'curl'), 'w') as handle:
+            handle.write(REGISTRY_SHIM)
+        os.chmod(os.path.join(self.tmp, 'bin', 'curl'), 0o755)
+        self.a, self.b, self.c = ('sha256:' + ch * 64 for ch in 'abc')
+        compose = (f'image: "registry.community.greenbone.net/community/gvmd:stable@{self.a}"\n'
+                   f'image: "registry.community.greenbone.net/community/openvas-scanner:stable@{self.a}"\n'
+                   f'image: "registry.community.greenbone.net/community/openvas-scanner:stable@{self.b}"\n')
+        with open(os.path.join(self.tmp, 'docker-compose.yml'), 'w') as handle:
+            handle.write(compose)
+
+    def check(self, gone='', **stable):
+        env = {**os.environ, 'PATH': f'{self.tmp}/bin:{os.environ["PATH"]}', 'GONE': gone}
+        env.update({f'STABLE_{k}': v for k, v in stable.items()})
+        return subprocess.run(['sh', os.path.join(self.tmp, 'scripts', 'greenbone-digests.sh')], env=env, capture_output=True, text=True)
+
+    def test_drift_is_reported_but_does_not_fail(self):
+        out = self.check(gvmd=self.a, openvas_scanner=self.a)
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertIn(f'ok       gvmd {self.a}', out.stdout)
+        self.assertIn(f'CHANGED  openvas-scanner pinned={self.b} now={self.a}', out.stdout)  # the second pin of the same image is checked too
+
+    def test_a_pin_gone_from_the_registry_fails(self):
+        out = self.check(gone=self.b, gvmd=self.a, openvas_scanner=self.a)
+        self.assertEqual(out.returncode, 1)
+        self.assertIn(f'MISSING  openvas-scanner {self.b}', out.stdout)
 
 
 if __name__ == '__main__':

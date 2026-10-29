@@ -26,7 +26,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-blob="" name="" profile="" network="" updater="" yes=0 host_network=0 name_given=0
+blob="" name="" profile="" network="" updater="" updater_answer="" yes=0 host_network=0 name_given=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --blob) blob="${2:?--blob needs a value}"; shift 2 ;;
