@@ -19,6 +19,11 @@ def main():
     token, server_url = daemon_mod.load_token(path)
     unsaved = False
     if token:
+        try:
+            httpclient.validate_server_url(server_url)
+        except ValueError as exc:  # the message never repeats the URL; falling back to the (single use) blob would not help
+            logger.error('the server address in %s is not acceptable (%s); correct or remove that file', path, exc)
+            sys.exit(1)
         logger.info('using the persisted token at %s; skipping bootstrap', path)
     else:
         raw_blob = config.blob()

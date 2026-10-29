@@ -52,6 +52,19 @@ class InstallUpdaterTests(unittest.TestCase):
     def calls(self):
         return read(self.log) if os.path.exists(self.log) else ''
 
+    def test_the_updater_marker_goes_into_env_in_place_and_comes_out_again(self):
+        env = os.path.join(self.checkout, '.env')
+        put(env, 'CVENGINE_SENTINEL_BLOB=abc', 0o600)  # no trailing newline: the marker must start a new line
+        out = self.install()
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertEqual(read(env), 'CVENGINE_SENTINEL_BLOB=abc\nCVENGINE_SENTINEL_UPDATER=installed\n')
+        self.assertEqual(os.stat(env).st_mode & 0o777, 0o600)
+        self.install()  # installing twice leaves one marker
+        self.assertEqual(read(env).count('CVENGINE_SENTINEL_UPDATER=installed'), 1)
+        out = self.install('--remove')
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertEqual(read(env), 'CVENGINE_SENTINEL_BLOB=abc\n')
+
     def test_systemd_units_run_as_the_owner_with_a_timeout_and_hardening(self):
         out = self.install()
         self.assertEqual(out.returncode, 0, out.stdout + out.stderr)

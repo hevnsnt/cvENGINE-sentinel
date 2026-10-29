@@ -72,8 +72,9 @@ def own_addresses():
 
 
 def internal_allowed():
-    """Whether this machine was told, by its own configuration, that it sits inside a private network."""
-    return config._local_internal()
+    """Whether this Sentinel may scan private space: this machine's own configuration says it sits inside a private network, and the server has
+    not pulled it back to external. The server can never grant it (``config.is_internal`` is a ceiling)."""
+    return config.is_internal()
 
 
 def _unwrap(ip):

@@ -32,7 +32,7 @@ services:
     # init reaps the zombies testssl and its openssl children leave; the grace period outlasts the daemon's own 20 s wait for running tasks
     # before it releases them to the server (Docker's default of 10 s killed it first).
     init: true
-    stop_grace_period: 45s
+    stop_grace_period: 75s
     pids_limit: 512
     mem_limit: 2g
     # Healthy while the daemon keeps writing a fresh status (client/control.py health).
@@ -59,6 +59,14 @@ services:
       CVENGINE_SENTINEL_NETWORK: "${CVENGINE_SENTINEL_NETWORK:-}"
       CVENGINE_SENTINEL_DISABLE: "${CVENGINE_SENTINEL_DISABLE:-}"
       CVENGINE_SENTINEL_PROFILE: "${CVENGINE_SENTINEL_PROFILE:-}"
+      # "installed" once scripts/install-updater.sh has set up the host updater (it writes this into .env), so cvENGINE can show it before the first run.
+      CVENGINE_SENTINEL_UPDATER: "${CVENGINE_SENTINEL_UPDATER:-}"
+      # Only for a lab server on plain http: the Sentinel refuses any server address that is not https unless this is 1.
+      CVENGINE_SENTINEL_ALLOW_INSECURE: "${CVENGINE_SENTINEL_ALLOW_INSECURE:-}"
+      # A corporate proxy: the HTTP client reads these, and compose only passes the variables it is told to.
+      HTTPS_PROXY: "${HTTPS_PROXY:-}"
+      HTTP_PROXY: "${HTTP_PROXY:-}"
+      NO_PROXY: "${NO_PROXY:-}"
       # Optional: 1 keeps each OpenVAS task and report in gvmd after it finishes, to investigate a scan (they are deleted otherwise).
       CVENGINE_OPENVAS_KEEP_TASKS: "${CVENGINE_OPENVAS_KEEP_TASKS:-}"
     # nmap's OS detection, naabu's SYN scanning and the UDP sweep need raw sockets; NET_RAW/NET_ADMIN are enough, no --privileged.

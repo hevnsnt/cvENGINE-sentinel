@@ -164,6 +164,12 @@ class UpdateScriptTests(unittest.TestCase):
         self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
         self.assertNotEqual(self.head(), before)
 
+    def test_a_drain_timeout_that_is_not_a_positive_number_is_refused(self):
+        for value in ('0', 'soon', '-5', '1.5'):
+            out = self.update(CVENGINE_SENTINEL_DRAIN_TIMEOUT=value)
+            self.assertEqual(out.returncode, 2, (value, out.stdout, out.stderr))
+            self.assertIn('CVENGINE_SENTINEL_DRAIN_TIMEOUT', out.stderr)
+
     def test_up_to_date_is_recorded_as_a_run(self):
         # The running Sentinel reports HEAD (an install from before the deployed-commit marker): that counts as deployed, nothing is rebuilt.
         control.write_status(self.head(), 0, {'setting': 'automatic', 'mode': 'manual', 'requested': False})

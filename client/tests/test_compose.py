@@ -53,7 +53,7 @@ class ComposeTests(unittest.TestCase):
     def test_the_sentinel_stops_gracefully_reaps_children_and_reports_health(self):
         sentinel = self.full['services']['sentinel']
         self.assertTrue(sentinel.get('init'))
-        self.assertEqual(sentinel.get('stop_grace_period'), '45s')
+        self.assertIn(sentinel.get('stop_grace_period'), ('75s', '1m15s'))  # compose normalises the unit
         self.assertEqual(sentinel.get('pids_limit'), 512)
         self.assertTrue(sentinel.get('mem_limit'))
         self.assertEqual(sentinel['healthcheck']['test'], ['CMD', 'python3', '-m', 'client.control', 'health'])

@@ -120,7 +120,10 @@ class UpdateReportTests(Base):
                 with mock.patch.dict('os.environ', {'CVENGINE_SENTINEL_VERSION': ''}):
                     self.assertEqual(config.version(), '47ffd47d2969')
                 with mock.patch.dict('os.environ', {'CVENGINE_SENTINEL_VERSION': 'abc123def456'}):
-                    self.assertEqual(config.version(), 'abc123def456')  # the setting wins, as the updater writes it
+                    self.assertEqual(config.version(), '47ffd47d2969')  # the build stamp wins: a stale hand-set value cannot hide the build
+            with mock.patch.object(config, 'BUILD_VERSION_FILE', os.path.join(tmp, 'absent')):
+                with mock.patch.dict('os.environ', {'CVENGINE_SENTINEL_VERSION': 'abc123def456'}):
+                    self.assertEqual(config.version(), 'abc123def456')  # with no stamp, a hand-set value is used
 
     def test_a_missing_or_empty_build_stamp_is_unknown(self):
         with tempfile.TemporaryDirectory() as tmp:

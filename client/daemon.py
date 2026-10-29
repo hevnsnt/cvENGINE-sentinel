@@ -28,6 +28,7 @@ from . import blob as blob_mod
 from . import config
 from . import control
 from . import httpclient
+from . import openvas
 from . import tools
 
 logger = logging.getLogger('sentinel.daemon')
@@ -212,6 +213,7 @@ class Daemon:
         self._register_pending = False  # the last registration did not reach the server: retried at every heartbeat until it does
         self._settings_rev = None  # fingerprint of the server's settings this Sentinel last applied
         self._registered = self._registration()  # what the server was last told, so a change after it is noticed
+        self._gvm_swept = False  # the one-time sweep of leftover GVM tasks has run (or been started)
         self._unsaved_token = None  # (path, token, server_url) when saving a freshly bootstrapped token failed: retried at every heartbeat
         self.heartbeat_seconds = heartbeat_seconds or config.HEARTBEAT_SECONDS
         self.stop_event = threading.Event()  # set by SIGTERM: take no new work
@@ -290,10 +292,24 @@ class Daemon:
             self._reconcile(out.get('leases'), asked_at)
             self.apply_settings(out.get('settings'))
             self._refresh_registration()
+            self._sweep_gvm_orphans()
         except Exception:  # noqa: BLE001 - the heartbeat keeps every lease alive; one bad iteration must not end it
             logger.exception('heartbeat failed')
         finally:
             self._write_control(update_reply)
+
+    def _sweep_gvm_orphans(self):
+        """Once, when this Sentinel's GVM stack first reports ready: remove the ``cvengine-sentinel-`` tasks and targets an earlier process left in gvmd
+        (a shutdown mid-scan leaves them for good). Runs in its own thread because it opens a GMP session; it never raises."""
+        if self._gvm_swept or not tools.gvm_available() or not tools.gvm_ready():
+            return
+        self._gvm_swept = True
+
+        def sweep():
+            removed = openvas.cleanup_orphans()
+            if removed and (removed.get('tasks') or removed.get('targets')):
+                logger.info('removed %s leftover GVM task(s) and %s target(s) from an earlier run', removed.get('tasks'), removed.get('targets'))
+        threading.Thread(target=sweep, name='gvm-sweep', daemon=True).start()
 
     def _retry_token_save(self):
         if self._unsaved_token is None:
@@ -371,7 +387,7 @@ class Daemon:
                 stale.append((task_id, state.get('proc')))
         for task_id, proc in stale:
             logger.warning('task %s is no longer assigned to this Sentinel (taken back by the server); stopping it', task_id)
-            self._kill(proc)
+            self._kill(proc, background=True)
 
     def _write_control(self, update_reply=None):
         """Tell the host-side updater where this Sentinel stands: running tasks (plus one while a poll that may return a task is outstanding),
@@ -472,9 +488,14 @@ class Daemon:
         return register
 
     @staticmethod
-    def _kill(proc):
-        """Kill a subprocess, or anything with the same ``poll()``/``kill()`` (an OpenVAS run's handle), if it is still running."""
+    def _kill(proc, background=False):
+        """Kill a subprocess, or anything with the same ``poll()``/``kill()`` (an OpenVAS run's handle), if it is still running. An OpenVAS handle's
+        ``kill()`` stops the GVM task and deletes it, which can take half a minute: callers that must not wait (the heartbeat thread) pass
+        ``background``, and the kill then runs in its own thread."""
         if proc is None:
+            return
+        if background:
+            threading.Thread(target=Daemon._kill, args=(proc,), name='task-kill', daemon=True).start()
             return
         try:
             if proc.poll() is None:

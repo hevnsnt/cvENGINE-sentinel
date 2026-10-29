@@ -31,6 +31,9 @@ for arg in "$@"; do
 done
 
 DRAIN_TIMEOUT="${CVENGINE_SENTINEL_DRAIN_TIMEOUT:-1800}"
+case "$DRAIN_TIMEOUT" in
+  ''|*[!0-9]*|0) echo "CVENGINE_SENTINEL_DRAIN_TIMEOUT must be a positive whole number of seconds (got '$DRAIN_TIMEOUT')" >&2; exit 2 ;;
+esac
 BRANCH="${CVENGINE_SENTINEL_BRANCH:-main}"
 MARKER=.deployed-commit
 say() { echo "$(date -u +%FT%TZ) update: $*"; }

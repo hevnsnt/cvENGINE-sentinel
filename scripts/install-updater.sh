@@ -57,8 +57,23 @@ remove_systemd() {
   if command -v systemctl >/dev/null 2>&1; then systemctl daemon-reload 2>/dev/null || true; fi
 }
 
+# Set or delete one KEY=value line of the checkout's .env without changing its owner or mode (cat into the file instead of replacing it).
+env_marker() { # env_marker set|unset
+  envfile="$DIR/.env"
+  [ -f "$envfile" ] || { [ "$1" = set ] || return 0; : > "$envfile"; chown "$OWNER" "$envfile" 2>/dev/null || true; chmod 600 "$envfile"; }
+  tmp=$(mktemp) || return 0
+  grep -v '^CVENGINE_SENTINEL_UPDATER=' "$envfile" > "$tmp" || true
+  if [ "$1" = set ]; then
+    [ -z "$(tail -c1 "$tmp")" ] || echo >> "$tmp"
+    echo "CVENGINE_SENTINEL_UPDATER=installed" >> "$tmp"
+  fi
+  cat "$tmp" > "$envfile"
+  rm -f "$tmp"
+}
+
 if [ "$REMOVE" = 1 ]; then
   remove_systemd
+  env_marker unset
   rm -f "$CRON"
   (cd "$DIR" && docker compose exec -T sentinel python3 -m client.control updater-removed) >/dev/null 2>&1 || true  # so cvENGINE shows "not installed"
   echo "removed"
@@ -127,6 +142,8 @@ else
   } > "$CRON"
   echo "installed: $CRON (update hourly, feeds daily); log: $LOG"
 fi
-# Tell the Sentinel an updater now exists, so cvENGINE shows it as installed straight away rather than after the first run an hour from now.
+# Tell the Sentinel an updater now exists, so cvENGINE shows it as installed straight away rather than after the first run an hour from now:
+# through .env (read when the container is created, so it works before the stack has ever been up) and, when it is up, through the control CLI.
+env_marker set
 # Best effort: when the stack is not up yet, the first run of the updater says it.
 (cd "$DIR" && docker compose exec -T sentinel python3 -m client.control updater-installed --interval 3600) >/dev/null 2>&1 || true

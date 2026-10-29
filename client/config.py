@@ -121,9 +121,10 @@ def _local_internal():
 
 
 def is_internal():
-    """The effective network: the server's setting when it set one more recently than this machine's, else this machine's own."""
-    network = _overrides.get('network')
-    return network == 'internal' if network else _local_internal()
+    """The effective network. This machine's own setting is a ceiling: only a Sentinel configured as internal here is ever internal, and the server
+    can lower it to external (an administrator pulling an internal Sentinel back) but never raise an external one to internal, so a server that is
+    buggy or compromised cannot unlock private ranges or internal sweeps by declaring the Sentinel internal."""
+    return _local_internal() and _overrides.get('network') != 'external'
 
 
 def _local_disabled():
@@ -247,9 +248,9 @@ def build_version(path=None):
 
 
 def version():
-    """The client version: CVENGINE_SENTINEL_VERSION when set (the updater writes it), else the commit this image was built from, else ``None``
-    when neither is known."""
-    return _clean_version(_env('CVENGINE_SENTINEL_VERSION')) or build_version()
+    """The client version: the commit this image was built from, else CVENGINE_SENTINEL_VERSION when someone set it by hand (the updater no longer
+    writes it: a stale value would hide the build), else ``None`` when neither is known."""
+    return build_version() or _clean_version(_env('CVENGINE_SENTINEL_VERSION'))
 
 
 def token_path():

@@ -41,6 +41,13 @@ class MainTests(unittest.TestCase):
         self.assertEqual(end.exception.code, 1)
         self.run.assert_not_called()
 
+    def test_a_persisted_token_for_a_plain_http_server_stops_the_start(self):
+        daemon.save_token(self.path, 'cve_tok', 'http://cve.example.test')
+        with self.assertRaises(SystemExit) as end:
+            entry.main()
+        self.assertEqual(end.exception.code, 1)
+        self.run.assert_not_called()
+
     def test_a_server_that_is_down_at_startup_leaves_the_registration_pending_and_runs(self):
         daemon.save_token(self.path, 'cve_tok', 'https://cve.example.test')
         with mock.patch('client.daemon.register', side_effect=requests.ConnectionError('down')):
