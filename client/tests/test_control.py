@@ -4,7 +4,7 @@ import os
 import tempfile
 import time
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
 from client import config, control, daemon
@@ -251,3 +251,133 @@ class UpdaterStateTests(Base):
         self.assertEqual((info['last_result'], info['detail'], info['running']), ('failed', 'git fetch failed', True))
         control.main(['updater-removed'])
         self.assertFalse(control.updater_info()['installed'])
+
+
+class SelfUpdateCeilingTests(Base):
+    """This machine's own CVENGINE_SENTINEL_UPDATE is a ceiling the server cannot raise: the effective value is the lower of the two."""
+
+    def setUp(self):
+        super().setUp()
+        self.addCleanup(config.set_overrides, {})
+
+    def test_the_ceiling_matrix(self):
+        rank = {'off': 0, 'manual': 1, 'automatic': 2}
+        for local in (None, 'off', 'manual', 'automatic'):
+            for server in (None, 'off', 'manual', 'automatic'):
+                for requested in (False, True):
+                    env = {'CVENGINE_SENTINEL_UPDATE': local or ''}
+                    with mock.patch.dict('os.environ', env), self.subTest(local=local, server=server, requested=requested):
+                        expected_setting = min((v for v in (local, server) if v), key=rank.get, default=None)
+                        expected_wanted = expected_setting == 'automatic' or (expected_setting in ('manual', None) and requested)
+                        control.write_status('v1', 0, {'setting': server, 'mode': 'manual', 'requested': requested})
+                        self.assertEqual(control.setting(), expected_setting or 'unknown')
+                        self.assertEqual(control.wanted(), expected_wanted)
+                        config.set_overrides({'self_update': server} if server else {})
+                        self.assertEqual(config.self_update(), expected_setting)
+
+    def test_an_administrators_request_never_beats_a_local_off(self):
+        with mock.patch.dict('os.environ', {'CVENGINE_SENTINEL_UPDATE': 'off'}):
+            control.write_status('v1', 0, {'setting': 'automatic', 'mode': 'auto', 'requested': True})
+            self.assertEqual((control.setting(), control.wanted()), ('off', False))
+            control.write_status('v1', 0, {'mode': 'auto', 'requested': True})  # an older server, read the old way, still capped
+            self.assertEqual((control.setting(), control.wanted()), ('off', False))
+
+    def test_the_daemons_effective_setting_is_what_the_cli_process_reads(self):
+        config.set_overrides({'self_update': 'automatic'})  # only the daemon process holds this
+        control.write_status('v1', 0, {'mode': 'manual'})  # a heartbeat reply with no setting of its own
+        self.assertEqual(control.read_status()['setting'], 'automatic')
+        config.set_overrides({})  # the CLI runs in another process, where the overrides are empty
+        self.assertEqual((control.setting(), control.wanted()), ('automatic', True))
+        with mock.patch.dict('os.environ', {'CVENGINE_SENTINEL_UPDATE': 'manual'}):
+            config.set_overrides({'self_update': 'automatic'})
+            control.write_status('v1', 0, {'setting': 'automatic'})
+            self.assertEqual(control.read_status()['setting'], 'manual')  # persisted after the ceiling
+
+
+class AtomicWriteTests(Base):
+    def test_a_failed_write_leaves_the_old_file_and_no_temp_file(self):
+        control.write_status('v1', 0, None, now=1000)
+        with mock.patch('json.dump', side_effect=OSError('disk full')), self.assertRaises(OSError):
+            control.write_status('v2', 0, None, now=2000)
+        self.assertEqual(control.read_status()['version'], 'v1')
+        self.assertEqual([n for n in os.listdir(self.dir.name) if n.endswith('.tmp')], [])
+
+    def test_the_file_is_synced_before_it_replaces_the_old_one(self):
+        with mock.patch('os.fsync') as fsync:
+            control.write_status('v1', 0, None)
+        fsync.assert_called_once()
+        self.assertEqual([n for n in os.listdir(self.dir.name) if n.endswith('.tmp')], [])
+
+    def test_idle_is_no_longer_an_update_status(self):
+        with self.assertRaises(ValueError):
+            control.record_update('idle')
+
+
+class HealthTests(Base):
+    def test_fresh_stale_and_missing(self):
+        self.assertEqual(control.health()[0], False)
+        self.assertIn('no daemon status', control.health()[1])
+        control.write_status('v1', 3, None, now=1000)
+        self.assertEqual(control.health(now=1000 + control.STATUS_MAX_AGE), (True, ''))  # busy is still healthy
+        ok, why = control.health(now=1000 + control.STATUS_MAX_AGE + 1)
+        self.assertFalse(ok)
+        self.assertIn('old', why)
+
+    def test_the_command_line_exit_codes(self):
+        err = io.StringIO()
+        with redirect_stderr(err):
+            self.assertEqual(control.main(['health']), 1)
+        self.assertIn('unhealthy', err.getvalue())
+        control.write_status('v1', 0, None)
+        self.assertEqual(control.main(['health']), 0)
+        with mock.patch('time.time', return_value=time.time() + control.STATUS_MAX_AGE + 60), redirect_stderr(io.StringIO()):
+            self.assertEqual(control.main(['health']), 1)
+
+
+class StatusCommandTests(Base):
+    def test_status_prints_in_flight_version_and_the_effective_setting(self):
+        control.write_status('abc123def456', 2, {'setting': 'automatic'})
+        out = io.StringIO()
+        with mock.patch.dict('os.environ', {'CVENGINE_SENTINEL_UPDATE': 'off'}), redirect_stdout(out):
+            self.assertEqual(control.main(['status']), 0)
+        data = __import__('json').loads(out.getvalue())
+        self.assertEqual((data['in_flight'], data['version'], data['setting']), (2, 'abc123def456', 'off'))
+        self.assertIn('"version": "abc123def456"', out.getvalue())  # what update.sh greps for
+
+    def test_status_with_no_daemon_is_still_json(self):
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertEqual(control.main([]), 0)
+        self.assertEqual(__import__('json').loads(out.getvalue()), {'setting': 'unknown'})
+
+
+class UsageTests(Base):
+    def test_bad_usage_exits_2_with_a_usage_line_not_a_traceback(self):
+        for argv in (['wait-idle', '--timeout'], ['wait-idle', '--timeout', 'soon'], ['wait-idle', '--timeout', '0'], ['wait-idle', '--wait', '5'],
+                     ['report'], ['report', 'exploding'], ['report', 'idle'], ['report', 'done', '--phase'], ['report', 'done', '--colour', 'red'],
+                     ['updater-run'], ['updater-run', '--detail', 'x'], ['updater-run', 'ok', '--interval', 'hourly'],
+                     ['updater-installed', '--interval'], ['status', 'extra'], ['health', 'now'], ['bogus']):
+            err = io.StringIO()
+            with self.subTest(argv=argv), redirect_stderr(err), redirect_stdout(io.StringIO()):
+                self.assertEqual(control.main(argv), 2)
+                self.assertIn('usage: python3 -m client.control', err.getvalue())
+                self.assertNotIn('Traceback', err.getvalue())
+        self.assertEqual(control.read_update(), {})  # nothing was recorded by a bad call
+
+    def test_a_detail_that_looks_like_an_option_is_still_a_value(self):
+        self.assertEqual(control.main(['report', 'failed', '--detail', '--timeout went wrong', '--phase', 'build']), 0)
+        self.assertEqual((control.read_update()['detail'], control.read_update()['phase']), ('--timeout went wrong', 'build'))
+
+
+class UpdaterInstalledEnvTests(Base):
+    def test_the_env_marker_counts_as_installed_before_any_file_exists(self):
+        with mock.patch.dict('os.environ', {'CVENGINE_SENTINEL_UPDATER': 'installed'}):
+            self.assertEqual(control.updater_info(), {'installed': True, 'running': False})
+        with mock.patch.dict('os.environ', {'CVENGINE_SENTINEL_UPDATER': ''}):
+            self.assertEqual(control.updater_info(), {'installed': False, 'running': False})
+
+    def test_a_run_file_wins_over_the_env_marker(self):
+        control.record_updater('ok', 'up to date', now=1000)
+        with mock.patch.dict('os.environ', {'CVENGINE_SENTINEL_UPDATER': 'installed'}):
+            info = control.updater_info(now=1100)
+        self.assertEqual((info['installed'], info['running'], info['last_result']), (True, True, 'ok'))

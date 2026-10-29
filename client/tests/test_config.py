@@ -30,6 +30,11 @@ class MaxConcurrentEnvOverrideTests(unittest.TestCase):
         with mock.patch.dict('os.environ', {'CVENGINE_SENTINEL_MAX_CONCURRENT': '-5'}):
             self.assertEqual(config.max_concurrent(), 1)
 
+    def test_an_explicit_value_is_capped_like_the_servers(self):
+        with mock.patch.dict('os.environ', {'CVENGINE_SENTINEL_MAX_CONCURRENT': '500'}):
+            self.assertEqual(config.max_concurrent(), config.MAX_AUTO_CONCURRENT)
+            self.assertEqual(config.local_settings()['max_concurrent'], config.MAX_AUTO_CONCURRENT)
+
     def test_garbage_value_falls_back_to_one_not_auto_detection(self):
         with mock.patch.dict('os.environ', {'CVENGINE_SENTINEL_MAX_CONCURRENT': 'not-a-number'}), \
                 mock.patch('client.config._detected_cpus', return_value=64):

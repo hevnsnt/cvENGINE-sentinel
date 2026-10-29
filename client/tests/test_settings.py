@@ -42,10 +42,70 @@ class ConfigTests(Base):
             self.assertEqual(config.local_settings()['profile'], 'light')
             self.assertIn('openvas', config.disabled_kinds())
 
-    def test_the_servers_list_of_disabled_kinds_replaces_the_machines_own(self):
+    def test_the_server_can_add_disabled_kinds_but_never_lift_the_machines_own(self):
         with mock.patch.dict('os.environ', {'CVENGINE_SENTINEL_DISABLE': 'wpscan'}):
             config.set_overrides({'disabled_kinds': ['testssl']})
-            self.assertEqual(config.disabled_kinds(), {'testssl'})
+            self.assertEqual(config.disabled_kinds(), {'wpscan', 'testssl'})
+            config.set_overrides({'disabled_kinds': []})  # the server "re-enabling" everything: the local veto stands
+            self.assertEqual(config.disabled_kinds(), {'wpscan'})
+            self.assertNotIn('wpscan', daemon.declared_kinds())
+
+    def test_local_disabled_entries_are_normalised_and_unknown_ones_logged_once(self):
+        with mock.patch.object(config, '_warned_disabled', set()), \
+                mock.patch.dict('os.environ', {'CVENGINE_SENTINEL_DISABLE': ' WPScan, bogus ,openvas,,'}):
+            with self.assertLogs('sentinel.config', 'WARNING') as logs:
+                self.assertEqual(config.disabled_kinds(), {'wpscan', 'openvas'})
+            self.assertIn('bogus', logs.output[0])
+            with self.assertNoLogs('sentinel.config', 'WARNING'):
+                config.disabled_kinds()
+            self.assertEqual(config.local_settings()['disabled_kinds'], ['openvas', 'wpscan'])
+
+    def test_an_unnamed_machine_reports_no_name_but_still_has_one(self):
+        __import__('os').environ.pop('CVENGINE_SENTINEL_NAME', None)
+        with mock.patch('socket.gethostname', return_value='0123456789ab'):
+            self.assertNotIn('name', config.local_settings())  # a container id must never undo a rename made in cvENGINE
+            self.assertEqual(config.sentinel_name(), '0123456789ab')
+            fc = FakeClient()
+            with mock.patch('client.tools.detect_tools', return_value=[]):
+                daemon.register(fc, config.sentinel_name(), 2)
+            body = fc.body_for('sentinel')
+            self.assertEqual(body['name'], '0123456789ab')  # registration still names it, for first enrolment
+            self.assertNotIn('name', body['settings'])
+        with mock.patch.dict('os.environ', {'CVENGINE_SENTINEL_NAME': 'office'}):
+            self.assertEqual(config.local_settings()['name'], 'office')
+
+    def test_the_polled_kinds_follow_the_effective_network_at_every_call(self):
+        self.assertNotIn('discover', config.poll_kinds())
+        config.set_overrides({'network': 'internal'})
+        self.assertIn('discover', config.poll_kinds())
+        self.assertIn('network:internal', config.registered_capabilities())
+        config.set_overrides({})
+        self.assertNotIn('discover', config.poll_kinds())
+        self.assertEqual(config.poll_kinds(['nmap']), ['nmap'])  # an explicit list (tests only) is taken as given
+
+    def test_overrides_are_swapped_whole_never_mutated(self):
+        config.set_overrides({'disabled_kinds': ['wpscan']})
+        before = config._overrides
+        config.set_overrides({'disabled_kinds': ['testssl']})
+        self.assertIsNot(config._overrides, before)
+        self.assertEqual(before, {'disabled_kinds': ['wpscan']})  # a reader still holding the old dict sees a whole one
+
+    def test_a_concurrent_reader_never_sees_a_half_replaced_override(self):
+        config.set_overrides({'disabled_kinds': ['wpscan']})
+        stop = threading.Event()
+        misses = []
+
+        def read():
+            while not stop.is_set():
+                if 'wpscan' not in config.disabled_kinds():
+                    misses.append(1)
+        reader = threading.Thread(target=read, daemon=True)
+        reader.start()
+        for _ in range(3000):
+            config.set_overrides({'disabled_kinds': ['wpscan']})
+        stop.set()
+        reader.join(timeout=5)
+        self.assertEqual(misses, [])
 
     def test_junk_from_the_server_is_dropped_not_obeyed(self):
         config.set_overrides({'name': 'a\nb\x07', 'network': 'dmz', 'profile': 'huge', 'disabled_kinds': ['nmap', 'rm -rf /', 3], 'max_concurrent': 99,
