@@ -41,7 +41,7 @@ class ComposeTests(unittest.TestCase):
         cls.full = compose_config('openvas')
 
     def test_light_runs_only_the_sentinel(self):
-        self.assertEqual(list(self.light['services']), ['sentinel'])
+        self.assertEqual(sorted(self.light['services']), ['sentinel', 'sentinel-init'])  # the Sentinel and the one-shot that hands it its state volume
 
     def test_every_service_has_a_capped_log(self):
         self.assertGreater(len(self.full['services']), 10)
@@ -49,6 +49,39 @@ class ComposeTests(unittest.TestCase):
             logging = service.get('logging', {})
             self.assertEqual(logging.get('driver'), 'json-file', name)
             self.assertEqual(logging.get('options'), {'max-size': '10m', 'max-file': '3'}, name)
+
+    def test_the_state_volume_is_handed_to_the_unprivileged_user_before_the_sentinel_starts(self):
+        for config in (self.light, self.full):
+            init, sentinel = config['services']['sentinel-init'], config['services']['sentinel']
+            self.assertEqual(init['user'], '0:0')
+            self.assertEqual(init['network_mode'], 'none')
+            self.assertEqual(init['entrypoint'], ['chown', '-R', '10001:10001', '/var/lib/cvengine-sentinel'])
+            self.assertEqual(sorted(init['cap_add']), ['CHOWN', 'DAC_OVERRIDE', 'FOWNER'])
+            self.assertEqual(init['cap_drop'], ['ALL'])
+            self.assertEqual([v['target'] for v in init['volumes']], ['/var/lib/cvengine-sentinel'])  # nothing else is mounted
+            self.assertEqual(sentinel['depends_on']['sentinel-init']['condition'], 'service_completed_successfully')
+            self.assertNotIn('user', sentinel)  # the image's own USER applies, so docker compose exec runs as the unprivileged user too
+
+    def test_the_image_runs_unprivileged_with_capabilities_on_the_two_raw_socket_tools_only(self):
+        with open(os.path.join(ROOT, 'Dockerfile')) as handle:
+            text = handle.read()
+        self.assertRegex(text, r'(?m)^USER sentinel$')
+        self.assertIn('--uid 10001', text)
+        self.assertRegex(text, r'setcap cap_net_raw,cap_net_admin\+eip /usr/local/bin/nmap /usr/local/bin/naabu')
+        self.assertEqual(text.count('setcap'), 1)  # one command: nothing else is given a capability
+        self.assertIn('NMAP_PRIVILEGED=1', text)
+        self.assertIn('GOBIN=/usr/local/bin', text)  # the tools are installed where the unprivileged user can run them
+        self.assertLess(text.index('RUN useradd'), text.index('USER sentinel'))
+        self.assertNotIn('nuclei -update-templates', text)  # templates are pinned, not downloaded at build or start
+        self.assertIn('NUCLEI_TEMPLATES_SHA256=', text)
+
+    def test_the_entrypoint_does_not_refresh_templates_unless_asked(self):
+        with open(os.path.join(ROOT, 'docker-entrypoint.sh')) as handle:
+            text = handle.read()
+        self.assertIn('CVENGINE_SENTINEL_UPDATE_TEMPLATES', text)
+        self.assertIn('exec "$@"', text)
+        runs = [ln for ln in text.splitlines() if ln.strip().startswith('timeout 120 nuclei')]
+        self.assertEqual(len(runs), 1)  # the only refresh is the opt-in one
 
     def test_the_sentinel_stops_gracefully_reaps_children_and_reports_health(self):
         sentinel = self.full['services']['sentinel']
@@ -71,7 +104,7 @@ class ComposeTests(unittest.TestCase):
     def test_host_networking_lives_in_the_override_example_not_the_tracked_file(self):
         self.assertNotIn('network_mode', self.full['services']['sentinel'])
         with open(os.path.join(ROOT, 'docker-compose.yml')) as handle:
-            self.assertNotIn('network_mode', handle.read())
+            self.assertNotIn('network_mode: host', handle.read())  # (the state-volume one-shot uses network_mode: none)
         with open(os.path.join(ROOT, 'docker-compose.override.yml.example')) as handle:
             self.assertIn('network_mode: host', handle.read())
 
