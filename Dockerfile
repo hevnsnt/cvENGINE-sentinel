@@ -4,7 +4,7 @@
 # nmap/naabu/nuclei/testssl/wpscan than the instance it reports to would have run locally. The OpenVAS (GVM) stack
 # itself is NOT in this image: it runs as the separate Greenbone services in docker-compose.yml, which this daemon
 # talks GMP to over a shared unix socket (client/openvas.py), the same way cvENGINE's own server talks to its sidecar.
-FROM ubuntu:26.04
+FROM ubuntu:26.04@sha256:0e73b71479e7bc5f006bca872e25c3cd680dc052a0116f90d63ae363537db0dd
 
 ARG GOVERSION=1.27.3
 ARG GO_SHA256_AMD64=65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40
@@ -54,14 +54,6 @@ RUN apt-get update -y && \
     wget && \
     rm -rf /var/lib/apt/lists/*
 
-# Go toolchain, checksum verified (build-time only: nuclei and naabu are installed as static binaries below)
-RUN ARCH=$(dpkg --print-architecture) \
-    && if [ "${ARCH}" = "arm64" ]; then GO_SHA="${GO_SHA256_ARM64}"; else GO_SHA="${GO_SHA256_AMD64}"; fi \
-    && curl -fsSLo /tmp/go.tgz https://go.dev/dl/go${GOVERSION}.linux-${ARCH}.tar.gz \
-    && echo "${GO_SHA}  /tmp/go.tgz" | sha256sum -c - \
-    && tar -xzC /usr/local -f /tmp/go.tgz \
-    && rm /tmp/go.tgz
-
 # nmap, checksum verified, same pin and install method as web/Dockerfile (see its own comment for why the two paths).
 RUN set -e; cd /tmp \
     && if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
@@ -86,12 +78,21 @@ RUN set -e; cd /tmp \
 ENV NMAPDIR=/usr/local/share/nmap
 RUN test -s "$NMAPDIR/nmap-service-probes"
 
+# nuclei and naabu, built with a checksum-verified Go toolchain that is removed again in the same layer, with Go's module and build caches
+# (GOPATH is /root/go): nothing at runtime runs go, only the two binaries in /root/go/bin.
 ENV GO111MODULE=on
-RUN printf "\
+RUN ARCH=$(dpkg --print-architecture) \
+    && if [ "${ARCH}" = "arm64" ]; then GO_SHA="${GO_SHA256_ARM64}"; else GO_SHA="${GO_SHA256_AMD64}"; fi \
+    && curl -fsSLo /tmp/go.tgz https://go.dev/dl/go${GOVERSION}.linux-${ARCH}.tar.gz \
+    && echo "${GO_SHA}  /tmp/go.tgz" | sha256sum -c - \
+    && tar -xzC /usr/local -f /tmp/go.tgz \
+    && rm /tmp/go.tgz \
+    && printf "\
     github.com/projectdiscovery/nuclei/v3/cmd/nuclei@v${NUCLEI_VERSION}\n\
     github.com/projectdiscovery/naabu/v2/cmd/naabu@v${NAABU_VERSION}\n" | \
-    xargs -L1 go install -ldflags="-s -w" -v && \
-    rm -rf /go/pkg/* && rm -rf /root/.cache/go-build
+    xargs -L1 go install -ldflags="-s -w" -v \
+    && go clean -cache -modcache \
+    && rm -rf "${GOROOT}" "${GOPATH}/pkg" /root/.cache/go-build
 
 # Nuclei's templates are refreshed once at build time and again on every container start (see docker-entrypoint.sh),
 # same as the main image: they are not pinned by design (docs/UPDATES.md).
@@ -119,15 +120,17 @@ WORKDIR /opt/sentinel
 
 RUN python3 -m venv /opt/venv
 COPY requirements.txt /opt/sentinel/requirements.txt
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
+# The bootstrap packages are pinned like everything else (requirements.txt pins the client's own).
+RUN pip install --no-cache-dir pip==25.2 setuptools==80.9.0 wheel==0.45.1 && \
     pip install --no-cache-dir -r /opt/sentinel/requirements.txt
 
 COPY client /opt/sentinel/client
 COPY docker-entrypoint.sh /opt/sentinel/docker-entrypoint.sh
+# The OpenVAS login bootstrap check (README.md, "Testing OpenVAS"): docker compose exec sentinel python3 scripts/ci_openvas_bootstrap.py
+COPY scripts/ci_openvas_bootstrap.py /opt/sentinel/scripts/ci_openvas_bootstrap.py
 RUN chmod +x /opt/sentinel/docker-entrypoint.sh
 
-# The commit this image is built from, so the Sentinels page always knows the build even with no updater (CVENGINE_SENTINEL_VERSION still wins
-# when set). Only git's HEAD, packed-refs and refs are copied, and when the build context has no .git (a zip download) requirements.txt is the
+# The commit this image is built from, so the Sentinels page always knows the build; scripts/update.sh checks it after a swap. Only git's HEAD, packed-refs and refs are copied, and when the build context has no .git (a zip download) requirements.txt is the
 # only source that matches and VERSION is left empty, which the client reports as unknown. The refs directory's contents land directly in
 # /tmp/gitmeta, so refs/heads/main is /tmp/gitmeta/heads/main.
 COPY requirements.txt .gi[t]/HEAD .gi[t]/packed-refs .gi[t]/refs /tmp/gitmeta/

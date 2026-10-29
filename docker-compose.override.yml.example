@@ -1,0 +1,8 @@
+# Copy to docker-compose.override.yml (git-ignored; ./setup.sh --host-network does it) to let the Sentinel scan this machine's LAN directly
+# instead of only what the Docker bridge network reaches. docker compose reads the override file on its own, and because it is not tracked the
+# updater can still fast-forward the checkout. nmap's OS detection, naabu's SYN scan and the UDP sweep keep using the NET_RAW and NET_ADMIN
+# capabilities docker-compose.yml already grants, so host networking needs no privileged mode. With it, loopback and every address of this
+# machine belong to the Sentinel's network too.
+services:
+  sentinel:
+    network_mode: host

@@ -1,4 +1,9 @@
 __pycache__/
 *.pyc
-.env
+# .env and its .env.bak.* backups hold the provisioning blob; only the example is tracked
+.env*
+!.env.example
 .update.lock
+.deployed-commit
+.deployed-commit.tmp
+docker-compose.override.yml
