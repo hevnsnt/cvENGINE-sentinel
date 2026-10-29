@@ -647,6 +647,17 @@ WPSCAN_ARGS = ['--format', 'json', '--no-banner', '--random-user-agent', '--thro
                '--themes-detection', 'passive', '--disable-tls-checks', '--enumerate', 'vp,vt,cb,dbe,u1-5']
 
 
+def _failure_line(stderr, stdout, token=''):
+    """The one line that says why WPScan failed: the last non-empty line of stderr, else of stdout (WPScan prints ``Scan Aborted: ...`` on
+    stdout), clipped to 300 characters with the API token replaced by ``***``. Never more than that line: stdout can be large and can echo the URL."""
+    for stream in (stderr, stdout):
+        lines = [line.strip() for line in (stream or '').splitlines() if line.strip()]
+        if lines:
+            line = lines[-1]
+            return (line.replace(token, '***') if token else line)[:300]
+    return ''
+
+
 def run_wpscan(url, token='', timeout=900, register=None):
     """Run WPScan on one site and return its raw outcome: ``{'report', 'returncode', 'stderr_tail'}``, exactly what
     ``cveFeed.wpscan_scan._classify`` already reads from a local run: the one function, local or dispatched, that
@@ -667,12 +678,12 @@ def run_wpscan(url, token='', timeout=900, register=None):
     with tempfile.TemporaryDirectory(prefix='wpscan-') as work:
         out = os.path.join(work, 'report.json')
         argv = [WPSCAN_BIN, '--url', url, *WPSCAN_ARGS, '--max-scan-duration', str(max(30, timeout - 30)), '-o', out]
-        proc = _start(argv, register, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        proc = _start(argv, register, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         try:
-            _, err = proc.communicate(timeout=timeout)
+            out_text, err = proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
             _kill_group(proc)
-            _, err = proc.communicate()
+            out_text, err = proc.communicate()
         report = None
         if os.path.exists(out) and os.path.getsize(out) <= MAX_WPSCAN_OUTPUT:
             with open(out, encoding='utf-8', errors='replace') as handle:
@@ -680,9 +691,8 @@ def run_wpscan(url, token='', timeout=900, register=None):
                     report = json.load(handle)
                 except ValueError:
                     report = None
-        stderr_tail = (err or '').strip().splitlines()[-1] if err else ''
         return {'report': report, 'returncode': proc.returncode if proc.returncode is not None else 1,
-                'stderr_tail': stderr_tail[:300]}
+                'stderr_tail': _failure_line(err, out_text, token)}
 
 
 RUNNERS = {'nmap': run_nmap, 'naabu': run_naabu, 'nuclei_light': run_nuclei, 'nuclei_targeted': run_nuclei,
