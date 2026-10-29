@@ -170,8 +170,8 @@ fi
 # Only now stop taking tasks. An OpenVAS scan can run for hours: when tasks are still running at the deadline the Sentinel goes back to work and
 # the next run tries again with the image already built. That is waiting, not a failure.
 ctl report draining --phase drain --detail "waiting for running tasks to finish" --from "$CURRENT" --to "$TARGET" 2>/dev/null || true
+DRAINED=1  # recorded before the flag is set: a signal landing between the two must still undrain (undrain is harmless when nothing was set)
 ctl drain || fail "could not ask the Sentinel to stop taking tasks" drain
-DRAINED=1
 rc=0
 ctl wait-idle --timeout "$DRAIN_TIMEOUT" || rc=$?
 if [ "$rc" = 2 ]; then
