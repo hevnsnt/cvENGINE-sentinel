@@ -8,14 +8,40 @@
 # services belong to the "openvas" compose profile, which is switched on by COMPOSE_PROFILES=openvas in .env (./setup.sh writes it,
 # or the Sentinels page's Provision form shows the lines to use). Without the profile the daemon simply never declares the
 # openvas capability, because gvmd's socket never appears (client/tools.gvm_available).
+#
+# Machine-specific changes (host networking, for one) go in docker-compose.override.yml, never in this tracked file: the updater fast-forwards
+# this checkout and refuses to when a tracked file was edited. See docker-compose.override.yml.example.
+
+# Every service's container log is capped (json-file, 3 files of 10 MB).
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   sentinel:
     build:
       context: .
       dockerfile: Dockerfile
-    image: cvengine/sentinel:latest
+    # A local name with no registry behind it: the image is only ever built here, never pulled.
+    image: cvengine-sentinel-local:latest
+    pull_policy: build
     container_name: cvengine-sentinel
     restart: unless-stopped
+    # init reaps the zombies testssl and its openssl children leave; the grace period outlasts the daemon's own 20 s wait for running tasks
+    # before it releases them to the server (Docker's default of 10 s killed it first).
+    init: true
+    stop_grace_period: 45s
+    pids_limit: 512
+    mem_limit: 2g
+    # Healthy while the daemon keeps writing a fresh status (client/control.py health).
+    healthcheck:
+      test: ["CMD", "python3", "-m", "client.control", "health"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
     environment:
       # One-time provisioning blob from the Sentinels page's Provision button (CVENGINE_SENTINEL_BLOB). Only needed
       # once: after a successful bootstrap the Sentinel's own token lives in the sentinel-state volume below and this
@@ -28,29 +54,24 @@ services:
       # auto-detects it from the CPU this container actually has (a `docker run --cpus`-style limit if one applies,
       # else the host's CPU count), capped at 10. Set a number to override that.
       CVENGINE_SENTINEL_MAX_CONCURRENT: "${CVENGINE_SENTINEL_MAX_CONCURRENT:-}"
-      # The version (git commit) of this checkout, shown on the Sentinels page and set by scripts/update.sh; see "Updates" in README.md.
-      CVENGINE_SENTINEL_VERSION: "${CVENGINE_SENTINEL_VERSION:-}"
       CVENGINE_SENTINEL_UPDATE: "${CVENGINE_SENTINEL_UPDATE:-}"
       # Optional: network, profile and kinds to turn off can be set here or from cvENGINE; the most recent change wins (README.md).
       CVENGINE_SENTINEL_NETWORK: "${CVENGINE_SENTINEL_NETWORK:-}"
       CVENGINE_SENTINEL_DISABLE: "${CVENGINE_SENTINEL_DISABLE:-}"
       CVENGINE_SENTINEL_PROFILE: "${CVENGINE_SENTINEL_PROFILE:-}"
+      # Optional: 1 keeps each OpenVAS task and report in gvmd after it finishes, to investigate a scan (they are deleted otherwise).
+      CVENGINE_OPENVAS_KEEP_TASKS: "${CVENGINE_OPENVAS_KEEP_TASKS:-}"
     # nmap's OS detection, naabu's SYN scanning and the UDP sweep need raw sockets; NET_RAW/NET_ADMIN are enough, no --privileged.
     cap_add:
       - NET_RAW
       - NET_ADMIN
-    # Uncomment to scan your LAN directly instead of only the Docker bridge network (most self-hosted setups want this):
-    # network_mode: host
+    # To scan your LAN directly instead of only the Docker bridge network: docker-compose.override.yml.example (./setup.sh --host-network).
     volumes:
       - sentinel-state:/var/lib/cvengine-sentinel
       # gvmd's GMP socket, read-only: an empty directory until openvas-gvmd is up and has created it (client/openvas.py
       # tolerates that - a task dispatched before then simply reports an error, like any other tool that is not ready).
       - openvas_gvmd_socket_vol:/run/gvmd:ro
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
+    logging: *logging
 
   # The OpenVAS (Greenbone Community Edition) stack this Sentinel's own client/openvas.py talks GMP to over the
   # socket above - the minimal set that exposes gvmd's GMP socket, taken from Greenbone's own compose file for the
@@ -63,6 +84,7 @@ services:
   # keys, and a pinned feed would be a stale one.
   openvas-vulnerability-tests:
     profiles: ["openvas"]
+    logging: *logging
     image: "registry.community.greenbone.net/community/vulnerability-tests:community"
     environment:
       FEED_RELEASE: "24.10"
@@ -74,6 +96,7 @@ services:
 
   openvas-notus-data:
     profiles: ["openvas"]
+    logging: *logging
     image: "registry.community.greenbone.net/community/notus-data:community"
     environment:
       KEEP_ALIVE: 1
@@ -84,6 +107,7 @@ services:
 
   openvas-scap-data:
     profiles: ["openvas"]
+    logging: *logging
     image: "registry.community.greenbone.net/community/scap-data:community"
     environment:
       KEEP_ALIVE: 1
@@ -94,6 +118,7 @@ services:
 
   openvas-cert-bund-data:
     profiles: ["openvas"]
+    logging: *logging
     image: "registry.community.greenbone.net/community/cert-bund-data:community"
     environment:
       KEEP_ALIVE: 1
@@ -104,6 +129,7 @@ services:
 
   openvas-dfn-cert-data:
     profiles: ["openvas"]
+    logging: *logging
     image: "registry.community.greenbone.net/community/dfn-cert-data:community"
     environment:
       KEEP_ALIVE: 1
@@ -117,6 +143,7 @@ services:
 
   openvas-data-objects:
     profiles: ["openvas"]
+    logging: *logging
     image: "registry.community.greenbone.net/community/data-objects:community"
     environment:
       FEED_RELEASE: "24.10"
@@ -128,6 +155,7 @@ services:
 
   openvas-report-formats:
     profiles: ["openvas"]
+    logging: *logging
     image: "registry.community.greenbone.net/community/report-formats:community"
     environment:
       FEED_RELEASE: "24.10"
@@ -142,6 +170,7 @@ services:
 
   openvas-gpg-data:
     profiles: ["openvas"]
+    logging: *logging
     image: "registry.community.greenbone.net/community/gpg-data:stable@sha256:c18618252f7d874cd1fe09413b043cfc40b57e6464d8c5973d4a93b074d5d91a"
     volumes:
       - openvas_gpg_data_vol:/mnt
@@ -150,6 +179,7 @@ services:
 
   openvas-redis:
     profiles: ["openvas"]
+    logging: *logging
     restart: always
     image: "registry.community.greenbone.net/community/redis-server:stable@sha256:83227e34b276bf7c7453a91bbfc070341af58f7ff40eb707ed6724965fe3846c"
     volumes:
@@ -159,6 +189,7 @@ services:
 
   openvas-pg-gvm-migrator:
     profiles: ["openvas"]
+    logging: *logging
     restart: "no"
     image: "registry.community.greenbone.net/community/pg-gvm-migrator:stable@sha256:8fc1cc11cac0481674527e01ec7610a8195110cf117d700bd47fe3af7012b34d"
     volumes:
@@ -169,6 +200,7 @@ services:
 
   openvas-pg-gvm:
     profiles: ["openvas"]
+    logging: *logging
     restart: always
     image: "registry.community.greenbone.net/community/pg-gvm:stable@sha256:a18d9e2f0cbba7839e65547a2331ce8f984500e8c4fbe91d08f9a48036d03fa2"
     volumes:
@@ -182,6 +214,7 @@ services:
 
   openvas-gvmd:
     profiles: ["openvas"]
+    logging: *logging
     restart: always
     image: "registry.community.greenbone.net/community/gvmd:stable@sha256:e59a6a684b112ea77fe4ddd7e5ca35e6a07d36bf854f1b411d11d12f9b0c608a"
     volumes:
@@ -210,11 +243,13 @@ services:
     networks:
       - openvas_network
 
-  # writes the scanner's configuration (notus, and where openvasd listens) into a volume, then exits. The scanner's own log is
+  # writes the scanner's configuration (notus, and where openvasd listens) into a volume, then exits. It also empties the scanner's own log
+  # (a volume nothing rotates) once it has grown past 50 MB, which happens at every `docker compose up -d`. The scanner's own log is
   # kept at the image's default level (127, no debug lines): level 128 wrote about 130,000 lines (50 MB) for one 40 minute scan of
   # one host. Set OPENVAS_LOG_LEVEL=128 in .env only to debug a scan, then `docker compose up -d` again.
   openvas-configure:
     profiles: ["openvas"]
+    logging: *logging
     image: "registry.community.greenbone.net/community/openvas-scanner:stable@sha256:4873aa9478545d589dd853d41a6076bc0265c2de90bf30e563d805c56937ed52"
     volumes:
       - openvas_data_vol:/mnt
@@ -228,6 +263,7 @@ services:
         chmod 644 /mnt/openvas.conf
         chmod 644 /mnt/openvas_log.conf
         touch /var/log/openvas/openvas.log
+        if [ "$$(wc -c < /var/log/openvas/openvas.log)" -gt 52428800 ]; then : > /var/log/openvas/openvas.log; fi
         chmod 666 /var/log/openvas/openvas.log
     networks:
       - openvas_network
@@ -235,6 +271,7 @@ services:
   # notus, the static vulnerability engine for authenticated package checks (OPENVASD_MODE service_notus: nothing else), reachable only by name inside this stack's own network
   openvas-openvasd:
     profiles: ["openvas"]
+    logging: *logging
     restart: always
     image: "registry.community.greenbone.net/community/openvas-scanner:stable@sha256:4873aa9478545d589dd853d41a6076bc0265c2de90bf30e563d805c56937ed52"
     environment:
@@ -265,6 +302,7 @@ services:
   # host's default route (not through the sentinel container).
   openvas-ospd:
     profiles: ["openvas"]
+    logging: *logging
     restart: always
     image: "registry.community.greenbone.net/community/ospd-openvas:stable@sha256:31a85272abc77521c98451ce6834ed7d2f887e98ff1b26ff3fd94f00d000b169"
     hostname: ospd-openvas.local
