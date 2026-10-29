@@ -582,6 +582,10 @@ class WpscanRunnerTests(unittest.TestCase):
         self.assertEqual(result['returncode'], 4)
         self.assertEqual(result['stderr_tail'], 'Scan Aborted: not running WordPress')
 
+    def test_the_throttle_is_above_zero(self):
+        # WPScan refuses --throttle 0 ("--throttle 0 is not > 0") and aborts before scanning
+        self.assertGreater(int(tools.WPSCAN_ARGS[tools.WPSCAN_ARGS.index('--throttle') + 1]), 0)
+
     def _run_fake(self, token='', **fake):
         report = fake.pop('report', None)
         with mock.patch('client.tools.subprocess.Popen', side_effect=lambda argv, env=None, **kw: self._FakeProc(argv, env, report, **fake)):
