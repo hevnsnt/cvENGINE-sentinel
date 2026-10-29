@@ -421,6 +421,19 @@ class TestsslRunnerTests(unittest.TestCase):
         def communicate(self, timeout=None):
             return ('', '')
 
+    def test_an_oversized_or_unreadable_report_is_a_failed_run_not_no_findings(self):
+        with mock.patch('client.tools.MAX_TESTSSL_OUTPUT', 10), \
+                mock.patch('client.tools.subprocess.Popen', side_effect=lambda argv, **kw: self._FakeProc(argv, [{'id': 'x' * 50, 'severity': 'LOW'}], **kw)):
+            with self.assertRaises(tools.ToolOutputError):
+                tools.run_testssl('www.example.test', '8.8.8.8', 443)
+
+        class NoReport(self._FakeProc):
+            def __init__(self, argv, report, **kwargs):
+                self.argv, self.kwargs = argv, kwargs  # writes no report file at all
+        with mock.patch('client.tools.subprocess.Popen', side_effect=lambda argv, **kw: NoReport(argv, [], **kw)):
+            with self.assertRaises(tools.ToolOutputError):
+                tools.run_testssl('www.example.test', '8.8.8.8', 443)
+
     def test_builds_a_fixed_argv_and_reads_only_the_four_fields(self):
         report = [{'id': 'heartbleed', 'severity': 'HIGH', 'finding': 'VULNERABLE', 'cve': 'CVE-2014-0160', 'extra': 'dropped'},
                   {'id': 'not_tracked', 'severity': 'INFO', 'finding': 'test ok'}]

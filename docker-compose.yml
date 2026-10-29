@@ -7,7 +7,7 @@
 # finishes (other kinds work immediately). LIGHT runs only nmap/naabu/nuclei/testssl/wpscan, for a small box: the openvas-*
 # services belong to the "openvas" compose profile, which is switched on by COMPOSE_PROFILES=openvas in .env (./setup.sh writes it,
 # or the Sentinels page's Provision form shows the lines to use). Without the profile the daemon simply never declares the
-# openvas capability, because gvmd's socket never appears (client/tools.gvm_available).
+# openvas capability, because gvmd is never ready (client/tools.gvm_ready).
 #
 # Machine-specific changes (host networking, for one) go in docker-compose.override.yml, never in this tracked file: the updater fast-forwards
 # this checkout and refuses to when a tracked file was edited. See docker-compose.override.yml.example.
@@ -55,7 +55,7 @@ services:
       # else the host's CPU count), capped at 10. Set a number to override that.
       CVENGINE_SENTINEL_MAX_CONCURRENT: "${CVENGINE_SENTINEL_MAX_CONCURRENT:-}"
       CVENGINE_SENTINEL_UPDATE: "${CVENGINE_SENTINEL_UPDATE:-}"
-      # Optional: network, profile and kinds to turn off can be set here or from cvENGINE; the most recent change wins (README.md).
+      # Optional: network, profile and kinds to turn off can be set here or from cvENGINE; the network, the kinds turned off and self-update set here are limits cvENGINE can lower but never loosen (README.md).
       CVENGINE_SENTINEL_NETWORK: "${CVENGINE_SENTINEL_NETWORK:-}"
       CVENGINE_SENTINEL_DISABLE: "${CVENGINE_SENTINEL_DISABLE:-}"
       CVENGINE_SENTINEL_PROFILE: "${CVENGINE_SENTINEL_PROFILE:-}"
@@ -344,6 +344,7 @@ services:
       - openvas_network
 
 networks:
+  # A separate bridge network for the GVM services. It is not `internal`: the scanner's own traffic leaves through the host's default route.
   openvas_network:
 
 volumes:

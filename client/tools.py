@@ -584,11 +584,11 @@ def run_testssl(host, ip, port, starttls=None, timeout=900, register=None):
             raise
         try:
             if os.path.getsize(out) > MAX_TESTSSL_OUTPUT:
-                return {'items': []}
+                raise ToolOutputError('testssl wrote a report over the size limit')  # an empty answer would read as "no TLS issues"
             with open(out, encoding='utf-8', errors='replace') as handle:
                 report = json.load(handle)
         except (OSError, ValueError):
-            return {'items': []}
+            raise ToolOutputError('testssl wrote no readable report') from None
     items = parse_testssl_report(report)[:300]
     return {'items': [{'id': str(i.get('id') or ''), 'severity': str(i.get('severity') or ''),
                        'finding': str(i.get('finding') or ''), 'cve': str(i.get('cve') or '')} for i in items]}

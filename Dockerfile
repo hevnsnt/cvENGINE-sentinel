@@ -1,6 +1,6 @@
 # The Sentinel client: a standalone image with nmap, naabu, nuclei, testssl.sh, WPScan and the client daemon, pinned
-# to the exact same tool versions web/Dockerfile pins (scripts/check_tool_versions.py checks both; keep them equal on
-# purpose, see docs/UPDATES.md "Pinned tools"), so a Sentinel's results are never skewed by running a different
+# to the exact same tool versions the cvENGINE server repository's web/Dockerfile pins (its scripts/check_tool_versions.py checks both; keep them equal on
+# purpose, see docs/UPDATES.md "Pinned tools" in that repository), so a Sentinel's results are never skewed by running a different
 # nmap/naabu/nuclei/testssl/wpscan than the instance it reports to would have run locally. The OpenVAS (GVM) stack
 # itself is NOT in this image: it runs as the separate Greenbone services in docker-compose.yml, which this daemon
 # talks GMP to over a shared unix socket (client/openvas.py), the same way cvENGINE's own server talks to its sidecar.
@@ -14,7 +14,7 @@ ARG NUCLEI_VERSION=3.11.1
 ARG NAABU_VERSION=2.6.1
 # nmap: amd64 installs the project's own x86_64 release RPM (its libraries are linked in statically), arm64 builds the
 # source tarball, because nmap.org publishes no arm64 binary. Both checksums are published beside the files at
-# nmap.org/dist/sigs/ (identical to web/Dockerfile's own pins).
+# nmap.org/dist/sigs/ (identical to the server repository's web/Dockerfile pins).
 ARG NMAP_SHA256=270e55f04915bfcecb5db8feb959d4c5ba86a48c094520a4f1c07571e1c79c59
 ARG NMAP_RPM_SHA256_AMD64=997cb830c84a429aaa1d41708a1ebb9b1cc36e75d21801c9d359fe930a8c1f93
 ARG WPSCAN_VERSION=4.1.0
@@ -22,12 +22,6 @@ ARG WPSCAN_VERSION=4.1.0
 # cveFeed/testssl_scan.py's own invocation. Pinned tarball with its checksum, never a branch.
 ARG TESTSSL_VERSION=3.2.3
 ARG TESTSSL_SHA256=1c4bb10185a67592164eb870c717b8bdd03f290c8d68f9a8c658335ff5ac8b91
-
-LABEL \
-    name="CVEngine Sentinel" \
-    description="Downloadable scan-stage agent for CVEngine: runs nmap, naabu, nuclei, testssl.sh, WPScan and OpenVAS work on your own network and reports typed results back." \
-    org.opencontainers.image.source="https://github.com/hevnsnt/CVEngine" \
-    org.opencontainers.image.licenses="GPL-3.0-only"
 
 ENV DEBIAN_FRONTEND="noninteractive" \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -54,7 +48,7 @@ RUN apt-get update -y && \
     wget && \
     rm -rf /var/lib/apt/lists/*
 
-# nmap, checksum verified, same pin and install method as web/Dockerfile (see its own comment for why the two paths).
+# nmap, checksum verified, same pin and install method as the server repository's web/Dockerfile (see its own comment for why the two paths).
 RUN set -e; cd /tmp \
     && if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
         curl -fsSLO https://nmap.org/dist/nmap-${NMAPVERSION}-1.x86_64.rpm \
@@ -95,7 +89,7 @@ RUN ARCH=$(dpkg --print-architecture) \
     && rm -rf "${GOROOT}" "${GOPATH}/pkg" /root/.cache/go-build
 
 # Nuclei's templates are refreshed once at build time and again on every container start (see docker-entrypoint.sh),
-# same as the main image: they are not pinned by design (docs/UPDATES.md).
+# same as the server's own image: they are not pinned by design (docs/UPDATES.md in the server repository).
 RUN nuclei -update-templates
 
 # WPScan (GPLv3, run as a separate program, never linked): mirrors cveFeed/wpscan_scan.py's own invocation.
@@ -141,6 +135,13 @@ RUN h="$(cat /tmp/gitmeta/HEAD 2>/dev/null || true)"; v=""; \
       *) v="$h" ;; \
     esac; \
     printf '%s' "$v" | tr -cd '0-9a-f' | cut -c1-12 > /opt/sentinel/VERSION; rm -rf /tmp/gitmeta
+
+# Last on purpose: a label change must not invalidate the build layers above it.
+LABEL \
+    name="CVEngine Sentinel" \
+    description="Downloadable scan-stage agent for CVEngine: runs nmap, naabu, nuclei, testssl.sh, WPScan and OpenVAS work on your own network and reports typed results back." \
+    org.opencontainers.image.source="https://github.com/hevnsnt/cvENGINE-sentinel" \
+    org.opencontainers.image.licenses="GPL-3.0-only"
 
 ENTRYPOINT ["/opt/sentinel/docker-entrypoint.sh"]
 CMD ["python3", "-m", "client"]

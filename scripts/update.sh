@@ -3,7 +3,7 @@
 # drain running tasks, swap the stack and report how it went.
 #
 #   scripts/update.sh            update when this Sentinel's self-update setting says so: Automatic always, Manual only when an administrator
-#                                pressed Update now, Off never (the setting is chosen in cvENGINE, or CVENGINE_SENTINEL_UPDATE here; the most recent change wins)
+#                                pressed Update now, Off never (the setting is chosen in cvENGINE, or CVENGINE_SENTINEL_UPDATE here, which is a ceiling: a local off or manual caps what cvENGINE can ask for)
 #   scripts/update.sh --now      update whatever the setting says (a person typing it here; still drains running tasks first)
 #   scripts/update.sh --check    only say whether an update is available and whether the setting wants it
 #
@@ -155,6 +155,16 @@ docker compose build || rollback "docker compose build failed" build
 # The image stamps its own commit (Dockerfile, VERSION); an old CVENGINE_SENTINEL_VERSION line in .env would report a stale version instead.
 if [ -f .env ] && grep -q '^CVENGINE_SENTINEL_VERSION=' .env; then
   sed -i '/^CVENGINE_SENTINEL_VERSION=/d' .env
+fi
+
+# An OpenVAS scan runs for hours: draining for it would only stop the Sentinel taking other work until the deadline. Leave it running, keep the
+# built image, and try again at the next run (the status file lists the kinds of the tasks running).
+if ctl status 2>/dev/null | grep -q '"in_flight_kinds": \[[^]]*"openvas"'; then
+  RESULT=waiting
+  DETAIL="update $TARGET is built; an OpenVAS scan is running, will retry"
+  ctl report waiting --phase drain --detail "$DETAIL" --from "$CURRENT" --to "$TARGET" 2>/dev/null || true
+  say "$DETAIL"
+  exit 0
 fi
 
 # Only now stop taking tasks. An OpenVAS scan can run for hours: when tasks are still running at the deadline the Sentinel goes back to work and

@@ -193,6 +193,25 @@ class UpdateScriptTests(unittest.TestCase):
         self.assertFalse(control.is_draining())  # a failed update never leaves the Sentinel drained
         self.assertNotIn('client.control drain', self.calls())  # and a checkout that cannot update is never drained at all
 
+    def test_a_running_openvas_scan_is_not_drained_for(self):
+        self.publish()
+        control.write_status('v0', 1, {'setting': 'automatic', 'mode': 'manual', 'requested': False}, kinds=['openvas'])
+        out = self.update()
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertEqual(control.updater_info()['last_result'], 'waiting')
+        self.assertIn('OpenVAS scan is running', control.updater_info()['detail'])
+        self.assertIn('compose build', self.calls())  # the image is ready for the next run
+        self.assertNotIn('client.control drain', self.calls())
+        self.assertNotIn('compose up', self.calls())
+        self.assertFalse(control.is_draining())
+
+    def test_other_running_tasks_are_still_drained_for(self):
+        self.publish()
+        control.write_status('v0', 1, {'setting': 'automatic', 'mode': 'manual', 'requested': False}, kinds=['nmap'])
+        out = self.update(CVENGINE_SENTINEL_DRAIN_TIMEOUT='1')
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertIn('client.control drain', self.calls())
+
     def test_a_dirty_checkout_is_refused_before_draining(self):
         self.publish()
         put(os.path.join(self.work, 'README'), 'local edit\n', 'a')

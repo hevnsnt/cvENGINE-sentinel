@@ -79,14 +79,16 @@ def is_draining(now=None):
 
 # --- the daemon's status, for the updater to read -----------------------------------------------------------------------------------------
 
-def write_status(version, in_flight, update_reply, now=None):
+def write_status(version, in_flight, update_reply, now=None, kinds=None):
     """Written by the daemon. ``setting`` is the daemon's effective self-update value: what cvENGINE said in the heartbeat (else the server's settings
-    override), capped by this machine's own. The CLI runs in another process, which never sees the daemon's overrides, so it decides on this value."""
+    override), capped by this machine's own. The CLI runs in another process, which never sees the daemon's overrides, so it decides on this value.
+    ``kinds`` are the kinds of the tasks running now: the updater does not drain for an OpenVAS scan that runs for hours."""
     update_reply = update_reply if isinstance(update_reply, dict) else {}
     server = update_reply.get('setting') if update_reply.get('setting') in config.SELF_UPDATE else config.overrides().get('self_update')
     setting = config.capped_self_update(server)
     _write_json('control.json', {'version': version, 'in_flight': in_flight, 'draining': is_draining(), 'mode': update_reply.get('mode'),
-                                 'setting': setting, 'requested': bool(update_reply.get('requested')), 'at': int(now or time.time())})
+                                 'setting': setting, 'requested': bool(update_reply.get('requested')), 'in_flight_kinds': sorted({k for k in (kinds or []) if isinstance(k, str)}),
+                                 'at': int(now or time.time())})
 
 
 def read_status():

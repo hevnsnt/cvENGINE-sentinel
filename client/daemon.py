@@ -396,7 +396,9 @@ class Daemon:
         if update_reply is not None:
             self._update_reply = update_reply
         try:
-            control.write_status(config.version(), self._active_count() + (1 if self._polling else 0), self._update_reply)
+            with self._lock:
+                kinds = [state.get('kind') for state in self._in_flight.values()]
+            control.write_status(config.version(), self._active_count() + (1 if self._polling else 0), self._update_reply, kinds=kinds)
         except Exception as exc:  # noqa: BLE001 - the updater's status is a side channel; it must never stop a heartbeat or a task
             logger.warning('could not write the updater status: %s', exc)
 

@@ -1,5 +1,6 @@
 """The hand-off between the daemon and the host-side updater: drain, status, the updater's own progress."""
 import io
+import json
 import os
 import tempfile
 import time
@@ -109,6 +110,13 @@ class UpdateReportTests(Base):
             with mock.patch.dict('os.environ', {'CVENGINE_SENTINEL_VERSION': value}), mock.patch.object(config, 'build_version', return_value=None):
                 self.assertIsNone(config.version(), value)
                 self.assertNotIn('version', daemon.info())
+
+    def test_the_status_lists_the_kinds_of_the_tasks_running(self):
+        control.write_status('v1', 2, {}, kinds=['openvas', 'nmap', None, 7, 'nmap'])
+        self.assertEqual(control.read_status()['in_flight_kinds'], ['nmap', 'openvas'])
+        self.assertEqual(json.loads(control._status_json())['in_flight_kinds'], ['nmap', 'openvas'])
+        control.write_status('v1', 0, {})
+        self.assertEqual(control.read_status()['in_flight_kinds'], [])
 
     def test_the_commit_stamped_at_build_time_is_the_version_when_no_setting_names_one(self):
         with tempfile.TemporaryDirectory() as tmp:

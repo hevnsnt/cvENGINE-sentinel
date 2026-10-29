@@ -99,7 +99,7 @@ if [ -f .env ]; then
 else
   {
     echo "# Written by setup.sh"
-    echo "# Self-update (off, manual or automatic) is chosen in cvENGINE; set CVENGINE_SENTINEL_UPDATE here only to state this machine's own choice (the most recent change wins)."
+    echo "# Self-update (off, manual or automatic) is chosen in cvENGINE; set CVENGINE_SENTINEL_UPDATE here only to state this machine's own limit: a local off or manual caps what cvENGINE can ask for."
     echo "# CVENGINE_SENTINEL_UPDATE="
   } > .env.new
 fi
