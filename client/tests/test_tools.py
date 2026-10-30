@@ -33,6 +33,9 @@ def setUpModule():
         unittest.addModuleCleanup(patcher.stop)
 
 
+FINISHED_REPORT = '<nmaprun><runstats><finished exit="success"/></runstats></nmaprun>'
+
+
 def _read(name):
     with open(os.path.join(FIXTURES, name), encoding='utf-8') as handle:
         return handle.read()
@@ -136,9 +139,10 @@ class NaabuParsingTests(unittest.TestCase):
         text = 'garbage\n{"ip": "192.0.2.1", "port": 80}\nmore garbage {{{\n'
         self.assertEqual(tools.parse_naabu_output(text), {'192.0.2.1': [80]})
 
-    def test_a_tarpit_address_over_the_cap_is_dropped(self):
+    def test_a_tarpit_address_over_the_cap_is_sent_as_null_not_clipped_or_dropped(self):
         lines = '\n'.join(f'{{"ip": "192.0.2.99", "port": {p}}}' for p in range(1, tools.MAX_OPEN_PER_IP + 10))
-        self.assertEqual(tools.parse_naabu_output(lines), {})
+        lines += '\n{"ip": "192.0.2.5", "port": 22}'
+        self.assertEqual(tools.parse_naabu_output(lines), {'192.0.2.99': None, '192.0.2.5': [22]})
 
 
 class NucleiParsingTests(unittest.TestCase):
@@ -222,7 +226,9 @@ class RunnerArgvTests(unittest.TestCase):
         self.assertIn('-n', captured['argv'])  # no reverse DNS: parse_nmap_xml never reads host names
         self.assertEqual(captured['targets_file_contents'], '8.8.8.8\n1.1.1.1\n')
         self.assertEqual(captured['timeout'], tools.NMAP_MIN_TIMEOUT)
-        self.assertEqual(len(result['hosts']), 2)
+        # the sample report's two hosts, plus an empty row for each requested address the report does not mention
+        self.assertEqual(len(result['hosts']), 4)
+        self.assertEqual({h['ip'] for h in result['hosts']} >= {'8.8.8.8', '1.1.1.1'}, True)
 
     def test_nmap_and_naabu_are_given_the_address_a_name_was_judged_by(self):
         files = []
@@ -231,7 +237,7 @@ class RunnerArgvTests(unittest.TestCase):
             path = argv[argv.index('-iL') + 1] if '-iL' in argv else argv[argv.index('-list') + 1]
             with open(path, encoding='utf-8') as handle:
                 files.append(handle.read())
-            return ''
+            return FINISHED_REPORT
         with mock.patch('client.tools._run', side_effect=fake_run):
             tools.run_nmap(['www.example.test', 'dual.example.test', 'v6only.example.test', 'nowhere.example.test', '93.184.215.14'])
             tools.run_naabu(['www.example.test', 'dual.example.test'])
@@ -240,15 +246,33 @@ class RunnerArgvTests(unittest.TestCase):
 
     def test_nothing_runs_when_no_name_resolves(self):
         with mock.patch('client.tools._run') as fake_run:
-            self.assertEqual(tools.run_nmap(['nowhere.example.test']), {'hosts': []})
+            self.assertEqual(tools.run_nmap(['nowhere.example.test'])['hosts'], [])
             self.assertEqual(tools.run_naabu(['nowhere.example.test']), {'ports': {}})
         fake_run.assert_not_called()
+
+    def test_nmap_that_did_not_finish_is_an_error_never_an_empty_result(self):
+        for report in ('', 'not xml', '<other/>', '<nmaprun><host/></nmaprun>', '<nmaprun><runstats><finished exit="error"/></runstats></nmaprun>'):
+            with self.subTest(report=report), mock.patch('client.tools._run', return_value=report):
+                with self.assertRaises(tools.ToolOutputError):
+                    tools.run_nmap(['8.8.8.8'])
+
+    def test_every_requested_address_gets_a_host_row(self):
+        with mock.patch('client.tools._run', return_value=FINISHED_REPORT):
+            result = tools.run_nmap(['8.8.8.8', '1.1.1.1'])
+        self.assertEqual(result['hosts'], [{'ip': '8.8.8.8', 'os_guess': '', 'ports': []}, {'ip': '1.1.1.1', 'os_guess': '', 'ports': []}])
+
+    def test_os_is_reported_unreliable_only_inside_docker_desktop_style_kernels(self):
+        for release, reliable in (('6.19.14+kali-amd64', True), ('6.10.14-linuxkit', False), ('5.15.153.1-microsoft-standard-WSL2', False),
+                                  ('6.5.0-orbstack-00001', False), ('6.8.0-45-generic', True)):
+            with self.subTest(release=release), mock.patch('client.tools.platform.release', return_value=release), \
+                    mock.patch('client.tools._run', return_value=FINISHED_REPORT):
+                self.assertIs(tools.run_nmap(['8.8.8.8'])['os_reliable'], reliable)
 
     def test_the_nmap_timeout_grows_with_the_host_count(self):
         self.assertEqual(tools.nmap_timeout(1), 600)
         self.assertEqual(tools.nmap_timeout(10), 900)
         self.assertEqual(tools.nmap_timeout(64), 3600)
-        with mock.patch('client.tools._run', return_value='') as fake_run:
+        with mock.patch('client.tools._run', return_value=FINISHED_REPORT) as fake_run:
             tools.run_nmap([f'8.8.8.{i}' for i in range(1, 21)])
             self.assertEqual(fake_run.call_args[0][1], 1800)
             tools.run_nmap(['8.8.8.8'], timeout=42)
@@ -260,7 +284,7 @@ class RunnerArgvTests(unittest.TestCase):
         def fake_run(argv, timeout, register=None):
             with open(argv[argv.index('-iL') + 1], encoding='utf-8') as handle:
                 runs.append((argv, handle.read()))
-            return _read('sample_nmap.xml') if len(runs) == 1 else '<nmaprun/>'
+            return _read('sample_nmap.xml') if len(runs) == 1 else FINISHED_REPORT
         with mock.patch('client.tools._run', side_effect=fake_run):
             result = tools.run_nmap(['8.8.8.8', '2606:4700:4700::1111'])
         self.assertEqual(len(runs), 2)
@@ -268,8 +292,8 @@ class RunnerArgvTests(unittest.TestCase):
         self.assertEqual(runs[0][1], '8.8.8.8\n')
         self.assertEqual(runs[1][0][:3], [tools.NMAP_BIN, '-6', *tools.NMAP_FLAGS[:1]])
         self.assertEqual(runs[1][1], '2606:4700:4700::1111\n')
-        self.assertEqual(len(result['hosts']), 2)  # the sample report's two hosts, from the IPv4 run
-        with mock.patch('client.tools._run', return_value='<nmaprun/>') as only_v6:
+        self.assertEqual(len(result['hosts']), 4)  # the sample report's two hosts, plus an empty row for each requested address it does not mention
+        with mock.patch('client.tools._run', return_value=FINISHED_REPORT) as only_v6:
             tools.run_nmap(['2606:4700:4700::1111'])
         self.assertEqual(only_v6.call_count, 1)
         self.assertEqual(only_v6.call_args[0][0][1], '-6')

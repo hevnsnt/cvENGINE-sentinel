@@ -18,6 +18,7 @@ import ipaddress
 import json
 import logging
 import os
+import platform
 import re
 import signal
 import socket
@@ -276,15 +277,23 @@ def _run(argv, timeout, register=None, max_bytes=None):
 
 # --- nmap -----------------------------------------------------------------------------------------------------------
 
-def parse_nmap_xml(xml_text):
+def parse_nmap_xml(xml_text, strict=False):
+    """The hosts of an nmap ``-oX`` report. ``strict`` (the scan runner) refuses a report that is empty, unparseable, not an ``nmaprun`` or
+    that never reached ``<finished exit="success">``: an nmap that died part way must be an error, never "no hosts, nothing open"."""
     hosts = []
     if not (xml_text or '').strip():
+        if strict:
+            raise ToolOutputError('nmap produced no report')
         return {'hosts': hosts}
     try:
         root = ET.fromstring(xml_text)
     except ET.ParseError:
         logger.warning('could not parse nmap XML output')
+        if strict:
+            raise ToolOutputError('nmap produced a report that could not be read') from None
         return {'hosts': hosts}
+    if strict and (root.tag != 'nmaprun' or root.find('runstats/finished[@exit="success"]') is None):
+        raise ToolOutputError('nmap did not finish its report')
     for host_el in root.findall('host'):
         addr_el = None
         for kind in ('ipv4', 'ipv6'):
@@ -324,6 +333,25 @@ def _is_ipv6(address):
         return False
 
 
+# The OS guess only holds when nmap's probes cross the network unchanged. Docker Desktop and OrbStack run containers in a VM behind a proxy that
+# answers probes itself, so the guess describes the gateway: the server must not store it (mirrors cveFeed.os_detection.KERNEL_MARKERS).
+KERNEL_MARKERS = ('linuxkit', 'microsoft', 'wsl2', 'orbstack')
+
+
+def os_guess_reliable():
+    """False when the kernel release says this container runs inside Docker Desktop, WSL2 or OrbStack; the server then keeps the packet-based OS
+    guess out of the host's record. Anything else (a Linux host, host networking) is reliable."""
+    release = platform.release().lower()
+    return not any(marker in release for marker in KERNEL_MARKERS)
+
+
+def _same_address(a, b):
+    try:
+        return ipaddress.ip_address(str(a).strip().strip('[]')) == ipaddress.ip_address(str(b).strip().strip('[]'))
+    except ValueError:
+        return str(a).strip() == str(b).strip()
+
+
 def nmap_timeout(count):
     """Seconds one nmap run over ``count`` hosts may take before it is killed."""
     return min(NMAP_MAX_TIMEOUT, max(NMAP_MIN_TIMEOUT, NMAP_SECONDS_PER_TARGET * count))
@@ -342,10 +370,15 @@ def run_nmap(addresses, timeout=None, register=None):
         path = _targets_file(group)
         try:
             argv = [NMAP_BIN, *flags, *NMAP_FLAGS, '-oX', '-', '-iL', path]
-            out.extend(parse_nmap_xml(_run(argv, timeout or nmap_timeout(len(group)), register))['hosts'])
+            out.extend(parse_nmap_xml(_run(argv, timeout or nmap_timeout(len(group)), register), strict=True)['hosts'])
         finally:
             os.unlink(path)
-    return {'hosts': out}
+    # A row for every requested address: the server reads a missing row as "this Sentinel did not cover it" (an external scan falls back to a
+    # local one, an internal scan fails), and an address that answered nothing is a host with no open ports.
+    for address in addresses:
+        if not any(_same_address(address, row['ip']) for row in out):
+            out.append({'ip': str(address).strip().strip('[]'), 'os_guess': '', 'ports': []})
+    return {'hosts': out, 'os_reliable': os_guess_reliable()}
 
 
 # --- discover: which addresses of an internal network answer -------------------------------------------------------
@@ -424,7 +457,8 @@ def parse_naabu_output(text):
         ip, port = row.get('ip') or row.get('host'), row.get('port')
         if ip and isinstance(port, int) and not isinstance(port, bool) and 0 < port < 65536:
             found.setdefault(str(ip), set()).add(port)
-    return {ip: sorted(ports) for ip, ports in found.items() if len(ports) <= MAX_OPEN_PER_IP}
+    # An address with more open ports than that is a tarpit: it is sent as null (never clipped, never dropped) and the server scans its default ports.
+    return {ip: (sorted(ports) if len(ports) <= MAX_OPEN_PER_IP else None) for ip, ports in found.items()}
 
 
 def run_naabu(addresses, timeout=900, register=None):
