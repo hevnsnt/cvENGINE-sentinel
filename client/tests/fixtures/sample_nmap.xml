@@ -29,4 +29,5 @@
 </port>
 </ports>
 </host>
+<runstats><finished time="1" exit="success"/></runstats>
 </nmaprun>
