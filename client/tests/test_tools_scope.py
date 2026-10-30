@@ -37,6 +37,7 @@ NEVER = ('127.0.0.1', '127.1.2.3', '::1', '[::1]', '::ffff:127.0.0.1', '0.0.0.0'
          '127.0.0.1:2375', '172.19.0.2', '2130706433', '0x7f000001', '0177.0.0.1', '127.1', '0-255.0-255.0-255.0-255',
          '10.0-255.0-255.1-254', '8.8.8.0/24', '10.0.0.0/8', '8.8.8.8,1.1.1.1', 'www.example.test,localhost', '8.8.8.*',
          'rebind.example.test', 'metadata.example.test', 'fe80::1', '224.0.0.1', '255.255.255.255')
+FINISHED = '<nmaprun><runstats><finished exit="success"/></runstats></nmaprun>'  # what a finished nmap run prints
 PRIVATE = ('10.1.2.3', '192.168.1.10', '172.16.5.5', '100.64.0.1', 'fd12:3456::1', 'lan.example.test')
 
 
@@ -79,7 +80,7 @@ class RefusedTargetTests(unittest.TestCase):
         for target in PRIVATE:
             for name, call in allowed.items():
                 with self.subTest(tool=name, target=target), mock.patch.object(scope, 'internal_allowed', return_value=True), \
-                        mock.patch('client.tools._run', return_value='') as fake_run:
+                        mock.patch('client.tools._run', return_value=FINISHED) as fake_run:
                     call(target)
                     fake_run.assert_called()
         with mock.patch.object(scope, 'internal_allowed', return_value=True), \
@@ -92,7 +93,7 @@ class RefusedTargetTests(unittest.TestCase):
 
     def test_public_targets_run_on_either(self):
         for internal in (False, True):
-            with mock.patch.object(scope, 'internal_allowed', return_value=internal), mock.patch('client.tools._run', return_value='') as fake_run:
+            with mock.patch.object(scope, 'internal_allowed', return_value=internal), mock.patch('client.tools._run', return_value=FINISHED) as fake_run:
                 tools.run_nmap(['8.8.8.8', 'www.example.test'])
                 tools.run_nuclei(['https://www.example.test/', '8.8.8.8:443'])
                 tools.run_nmap_udp('2606:4700:4700::1111')
