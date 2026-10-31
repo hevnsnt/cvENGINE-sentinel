@@ -1,0 +1,26 @@
+# The scanner library: what the Sentinel client and the cvENGINE server share (flags, parsers, scope floor, result contract and its fixtures).
+# Pure code with no runtime dependencies. The Sentinel image installs it with `pip install .`; cvENGINE pins it by tag.
+[build-system]
+requires = ["setuptools>=77", "setuptools-scm>=8"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cvengine-scanner"
+description = "Scan flags, output parsers, scope floor and result contract shared by the cvENGINE Sentinel and server"
+dynamic = ["version"]
+requires-python = ">=3.13"
+license = "GPL-3.0-only"
+dependencies = []
+
+[project.urls]
+Source = "https://github.com/hevnsnt/cvENGINE-sentinel"
+
+[tool.setuptools]
+packages = ["cvengine_scanner", "cvengine_scanner.contract"]
+
+[tool.setuptools.package-data]
+cvengine_scanner = ["contract/*.json", "fixtures/results/*.json", "fixtures/targets/*.json"]
+
+# The version is the git tag (v1.2.3 or 1.2.3); a checkout without tags or without git (the Docker build context has none) gets the fallback.
+[tool.setuptools_scm]
+fallback_version = "0.0.0.dev0"

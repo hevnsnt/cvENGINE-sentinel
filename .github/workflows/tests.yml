@@ -24,6 +24,55 @@ jobs:
       - run: pip install -r requirements.txt
       - run: python -m unittest discover -s client/tests -t .
 
+  library:
+    name: Library tests (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m unittest discover -s cvengine_scanner/tests -t .
+      - name: The installed package carries the contract and the fixtures
+        run: |
+          pip install .
+          cd "$RUNNER_TEMP"
+          python -I - <<'PY'
+          import cvengine_scanner
+          from cvengine_scanner import contract
+          assert 'site-packages' in cvengine_scanner.__file__, cvengine_scanner.__file__
+          print('cvengine-scanner', cvengine_scanner.__version__, 'contract', contract.version())
+          for half in ('results', 'targets'):
+              assert sorted((contract.FIXTURES / half).glob('*.json')), half
+          PY
+
+  contract:
+    name: Vendored contract equals the server's
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Compare cvengine_scanner/contract/sentinel_contract.json with the server's file
+        env:
+          SERVER_CONTRACT_URL: https://raw.githubusercontent.com/hevnsnt/CVEngine/1.4-develop/web/agentapi/sentinel_contract.json
+        run: |
+          server="$RUNNER_TEMP/server_sentinel_contract.json"
+          # Not being able to read the server's file is not a failure of this repository: say so and stop. A file that was read and differs is.
+          if ! curl -fsSL --retry 3 --max-time 30 -o "$server" "$SERVER_CONTRACT_URL" || ! python3 -c 'import json, sys; json.load(open(sys.argv[1]))' "$server"; then
+            echo "::warning::could not fetch the server's contract from $SERVER_CONTRACT_URL; the comparison was skipped"
+            exit 0
+          fi
+          if cmp -s "$server" cvengine_scanner/contract/sentinel_contract.json; then
+            echo "the vendored contract is byte-identical to the server's"
+          else
+            diff -u "$server" cvengine_scanner/contract/sentinel_contract.json | head -80 || true
+            echo "::error::cvengine_scanner/contract/sentinel_contract.json differs from the server's web/agentapi/sentinel_contract.json; copy the server's file over it (and its fixtures)"
+            exit 1
+          fi
+
   shell:
     name: Shell scripts
     runs-on: ubuntu-latest

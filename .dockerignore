@@ -4,6 +4,7 @@
 .update.lock
 docker-compose.override.yml
 client/tests
+cvengine_scanner/tests
 **/__pycache__
 **/*.pyc
 docs

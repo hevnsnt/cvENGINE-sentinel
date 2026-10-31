@@ -8,7 +8,9 @@ on:
       - Dockerfile
       - .dockerignore
       - requirements.txt
+      - pyproject.toml
       - client/**
+      - cvengine_scanner/**
       - docker-compose.yml
       - docker-entrypoint.sh
       - scripts/**
@@ -19,7 +21,9 @@ on:
       - Dockerfile
       - .dockerignore
       - requirements.txt
+      - pyproject.toml
       - client/**
+      - cvengine_scanner/**
       - docker-compose.yml
       - docker-entrypoint.sh
       - scripts/**
@@ -50,5 +54,12 @@ jobs:
           stamped=$(docker run --rm --entrypoint python3 cvengine-sentinel-local:ci -c "from client import config; print(config.version())")
           echo "image version: $stamped"
           test "$stamped" = "$(git rev-parse --short=12 HEAD)"
+      - name: The scanner library is installed in the image, not read from the working directory
+        run: |
+          docker run --rm --entrypoint python3 cvengine-sentinel-local:ci -c "
+          import cvengine_scanner
+          from cvengine_scanner import contract
+          assert '/opt/venv/' in cvengine_scanner.__file__, cvengine_scanner.__file__
+          print('cvengine-scanner', cvengine_scanner.__version__, 'contract', contract.version())"
       - name: The OpenVAS bootstrap check is in the image
         run: docker run --rm --entrypoint test cvengine-sentinel-local:ci -f /opt/sentinel/scripts/ci_openvas_bootstrap.py

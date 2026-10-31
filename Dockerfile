@@ -129,9 +129,17 @@ WORKDIR /opt/sentinel
 
 RUN python3 -m venv /opt/venv
 COPY requirements.txt /opt/sentinel/requirements.txt
-# The bootstrap packages are pinned like everything else (requirements.txt pins the client's own).
-RUN pip install --no-cache-dir pip==25.2 setuptools==80.9.0 wheel==0.45.1 && \
+# The bootstrap packages are pinned like everything else (requirements.txt pins the client's own). setuptools-scm and packaging build the scanner
+# library below without build isolation, so the build tools are these pins and nothing fetched at build time.
+RUN pip install --no-cache-dir pip==25.2 setuptools==80.9.0 wheel==0.45.1 setuptools-scm==8.3.1 packaging==25.0 && \
     pip install --no-cache-dir -r /opt/sentinel/requirements.txt
+
+# The scanner library (pyproject.toml, cvengine_scanner/: flags, parsers, scope floor, result contract), installed from a build directory that is
+# removed again so nothing beside the client can shadow it. It has no dependencies. The build context carries no git tag, so its version is the
+# fallback in pyproject.toml; the Sentinel's own version is still the commit stamped below.
+COPY pyproject.toml /tmp/cvengine-scanner/pyproject.toml
+COPY cvengine_scanner /tmp/cvengine-scanner/cvengine_scanner
+RUN pip install --no-cache-dir --no-build-isolation /tmp/cvengine-scanner && rm -rf /tmp/cvengine-scanner
 
 COPY client /opt/sentinel/client
 COPY docker-entrypoint.sh /opt/sentinel/docker-entrypoint.sh

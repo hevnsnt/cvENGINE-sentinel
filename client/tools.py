@@ -26,14 +26,16 @@ import subprocess
 import tempfile
 import threading
 import time
-from urllib.parse import urlparse
-from xml.etree import ElementTree as ET
+
+from cvengine_scanner.flags import (DISCOVER_FLAGS, KERNEL_MARKERS, MAX_DISCOVER_ADDRESSES, MAX_DISCOVER_HOSTS, MAX_OPEN_PER_IP, MAX_TARGETS,  # noqa: F401
+                                    NAABU_FLAGS, NMAP_FLAGS, NUCLEI_FLAGS, TESTSSL_FLAGS, UDP_NSE_SCRIPTS, UDP_PORTS, WPSCAN_ARGS, host_of)
+from cvengine_scanner.parsers import (MAX_FINDINGS, MAX_FINDINGS_BYTES, MAX_LIST_ITEMS, ToolOutputError, parse_discover_xml,  # noqa: F401
+                                      parse_naabu_output, parse_nmap_xml, parse_nuclei_jsonl, parse_testssl_report)
 
 from . import config, openvas, scope
 
 logger = logging.getLogger('sentinel.tools')
 
-MAX_TARGETS = 64  # matches agentapi.sentinel_broker.MAX_ADDRESSES: a task never names more than this many
 _SHELL_META = set(' \t\n\r;|&$`<>(){}\'"\\')
 _PORT = re.compile(r'[0-9]{1,5}')
 _BRACKETED = re.compile(r'\[([0-9A-Fa-f:.]+)\]:([0-9]{1,5})')
@@ -42,14 +44,6 @@ NMAP_BIN = os.environ.get('CVENGINE_NMAP_BIN', 'nmap')
 NAABU_BIN = os.environ.get('CVENGINE_NAABU_BIN', 'naabu')
 NUCLEI_BIN = os.environ.get('CVENGINE_NUCLEI_BIN', 'nuclei')
 
-# -n: no reverse DNS. parse_nmap_xml never reads host names, and the targets are already resolved addresses.
-NMAP_FLAGS = ['-Pn', '-n', '-sV', '--version-intensity', '5', '-O', '--osscan-limit', '-T4', '--open',
-              '--top-ports', '1000', '--host-timeout', '8m', '--max-retries', '2']
-NAABU_FLAGS = ['-p', '-', '-rate', '1000', '-retries', '2', '-c', '25', '-warm-up-time', '2', '-json', '-silent', '-nc']
-# -omit-raw: no raw request/response pairs in the output (parse_nuclei_jsonl never reads them, and they are most of its size).
-# -etags dos: the exclusion floor for every nuclei kind. Denial-of-service templates never run, whatever tags the server asks for.
-NUCLEI_FLAGS = ['-jsonl', '-silent', '-duc', '-ni', '-nc', '-rl', '150', '-c', '40', '-timeout', '10', '-retries', '1', '-omit-raw',
-                '-etags', 'dos']
 _TAG = re.compile(r'[a-z0-9][a-z0-9-]{0,39}')
 _SEVERITY = re.compile(r'info|low|medium|high|critical|unknown')
 
@@ -69,10 +63,6 @@ class TargetError(ValueError):
 class ToolExitError(RuntimeError):
     """A tool exited with a non-zero status or was killed. Its output, if any, is incomplete, so the run is reported as an error, never as an
     empty result ("no open ports", "no findings")."""
-
-
-class ToolOutputError(RuntimeError):
-    """A tool wrote more output than this Sentinel holds in memory. The run was stopped; the task is reported as an error."""
 
 
 # --- target validation ------------------------------------------------------------------------------------------------
@@ -277,65 +267,11 @@ def _run(argv, timeout, register=None, max_bytes=None):
 
 # --- nmap -----------------------------------------------------------------------------------------------------------
 
-def parse_nmap_xml(xml_text, strict=False):
-    """The hosts of an nmap ``-oX`` report. ``strict`` (the scan runner) refuses a report that is empty, unparseable, not an ``nmaprun`` or
-    that never reached ``<finished exit="success">``: an nmap that died part way must be an error, never "no hosts, nothing open"."""
-    hosts = []
-    if not (xml_text or '').strip():
-        if strict:
-            raise ToolOutputError('nmap produced no report')
-        return {'hosts': hosts}
-    try:
-        root = ET.fromstring(xml_text)
-    except ET.ParseError:
-        logger.warning('could not parse nmap XML output')
-        if strict:
-            raise ToolOutputError('nmap produced a report that could not be read') from None
-        return {'hosts': hosts}
-    if strict and (root.tag != 'nmaprun' or root.find('runstats/finished[@exit="success"]') is None):
-        raise ToolOutputError('nmap did not finish its report')
-    for host_el in root.findall('host'):
-        addr_el = None
-        for kind in ('ipv4', 'ipv6'):
-            addr_el = host_el.find(f"address[@addrtype='{kind}']")
-            if addr_el is not None:
-                break
-        if addr_el is None:
-            addr_el = host_el.find('address')
-        if addr_el is None or not addr_el.get('addr'):
-            continue
-        os_guess = ''
-        osmatch = host_el.find('os/osmatch')
-        if osmatch is not None:
-            os_guess = osmatch.get('name') or ''
-        ports = []
-        for port_el in host_el.findall('ports/port'):
-            state_el = port_el.find('state')
-            if state_el is None or state_el.get('state') != 'open':
-                continue
-            service_el = port_el.find('service')
-            try:
-                number = int(port_el.get('portid'))
-            except (TypeError, ValueError):
-                continue
-            ports.append({'number': number, 'protocol': port_el.get('protocol') or 'tcp', 'state': 'open',
-                          'service_name': (service_el.get('name') if service_el is not None else '') or '',
-                          'product': (service_el.get('product') if service_el is not None else '') or '',
-                          'version': (service_el.get('version') if service_el is not None else '') or ''})
-        hosts.append({'ip': addr_el.get('addr'), 'os_guess': os_guess, 'ports': ports})
-    return {'hosts': hosts}
-
-
 def _is_ipv6(address):
     try:
         return ipaddress.ip_address(str(address).strip().strip('[]')).version == 6
     except ValueError:
         return False
-
-
-# The OS guess only holds when nmap's probes cross the network unchanged. Docker Desktop and OrbStack run containers in a VM behind a proxy that
-# answers probes itself, so the guess describes the gateway: the server must not store it (mirrors cveFeed.os_detection.KERNEL_MARKERS).
-KERNEL_MARKERS = ('linuxkit', 'microsoft', 'wsl2', 'orbstack')
 
 
 def os_guess_reliable():
@@ -383,10 +319,6 @@ def run_nmap(addresses, timeout=None, register=None):
 
 # --- discover: which addresses of an internal network answer -------------------------------------------------------
 
-DISCOVER_FLAGS = ['-sn', '-T4', '-PE', '-PP', '-PS21,22,23,25,80,135,443,445,3389,8080', '-PA80,443', '-PU53,161', '--max-retries', '2',
-                  '--host-timeout', '30s']
-MAX_DISCOVER_ADDRESSES = 512  # a /23: the server sweeps in /24 chunks, so anything larger is not a task this server would send
-MAX_DISCOVER_HOSTS = 512
 _PRIVATE_V4 = [ipaddress.ip_network(n) for n in ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '100.64.0.0/10')]
 
 
@@ -404,28 +336,6 @@ def validate_cidr(value):
     return str(net)
 
 
-def parse_discover_xml(xml_text):
-    """The addresses nmap's ping sweep found up, each with the host names it learned, from ``-oX`` output."""
-    hosts = []
-    if not (xml_text or '').strip():
-        return {'hosts': hosts}
-    try:
-        root = ET.fromstring(xml_text)
-    except ET.ParseError:
-        logger.warning('could not parse nmap XML output')
-        return {'hosts': hosts}
-    for host_el in root.findall('host'):
-        status = host_el.find('status')
-        addr_el = host_el.find("address[@addrtype='ipv4']")
-        if status is None or status.get('state') != 'up' or addr_el is None or not addr_el.get('addr'):
-            continue
-        names = [h.get('name') for h in host_el.findall('hostnames/hostname') if h.get('name')]
-        hosts.append({'ip': addr_el.get('addr'), 'hostnames': names[:5]})
-        if len(hosts) >= MAX_DISCOVER_HOSTS:
-            break
-    return {'hosts': hosts}
-
-
 def run_discover(cidr, timeout=900, register=None):
     """A host-alive sweep of one chunk of an internal network: ARP on the local segment, ICMP and a few TCP/UDP probes elsewhere. Reports
     only which addresses answered; a firewall that drops every probe makes a host invisible here, and the server says so (it never reads a
@@ -438,28 +348,6 @@ def run_discover(cidr, timeout=900, register=None):
 
 
 # --- naabu ----------------------------------------------------------------------------------------------------------
-
-MAX_OPEN_PER_IP = 500  # an address with more "open" ports than this is a tarpit or a firewall that accepts everything
-
-
-def parse_naabu_output(text):
-    found = {}
-    for line in (text or '').splitlines():
-        line = line.strip()
-        if not line.startswith('{'):
-            continue
-        try:
-            row = json.loads(line)
-        except ValueError:
-            continue
-        if not isinstance(row, dict):
-            continue
-        ip, port = row.get('ip') or row.get('host'), row.get('port')
-        if ip and isinstance(port, int) and not isinstance(port, bool) and 0 < port < 65536:
-            found.setdefault(str(ip), set()).add(port)
-    # An address with more open ports than that is a tarpit: it is sent as null (never clipped, never dropped) and the server scans its default ports.
-    return {ip: (sorted(ports) if len(ports) <= MAX_OPEN_PER_IP else None) for ip, ports in found.items()}
-
 
 def run_naabu(addresses, timeout=900, register=None):
     """Host names are replaced by the address they were judged by: naabu's result is keyed by IP either way."""
@@ -476,75 +364,6 @@ def run_naabu(addresses, timeout=900, register=None):
 
 
 # --- nuclei -----------------------------------------------------------------------------------------------------------
-
-MAX_FINDINGS = 5000
-MAX_FINDINGS_BYTES = 20 * 1024 * 1024  # the server's result route takes 24 MB; the findings stay well under it
-MAX_LIST_ITEMS = 20  # tags and extracted results kept per finding
-_LIMITS = {'template_id': 200, 'name': 500, 'severity': 20, 'host': 255, 'matched_at': 500, 'description': 4000, 'matcher_name': 200,
-           'extracted': 500, 'tag': 100}
-
-
-def host_of(line):
-    """Hostname or IP a nuclei result line names (``host`` may be a URL or host:port); mirrors
-    ``cveFeed.nuclei_scan.host_of`` so a Sentinel-reported finding names the same host a local run would."""
-    raw = next((v for v in (line.get('host'), line.get('ip')) if isinstance(v, str) and v), '').strip()
-    try:
-        if '://' in raw:
-            return (urlparse(raw).hostname or '').lower()
-    except ValueError:
-        return ''
-    if raw.count(':') == 1:
-        return raw.rsplit(':', 1)[0].strip('[]').lower()
-    return raw.strip('[]').lower()
-
-
-def _clip(value, limit):
-    return value[:limit] if isinstance(value, str) else ''
-
-
-def _strings(value, limit, split=False):
-    """A list of strings from a field that should be one: a lone string is one item (or, with ``split``, a comma list), anything else none."""
-    if isinstance(value, str):
-        value = [v.strip() for v in value.split(',')] if split else [value]
-    if not isinstance(value, list):
-        return []
-    return [v[:limit] for v in value if isinstance(v, str) and v][:MAX_LIST_ITEMS]
-
-
-def parse_nuclei_jsonl(text):
-    """Findings from nuclei's JSONL output. A line that is not an object is skipped and a field of the wrong type is read as empty, so one
-    odd line never fails the task; every field is clipped and at most ``MAX_FINDINGS`` are kept."""
-    findings, size = [], 0
-    for line in (text or '').splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            row = json.loads(line)
-        except ValueError:
-            continue
-        if not isinstance(row, dict):
-            continue
-        if len(findings) >= MAX_FINDINGS:
-            logger.warning('nuclei reported more than %s findings; the rest were dropped', MAX_FINDINGS)
-            break
-        info = row.get('info') if isinstance(row.get('info'), dict) else {}
-        finding = {'template_id': _clip(row.get('template-id'), _LIMITS['template_id']),
-                   'name': _clip(info.get('name'), _LIMITS['name']),
-                   'severity': _clip(info.get('severity'), _LIMITS['severity']) or 'unknown',
-                   'host': host_of(row)[:_LIMITS['host']],
-                   'matched_at': _clip(row.get('matched-at'), _LIMITS['matched_at']),
-                   'description': _clip(info.get('description'), _LIMITS['description']),
-                   'matcher_name': _clip(row.get('matcher-name'), _LIMITS['matcher_name']),
-                   'extracted_results': _strings(row.get('extracted-results'), _LIMITS['extracted']),
-                   'tags': _strings(info.get('tags'), _LIMITS['tag'], split=True)}
-        size += len(json.dumps(finding))
-        if size > MAX_FINDINGS_BYTES:
-            logger.warning('nuclei findings passed %s bytes; the rest were dropped so the result fits the server\'s limit', MAX_FINDINGS_BYTES)
-            break
-        findings.append(finding)
-    return findings
-
 
 def _clean_words(values, pattern):
     if not isinstance(values, list):
@@ -583,10 +402,6 @@ def run_nuclei(targets, tags=None, severities=None, timeout=3600, register=None,
 
 TESTSSL_BIN = os.environ.get('CVENGINE_TESTSSL_BIN', 'testssl.sh')
 MAX_TESTSSL_OUTPUT = 8 * 1024 * 1024
-# Same options cveFeed.testssl_scan.BASE_ARGS uses: protocols, cipher categories, server defaults and certificate,
-# vulnerabilities, forward secrecy. --nodns none: the task already names a vetted ip, never resolved again here.
-TESTSSL_FLAGS = ['--quiet', '--warnings', 'off', '--color', '0', '--nodns', 'none', '--connect-timeout', '15',
-                 '--openssl-timeout', '15', '--overwrite', '-p', '-s', '-S', '-U', '-f']
 _STARTTLS = re.compile(r'[a-z][a-z0-9-]{0,19}')
 
 
@@ -594,16 +409,6 @@ def _validate_port(value):
     if isinstance(value, bool) or not isinstance(value, int) or not 0 < value < 65536:
         raise TargetError(f'not a usable port: {value!r}')
     return value
-
-
-def parse_testssl_report(raw):
-    """The finding objects of a testssl.sh JSON report, flat (``--jsonfile``) or grouped (``--jsonfile-pretty``); mirrors
-    ``cveFeed.testssl_scan.flatten``."""
-    if isinstance(raw, dict):
-        results = raw.get('scanResult') or []
-        raw = [item for group in results if isinstance(group, dict) for value in group.values()
-               if isinstance(value, list) for item in value]
-    return [i for i in raw if isinstance(i, dict) and i.get('id')] if isinstance(raw, list) else []
 
 
 def run_testssl(host, ip, port, starttls=None, timeout=900, register=None):
@@ -649,9 +454,6 @@ def run_testssl(host, ip, port, starttls=None, timeout=900, register=None):
 
 # --- nmap -sU: raw XML returned as-is; cveFeed.nmap_scan.parse_xml reads UDP's own state vocabulary --------------------
 
-UDP_PORTS = (53, 67, 68, 69, 123, 137, 161, 500, 514, 623, 1194, 1812, 1813, 1900, 4500, 5060, 5353, 11211)
-UDP_NSE_SCRIPTS = ('snmp-sysdescr', 'snmp-info', 'ntp-info', 'upnp-info', 'ipmi-version')
-
 
 def run_nmap_udp(address, timeout=1500, register=None):
     """Run ``nmap -sU`` against one address with the same curated port list and low-rate options
@@ -673,12 +475,6 @@ def run_nmap_udp(address, timeout=1500, register=None):
 WPSCAN_BIN = os.environ.get('CVENGINE_WPSCAN_BIN', 'wpscan')
 MAX_WPSCAN_OUTPUT = 8 * 1024 * 1024
 _URL = re.compile(r'^https?://[A-Za-z0-9][A-Za-z0-9.:_-]{0,252}(/.*)?$')
-# Same options cveFeed.wpscan_scan.wpscan_args builds for a passive pass: mixed detection, no TLS verification (the
-# target is whatever the server named, already vetted there), a bounded max-scan-duration so a slow site still
-# reports what it found before the process would be killed.
-WPSCAN_ARGS = ['--format', 'json', '--no-banner', '--random-user-agent', '--throttle', '100', '--request-timeout', '30',
-               '--connect-timeout', '15', '--detection-mode', 'mixed', '--plugins-detection', 'passive',
-               '--themes-detection', 'passive', '--disable-tls-checks', '--enumerate', 'vp,vt,cb,dbe,u1-5']
 
 
 def _failure_line(stderr, stdout, token=''):
