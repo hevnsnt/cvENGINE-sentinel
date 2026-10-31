@@ -615,7 +615,7 @@ the Sentinels page shows. An image built from a download with no `.git` reports 
 
 ## Testing
 
-Run the client tests from the checkout (CI uses Python 3.13 and 3.14), with `requirements.txt` installed:
+Run the client tests from the checkout (CI uses Python 3.13 and 3.14 for them, and 3.12, 3.13 and 3.14 for the library's), with `requirements.txt` installed:
 
 ```bash
 pip install -r requirements.txt ".[test]"
@@ -626,11 +626,12 @@ python -m unittest discover -s cvengine_scanner/tests -t .
 The second command runs the scanner library's tests. `cvengine_scanner/` (see `pyproject.toml`) holds the code the
 cvENGINE server shares with the client: the scan flags, the output parsers, the scope floor, and the result contract
 (`contract/sentinel_contract.json`, a byte-identical copy of the server's `web/agentapi/sentinel_contract.json`) with its
-fixtures. The image installs it with `pip install`; `client/tools.py` and `client/scope.py` keep their old names for it.
+fixtures. It needs Python 3.12 or newer and has no dependencies. The image installs it with `pip install`; `client/tools.py` and `client/scope.py` keep their old names for it.
 
 The tests never touch the host's gvmd, credentials or tool binaries. CI (`.github/workflows/`) runs them on every
-pull request and push to `main` (Python 3.13 and 3.14), checks that the vendored contract equals the server's (it only
-warns when the server's file cannot be fetched), checks the shell scripts with `sh -n`, `bash -n` and
+pull request and push to `main` (the client on Python 3.13 and 3.14, the `cvengine_scanner` library on 3.12, 3.13 and 3.14: the
+library's floor is 3.12 because the cvENGINE server imports it), checks that the vendored contract equals the server's (it
+retries the fetch three times and fails when the server's file cannot be fetched), checks the shell scripts with `sh -n`, `bash -n` and
 shellcheck, validates `docker-compose.yml` with and without the `openvas` profile, and builds the image and
 smoke-tests it.
 
