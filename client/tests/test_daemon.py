@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 import stat
@@ -10,6 +11,7 @@ from unittest import mock
 import requests
 
 from client import blob, config, control, daemon, httpclient, tools
+from cvengine_scanner import contract
 
 
 class FakeClient:
@@ -96,7 +98,7 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(body['enrollment_token'], 'senr_abc')
         self.assertEqual(body['name'], 'my-sentinel')
         self.assertEqual(sorted(body['capabilities']),
-                         sorted(['nmap', 'naabu', 'nuclei_light', 'nuclei_targeted', 'nuclei_deep', 'testssl', 'nmap_udp', 'wpscan', 'openvas']))
+                         sorted(['nmap', 'naabu', 'nuclei_light', 'nuclei_targeted', 'nuclei_deep', 'testssl', 'nmap_udp', 'wpscan', 'openvas', 'waf']))
         self.assertEqual(body['max_concurrent'], 2)
         self.assertEqual(body['tools'], ['nmap'])
 
@@ -296,6 +298,8 @@ class PollAndExecuteTests(unittest.TestCase):
             ('wpscan', {'url': 'https://www.example.test', 'token': 'tok'}, {'report': None, 'returncode': 0, 'stderr_tail': ''},
              (('https://www.example.test', 'tok'), {})),
             ('discover', {'cidr': '10.20.0.0/24'}, {'hosts': [{'ip': '10.20.0.5', 'hostnames': []}]}, (('10.20.0.0/24',), {})),
+            ('waf', {'host': 'www.example.test', 'ip': '192.0.2.10', 'port': 443, 'scheme': 'https'}, {'products': [{'name': 'FortiWeb'}], 'generic': False},
+             (('www.example.test', '192.0.2.10', 443, 'https'), {})),
             ('openvas', {'hosts': {'192.0.2.10': 'www.example.test'}, 'excluded_families': ['Denial of Service'], 'max_hours': 4},
              {'results': [], 'scanned_addresses': [], 'without_cve': 0, 'unusable': 0},
              (({'192.0.2.10': 'www.example.test'}, ['Denial of Service'], 4), {'preferences': None})),
@@ -755,6 +759,62 @@ class MalformedReplyTests(DaemonTestCase):
         control.write_status('v', 0, None, now=1000)
         self.make()._heartbeat_once()
         self.assertGreater(control.read_status()['at'], 1000)
+
+
+class ContractVersionTests(DaemonTestCase):
+    """The Sentinel declares the result contract it speaks at registration and every heartbeat, and says once when the server needs a newer one."""
+
+    BEHIND = 'this Sentinel speaks contract %s, the server needs at least %s: update it'
+
+    def test_the_version_is_the_packaged_contracts_and_waf_is_declared(self):
+        with open(contract.PATH, encoding='utf-8') as handle:
+            packaged = json.load(handle)['contract_version']
+        self.assertEqual(config.CONTRACT_VERSION, packaged)
+        self.assertGreaterEqual(config.CONTRACT_VERSION, 2)  # the version that introduced the waf kind
+        self.assertEqual(daemon.info()['contract_version'], packaged)
+        self.assertIn('waf', config.CAPABILITIES)
+        self.assertIn('waf', daemon.declared_kinds())
+        self.assertIn('waf', tools.RUNNERS)
+
+    def test_registration_and_every_heartbeat_carry_it(self):
+        with mock.patch('client.tools.detect_tools', return_value=[]):
+            daemon.register(self.fc, 'x', 1)
+        self.assertEqual(self.fc.body_for('sentinel')['info']['contract_version'], config.CONTRACT_VERSION)
+        d = self.make()
+        d._heartbeat_once()
+        d._heartbeat_once()
+        beats = [b for _m, p, b in self.fc.calls if p == 'sentinel/heartbeat']
+        self.assertEqual([b['info']['contract_version'] for b in beats], [config.CONTRACT_VERSION] * 2)
+
+    def test_a_sentinel_behind_the_server_says_so_once_and_keeps_heartbeating(self):
+        behind = {'contract': {'version': config.CONTRACT_VERSION + 2, 'min_supported': config.CONTRACT_VERSION + 1}}
+        self.fc.script[('POST', 'sentinel/heartbeat')] = [behind, behind, behind]
+        d = self.make()
+        with self.assertLogs('sentinel.daemon', level='WARNING') as logs:
+            for _ in range(3):
+                d._heartbeat_once()
+        lines = [line for line in logs.output if 'contract' in line]
+        self.assertEqual(len(lines), 1)
+        self.assertIn(self.BEHIND % (config.CONTRACT_VERSION, config.CONTRACT_VERSION + 1), lines[0])
+        self.assertEqual(self.fc.count('sentinel/heartbeat'), 3)
+
+    def test_a_registration_reply_is_read_too_and_a_raised_minimum_is_said_again(self):
+        d = self.make()
+        d.reregister = lambda: {'contract': {'version': config.CONTRACT_VERSION + 1, 'min_supported': config.CONTRACT_VERSION + 1}}
+        with self.assertLogs('sentinel.daemon', level='WARNING') as logs:
+            d.start_registration()
+            d._note_contract({'contract': {'version': config.CONTRACT_VERSION + 1, 'min_supported': config.CONTRACT_VERSION + 1}})
+            d._note_contract({'contract': {'version': config.CONTRACT_VERSION + 3, 'min_supported': config.CONTRACT_VERSION + 3}})
+        self.assertEqual(len([line for line in logs.output if 'update it' in line]), 2)
+
+    def test_nothing_is_logged_when_this_sentinel_is_current_or_the_reply_is_odd(self):
+        d = self.make()
+        replies = [{'contract': {'version': config.CONTRACT_VERSION, 'min_supported': config.CONTRACT_VERSION}},
+                   {'contract': {'version': 1, 'min_supported': 1}}, {'contract': {'min_supported': True}}, {'contract': {'min_supported': '9'}},
+                   {'contract': 'x'}, {'contract': None}, {}, [], None, 'x']
+        with self.assertNoLogs('sentinel.daemon', level='WARNING'):
+            for reply in replies:
+                d._note_contract(reply)
 
 
 class KindPolicyTests(DaemonTestCase):

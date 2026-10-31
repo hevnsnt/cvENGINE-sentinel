@@ -1,4 +1,4 @@
-# The Sentinel client: a standalone image with nmap, naabu, nuclei, testssl.sh, WPScan and the client daemon, pinned
+# The Sentinel client: a standalone image with nmap, naabu, nuclei, testssl.sh, WPScan, wafw00f and the client daemon, pinned
 # to the exact same tool versions the cvENGINE server repository's web/Dockerfile pins (its scripts/check_tool_versions.py checks both; keep them equal on
 # purpose, see docs/UPDATES.md "Pinned tools" in that repository), so a Sentinel's results are never skewed by running a different
 # nmap/naabu/nuclei/testssl/wpscan than the instance it reports to would have run locally. The OpenVAS (GVM) stack
@@ -18,6 +18,10 @@ ARG NAABU_VERSION=2.7.0
 ARG NMAP_SHA256=270e55f04915bfcecb5db8feb959d4c5ba86a48c094520a4f1c07571e1c79c59
 ARG NMAP_RPM_SHA256_AMD64=997cb830c84a429aaa1d41708a1ebb9b1cc36e75d21801c9d359fe930a8c1f93
 ARG WPSCAN_VERSION=4.2.0
+# wafw00f (BSD-3-Clause, run as a separate program) names the WAF in front of a site, mirroring cveFeed/waf_scan.py's invocation. The same pins as the server
+# repository's web/requirements.txt (wafw00f, and PySocks, which wafw00f's requests[socks] pulls in).
+ARG WAFW00F_VERSION=2.4.2
+ARG PYSOCKS_VERSION=1.7.1
 # testssl.sh (GPLv2, run as a separate program) audits the TLS configuration of every TLS port, mirroring
 # cveFeed/testssl_scan.py's own invocation. Pinned tarball with its checksum, never a branch.
 ARG TESTSSL_VERSION=3.2.4
@@ -134,6 +138,9 @@ COPY requirements.txt /opt/sentinel/requirements.txt
 RUN pip install --no-cache-dir pip==25.2 setuptools==80.9.0 wheel==0.45.1 setuptools-scm==8.3.1 packaging==25.0 && \
     pip install --no-cache-dir -r /opt/sentinel/requirements.txt
 
+# wafw00f, pinned like every other tool, into the same venv: a plain pip package, no compiler and no network at run time.
+RUN pip install --no-cache-dir wafw00f==${WAFW00F_VERSION} PySocks==${PYSOCKS_VERSION} && wafw00f --version | grep "v${WAFW00F_VERSION}" >/dev/null
+
 # The scanner library (pyproject.toml, cvengine_scanner/: flags, parsers, scope floor, result contract), installed from a build directory that is
 # removed again so nothing beside the client can shadow it. It has no dependencies. The build context carries no git tag, so its version is the
 # fallback in pyproject.toml; the Sentinel's own version is still the commit stamped below.
@@ -172,7 +179,7 @@ ENV NMAP_PRIVILEGED=1 \
 # Last on purpose: a label change must not invalidate the build layers above it.
 LABEL \
     name="CVEngine Sentinel" \
-    description="Downloadable scan-stage agent for CVEngine: runs nmap, naabu, nuclei, testssl.sh, WPScan and OpenVAS work on your own network and reports typed results back." \
+    description="Downloadable scan-stage agent for CVEngine: runs nmap, naabu, nuclei, testssl.sh, WPScan, wafw00f and OpenVAS work on your own network and reports typed results back." \
     org.opencontainers.image.source="https://github.com/hevnsnt/cvENGINE-sentinel" \
     org.opencontainers.image.licenses="GPL-3.0-only"
 

@@ -151,6 +151,49 @@ class TestsslParsingTests(unittest.TestCase):
                 self.assertEqual(parsers.parse_testssl_report(raw), [])
 
 
+class WafParsingTests(unittest.TestCase):
+    @staticmethod
+    def report(*rows):
+        return json.dumps(list(rows))
+
+    def test_products_are_named_without_version_or_confidence(self):
+        text = self.report({'detected': True, 'firewall': 'FortiWeb', 'manufacturer': 'Fortinet', 'url': 'https://www.example.test/', 'trigger_url': None},
+                           {'detected': True, 'firewall': ' fortiweb ', 'manufacturer': 'Fortinet'},
+                           {'detected': True, 'firewall': 'Generic', 'manufacturer': 'Unknown'},
+                           {'detected': True, 'firewall': 'ExampleShield', 'manufacturer': ''},
+                           {'detected': False, 'firewall': 'None', 'manufacturer': 'None'})
+        self.assertEqual(parsers.parse_waf_output(text),
+                         {'products': [{'name': 'FortiWeb', 'manufacturer': 'Fortinet'}, {'name': 'ExampleShield'}], 'generic': False})
+
+    def test_something_blocking_with_no_known_product_is_generic(self):
+        self.assertEqual(parsers.parse_waf_output(self.report({'detected': True, 'firewall': 'Generic', 'manufacturer': 'Unknown'})),
+                         {'products': [], 'generic': True})
+        self.assertEqual(parsers.parse_waf_output(self.report({'detected': False, 'firewall': 'None'})), {'products': [], 'generic': False})
+
+    def test_names_and_the_list_are_capped(self):
+        rows = [{'detected': True, 'firewall': f'{i:02}' + 'n' * 150, 'manufacturer': 'm' * 150} for i in range(30)]
+        products = parsers.parse_waf_output(self.report(*rows))['products']
+        self.assertEqual(len(products), flags.MAX_WAF_PRODUCTS)
+        self.assertEqual({len(p['name']) for p in products}, {flags.WAF_NAME_LEN})
+        self.assertEqual({len(p['manufacturer']) for p in products}, {flags.WAF_NAME_LEN})
+
+    def test_odd_rows_and_junk_name_nothing(self):
+        for text in ('', 'not json', '{}', '"x"', '[1, "a", null, []]', '[{"detected": true}]'):
+            with self.subTest(text=text):
+                self.assertEqual(parsers.parse_waf_output(text)['products'], [])
+
+    def test_a_report_with_nothing_in_it_is_an_error_when_strict(self):
+        """wafw00f writes ``[]`` for a site that never answered: not "no WAF"."""
+        for text in ('', '[]', 'not json', '{}', '[1, "a"]'):
+            with self.subTest(text=text), self.assertRaises(parsers.ToolOutputError):
+                parsers.parse_waf_output(text, strict=True)
+        self.assertEqual(parsers.parse_waf_output(self.report({'detected': False, 'firewall': 'None'}), strict=True), {'products': [], 'generic': False})
+
+    def test_the_flags_follow_the_runs_timeout(self):
+        self.assertEqual(flags.wafw00f_flags(60), ['-a', '-r', '-T', '15', '--no-colors', '-f', 'json'])
+        self.assertEqual(flags.wafw00f_flags(10)[flags.wafw00f_flags(10).index('-T') + 1], '10')
+
+
 class FlagsTests(unittest.TestCase):
     def test_nuclei_never_runs_denial_of_service_templates(self):
         self.assertEqual(flags.NUCLEI_FLAGS[flags.NUCLEI_FLAGS.index('-etags') + 1], 'dos')
