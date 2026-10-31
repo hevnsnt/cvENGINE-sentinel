@@ -232,7 +232,7 @@ container. "Not passed by compose" below means a value in `.env` has no effect; 
 | `CVENGINE_SENTINEL_TOKEN_FILE`                                                                                  | No               | `/var/lib/cvengine-sentinel/token.json`               | Development and tests only: where the token is saved. The status files live in the same directory. Not passed by compose.                                                                         | daemon                                                                    |
 | `CVENGINE_OPENVAS_SOCKET`                                                                                       | No               | `/run/gvmd/gvmd.sock`                                 | Development, tests and CI only: gvmd's socket. Not passed by compose.                                                                                                                             | daemon                                                                    |
 | `CVENGINE_OPENVAS_CREDENTIALS_FILE`                                                                             | No               | `/var/lib/cvengine-sentinel/openvas-credentials.json` | Development, tests and CI only: the saved GVM login. Not passed by compose.                                                                                                                       | daemon                                                                    |
-| `CVENGINE_NMAP_BIN`, `CVENGINE_NAABU_BIN`, `CVENGINE_NUCLEI_BIN`, `CVENGINE_TESTSSL_BIN`, `CVENGINE_WPSCAN_BIN` | No               | `nmap`, `naabu`, `nuclei`, `testssl.sh`, `wpscan`     | Development only: run a tool from another path. Not passed by compose.                                                                                                                            | daemon (`client/tools.py`)                                                |
+| `CVENGINE_NMAP_BIN`, `CVENGINE_NAABU_BIN`, `CVENGINE_NUCLEI_BIN`, `CVENGINE_TESTSSL_BIN`, `CVENGINE_WPSCAN_BIN`, `CVENGINE_WAFW00F_BIN` | No               | `nmap`, `naabu`, `nuclei`, `testssl.sh`, `wpscan`, `wafw00f`     | Development only: run a tool from another path. Not passed by compose.                                                                                                                            | daemon (`client/tools.py`)                                                |
 | `CVENGINE_SENTINEL_INSTALL_PREFIX`                                                                              | No               | empty                                                 | Tests only: where `install-updater.sh` writes `/etc`, `/run` and `/var/log`. `sudo` drops it.                                                                                                     | `scripts/install-updater.sh`                                              |
 
 ### Full or light
@@ -298,6 +298,7 @@ argument list plus the task's validated targets: no shell, and no server text is
 | `testssl`                                        | testssl.sh                                                                       | one host name (for SNI), one IP address, one port, optional STARTTLS protocol | Connects to the IP only (`--nodns none`). A timeout is reported as an error. Time limit 900 s.                                                                                                                  |
 | `nmap_udp`                                       | nmap `-sU`                                                                       | one IP address or host name                                                   | 18 curated UDP ports at 20 packets/s. Time limit 1500 s.                                                                                                                                                        |
 | `wpscan`                                         | WPScan                                                                           | one `http(s)` URL                                                             | Passive plugin and theme detection. A WPScan API token, when cvENGINE sends one with the task, is passed in the environment, never on the command line or in a log. Time limit 900 s.                           |
+| `waf`                                            | wafw00f (`-a -r`, JSON report)                                                   | one host name, its IP address, a port and `http` or `https`                   | Names the web application firewall in front of a site: a product name and no version. Needs contract version 2, which this Sentinel declares at registration and every heartbeat. A site that never answers is an error. Time limit 60 s. |
 | `openvas`                                        | OpenVAS/GVM over GMP                                                             | up to 16 plain IP addresses                                                   | Full profile only, and only once the GVM stack is ready. See [OpenVAS](#openvas).                                                                                                                               |
 | `discover`                                       | nmap ping sweep (`-sn`: ARP on the local segment, ICMP and a few TCP/UDP probes) | one private IPv4 network, at most 512 addresses                               | Internal Sentinels only: `CVENGINE_SENTINEL_NETWORK=internal` on this machine, and not lowered to external by cvENGINE. ARP discovery needs [host networking](#host-networking).                                |
 
@@ -617,7 +618,7 @@ the Sentinels page shows. An image built from a download with no `.git` reports 
 Run the client tests from the checkout (CI uses Python 3.13 and 3.14), with `requirements.txt` installed:
 
 ```bash
-pip install -r requirements.txt
+pip install -r requirements.txt ".[test]"
 python -m unittest discover -s client/tests -t .
 python -m unittest discover -s cvengine_scanner/tests -t .
 ```
@@ -689,7 +690,7 @@ before the stack is ready fails with "GVM is still syncing its ... feed(s)".
 - Bounded output, findings and result sizes; whole process groups killed on stop.
 - Secrets are never logged: the token, the GVM password, the blob, the WPScan API token.
 
-What it does not cover: a host name is resolved when it is checked, and nuclei, the UDP sweep and WPScan resolve it
+What it does not cover: a host name is resolved when it is checked, and nuclei, the UDP sweep, WPScan and wafw00f resolve it
 again when they run, so a DNS answer that changes in between is not caught (nmap and naabu get the checked address).
 "Its own addresses" are those its host name resolves to, not necessarily every address of the machine.
 

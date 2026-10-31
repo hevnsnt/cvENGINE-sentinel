@@ -569,7 +569,7 @@ class DetectToolsTests(unittest.TestCase):
     def test_an_installed_binary_is_reported(self):
         with mock.patch('client.tools.subprocess.run', return_value=mock.Mock(returncode=0)), \
                 mock.patch('client.tools.gvm_available', return_value=False):
-            self.assertEqual(sorted(tools.detect_tools()), ['naabu', 'nmap', 'nuclei', 'testssl', 'wpscan'])
+            self.assertEqual(sorted(tools.detect_tools()), ['naabu', 'nmap', 'nuclei', 'testssl', 'wafw00f', 'wpscan'])
 
     def test_gvm_is_reported_once_the_sentinels_own_gvmd_is_reachable(self):
         with mock.patch('client.tools.subprocess.run', side_effect=FileNotFoundError), \
@@ -731,3 +731,150 @@ class ToolExitTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class WafRunnerTests(unittest.TestCase):
+    """``waf``: wafw00f at the root of one site, the result exactly the contract's (a name per product, no version, no confidence)."""
+
+    REPORT = json.dumps([
+        {'detected': True, 'firewall': 'FortiWeb', 'manufacturer': 'Fortinet', 'url': 'https://www.example.test/', 'trigger_url': 'https://www.example.test/?x=1'},
+        {'detected': True, 'firewall': 'fortiweb', 'manufacturer': 'Fortinet'},
+        {'detected': True, 'firewall': 'Generic', 'manufacturer': 'Unknown'},
+        {'detected': True, 'firewall': 'ExampleShield', 'manufacturer': ''},
+        {'detected': False, 'firewall': 'None', 'manufacturer': 'None'}])
+
+    def run_waf(self, *args, report=REPORT, **kwargs):
+        """``run_waf`` with a fake wafw00f: it writes ``report`` where ``-o`` says (nothing when ``report`` is None). Returns (result, argv)."""
+        seen = []
+
+        def fake_run(argv, timeout, register=None, max_bytes=None):
+            seen.append((argv, timeout))
+            if report is not None:
+                with open(argv[argv.index('-o') + 1], 'w', encoding='utf-8') as handle:
+                    handle.write(report)
+            return 'banner and progress that are never read'
+        with mock.patch('client.tools._run', side_effect=fake_run):
+            result = tools.run_waf(*args, **kwargs)
+        return result, seen[0][0], seen[0][1]
+
+    def test_the_runner_is_registered_and_the_result_is_the_contracts_shape(self):
+        self.assertIs(tools.RUNNERS['waf'], tools.run_waf)
+        result, argv, timeout = self.run_waf('www.example.test', '93.184.215.14', 443, 'https')
+        self.assertEqual(result, {'products': [{'name': 'FortiWeb', 'manufacturer': 'Fortinet'}, {'name': 'ExampleShield'}], 'generic': False})
+        self.assertEqual(argv[:9], [tools.WAFW00F_BIN, '-a', '-r', '-T', '15', '--no-colors', '-f', 'json', '-o'])
+        self.assertEqual(argv[10:], ['https://www.example.test/'])
+        self.assertEqual(timeout, 60)
+
+    def test_a_generic_block_names_no_product_and_no_waf_is_not_generic(self):
+        report = json.dumps([{'detected': True, 'firewall': 'Generic', 'manufacturer': 'Unknown'}])
+        self.assertEqual(self.run_waf('www.example.test', '93.184.215.14', 443, 'https', report=report)[0], {'products': [], 'generic': True})
+        report = json.dumps([{'detected': False, 'firewall': 'None', 'manufacturer': 'None'}])
+        self.assertEqual(self.run_waf('www.example.test', '93.184.215.14', 443, 'https', report=report)[0], {'products': [], 'generic': False})
+
+    def test_products_and_names_are_capped_to_the_contracts_bounds(self):
+        report = json.dumps([{'detected': True, 'firewall': f'{i:02}' + 'n' * 150, 'manufacturer': 'm' * 150} for i in range(30)])
+        result = self.run_waf('www.example.test', '93.184.215.14', 443, 'https', report=report)[0]
+        self.assertEqual(len(result['products']), 20)
+        self.assertEqual({len(p['name']) for p in result['products']}, {100})
+        self.assertEqual({tuple(sorted(p)) for p in result['products']}, {('manufacturer', 'name')})  # no version, no confidence
+
+    def test_the_url_is_the_root_of_the_site_with_the_port_only_when_it_is_not_the_schemes_own(self):
+        cases = [(('www.example.test', '93.184.215.14', 8443, 'https'), 'https://www.example.test:8443/'),
+                 (('www.example.test', '93.184.215.14', 80, 'http'), 'http://www.example.test/'),
+                 (('www.example.test', '93.184.215.14', 8080, 'http'), 'http://www.example.test:8080/'),
+                 (('WWW.Example.Test.', '93.184.215.14', 443, 'https'), 'https://www.example.test/'),
+                 (('93.184.215.14', '93.184.215.14', 443, 'https'), 'https://93.184.215.14/'),
+                 (('2606:4700::6810:1', '2606:4700::6810:1', 8443, 'https'), 'https://[2606:4700::6810:1]:8443/')]
+        for args, url in cases:
+            with self.subTest(url=url):
+                self.assertEqual(self.run_waf(*args)[1][-1], url)
+
+    def test_the_request_timeout_never_exceeds_the_runs_own(self):
+        argv = self.run_waf('www.example.test', '93.184.215.14', 443, 'https', timeout=10)[1]
+        self.assertEqual(argv[argv.index('-T') + 1], '10')
+
+    def test_a_site_that_never_answered_or_an_unreadable_report_is_an_error_not_no_waf(self):
+        for report in ('[]', '', 'not json', '{"detected": false}', None):
+            with self.subTest(report=report), self.assertRaises(tools.ToolOutputError):
+                self.run_waf('www.example.test', '93.184.215.14', 443, 'https', report=report)
+
+    def test_a_target_scope_or_the_syntax_refuses_runs_nothing(self):
+        refused = [('localhost', '93.184.215.14', 443, 'https'), ('www.example.test', '127.0.0.1', 443, 'https'),
+                   ('www.example.test', '10.0.0.5', 443, 'https'), ('www.example.test', '169.254.169.254', 443, 'https'),
+                   ('www.example.test', '172.19.0.2', 443, 'https'), ('10.1.2.3', '93.184.215.14', 443, 'https'),
+                   ('www.example.test', '93.184.215.14/24', 443, 'https'), ('www.example.test/x', '93.184.215.14', 443, 'https'),
+                   ('www.example.test; id', '93.184.215.14', 443, 'https'), ('priv.example.test', '93.184.215.14', 443, 'https'),
+                   ('', '93.184.215.14', 443, 'https'), ('www.example.test', '', 443, 'https'),
+                   ('www.example.test', '93.184.215.14', 0, 'https'), ('www.example.test', '93.184.215.14', 65536, 'https'),
+                   ('www.example.test', '93.184.215.14', '443', 'https'), ('www.example.test', '93.184.215.14', True, 'https'),
+                   ('www.example.test', '93.184.215.14', 443, 'ftp'), ('www.example.test', '93.184.215.14', 443, ''),
+                   ('www.example.test', '93.184.215.14', 443, None)]
+        with mock.patch.dict(NAMES, {'priv.example.test': ['10.0.0.9']}), mock.patch('client.tools._run') as fake_run:
+            for args in refused:
+                with self.subTest(args=args), self.assertRaises(tools.TargetError):
+                    tools.run_waf(*args)
+        fake_run.assert_not_called()
+
+    def test_a_private_site_is_scanned_only_by_an_internal_sentinel(self):
+        with mock.patch.object(scope, 'internal_allowed', return_value=True), mock.patch.dict(NAMES, {'files.example.test': ['10.0.0.9']}):
+            result, argv, _timeout = self.run_waf('files.example.test', '10.0.0.9', 8080, 'http')
+        self.assertEqual(argv[-1], 'http://files.example.test:8080/')
+        self.assertEqual(result['products'][0]['name'], 'FortiWeb')
+
+    def test_a_timeout_propagates_so_the_task_is_an_error(self):
+        with mock.patch('client.tools._run', side_effect=subprocess.TimeoutExpired('wafw00f', 60)), self.assertRaises(subprocess.TimeoutExpired):
+            tools.run_waf('www.example.test', '93.184.215.14', 443, 'https')
+
+
+class WafProcessTests(unittest.TestCase):
+    """The same runner against a real (fake) executable, so the argv, the output file and the exit status are the real thing."""
+
+    def script(self, body):
+        handle = tempfile.NamedTemporaryFile('w', suffix='.sh', delete=False)
+        handle.write('#!/bin/sh\n' + body + '\n')
+        handle.close()
+        os.chmod(handle.name, 0o755)
+        self.addCleanup(os.unlink, handle.name)
+        return handle.name
+
+    def test_a_fake_wafw00f_is_run_with_the_fixed_flags_and_its_report_is_read(self):
+        argv_file = tempfile.NamedTemporaryFile(delete=False)
+        argv_file.close()
+        self.addCleanup(os.unlink, argv_file.name)
+        fake = self.script(f'''printf '%s\\n' "$@" > {argv_file.name}
+while [ $# -gt 0 ]; do if [ "$1" = -o ]; then out="$2"; fi; shift; done
+echo 'a banner on stdout'
+echo '[{{"detected": true, "firewall": "ExampleShield", "manufacturer": "Example Inc"}}]' > "$out"''')
+        with mock.patch.object(tools, 'WAFW00F_BIN', fake):
+            result = tools.run_waf('www.example.test', '93.184.215.14', 443, 'https')
+        self.assertEqual(result, {'products': [{'name': 'ExampleShield', 'manufacturer': 'Example Inc'}], 'generic': False})
+        with open(argv_file.name, encoding='utf-8') as handle:
+            argv = handle.read().split('\n')
+        self.assertEqual(argv[:8], ['-a', '-r', '-T', '15', '--no-colors', '-f', 'json', '-o'])
+        self.assertEqual(argv[9], 'https://www.example.test/')
+
+    def test_a_crash_is_an_error_and_never_an_empty_result(self):
+        fake = self.script('echo "Traceback: boom" >&2; exit 1')
+        with mock.patch.object(tools, 'WAFW00F_BIN', fake), self.assertRaises(tools.ToolExitError):
+            tools.run_waf('www.example.test', '93.184.215.14', 443, 'https')
+
+    def test_a_site_that_is_down_leaves_an_empty_list_and_is_an_error(self):
+        fake = self.script('while [ $# -gt 0 ]; do if [ "$1" = -o ]; then out="$2"; fi; shift; done\necho "[]" > "$out"')
+        with mock.patch.object(tools, 'WAFW00F_BIN', fake), self.assertRaises(tools.ToolOutputError):
+            tools.run_waf('www.example.test', '93.184.215.14', 443, 'https')
+
+
+class WafResultContractTests(unittest.TestCase):
+    """What the runner returns, wrapped the way the daemon reports it, is valid against the packaged contract."""
+
+    def test_the_reported_result_validates_for_the_waf_kind(self):
+        from jsonschema import Draft202012Validator
+
+        from cvengine_scanner import contract
+        check = Draft202012Validator(contract.result_schema('waf'))
+        report = json.dumps([{'detected': True, 'firewall': 'FortiWeb', 'manufacturer': 'Fortinet'}, {'detected': True, 'firewall': 'ExampleShield'},
+                             {'detected': True, 'firewall': 'Generic'}])
+        for text in (report, json.dumps([{'detected': True, 'firewall': 'Generic'}]), json.dumps([{'detected': False, 'firewall': 'None'}])):
+            with self.subTest(text=text):
+                reported = {'outcome': 'done', **tools.parse_waf_output(text, strict=True)}
+                self.assertEqual(list(check.iter_errors(reported)), [])

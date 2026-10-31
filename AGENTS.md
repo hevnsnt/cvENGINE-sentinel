@@ -113,7 +113,7 @@ container for it: the updater reaches the daemon only through
 ## What this does and does not do
 
 Provisioning a Sentinel registers it and lets it claim scan work that the cvENGINE instance dispatches: `nmap`,
-`naabu`, `nuclei_light`, `nuclei_targeted`, `nuclei_deep`, `testssl`, `nmap_udp` (a UDP exposure sweep), `wpscan`,
+`naabu`, `nuclei_light`, `nuclei_targeted`, `nuclei_deep`, `testssl`, `nmap_udp` (a UDP exposure sweep), `wpscan`, `waf` (names the firewall in front of a site),
 `openvas` (full profile, once its GVM stack is ready), and `discover` (a ping sweep of a private network, internal
 Sentinels only). It grants cvENGINE no other access to the machine.
 
