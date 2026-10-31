@@ -1,5 +1,5 @@
 # The scanner library: what the Sentinel client and the cvENGINE server share (flags, parsers, scope floor, result contract and its fixtures).
-# Pure code with no runtime dependencies. The Sentinel image installs it with `pip install .`; cvENGINE pins it by tag.
+# Pure code with no runtime dependencies, for Python 3.12 and newer (the cvENGINE server runs 3.12 and imports it; CI tests 3.12 to 3.14). The Sentinel image installs it with `pip install .`; cvENGINE pins it by tag.
 [build-system]
 requires = ["setuptools>=77", "setuptools-scm>=8"]
 build-backend = "setuptools.build_meta"
@@ -8,7 +8,7 @@ build-backend = "setuptools.build_meta"
 name = "cvengine-scanner"
 description = "Scan flags, output parsers, scope floor and result contract shared by the cvENGINE Sentinel and server"
 dynamic = ["version"]
-requires-python = ">=3.13"
+requires-python = ">=3.12"
 license = "GPL-3.0-only"
 dependencies = []
 
