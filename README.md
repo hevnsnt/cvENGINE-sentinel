@@ -318,7 +318,7 @@ shutdown) kills the tool's whole process group.
 
 ## Scope: what a Sentinel never scans
 
-cvENGINE decides what is in scope for a project. The Sentinel also enforces its own floor (`client/scope.py`), so a
+cvENGINE decides what is in scope for a project. The Sentinel also enforces its own floor (`cvengine_scanner/scope.py`, the scanner library), so a
 buggy or compromised server cannot aim a scanner at the machine it runs on. Whatever a task says:
 
 - **Never scanned by any Sentinel:** unspecified addresses, loopback, link-local (which includes the cloud metadata
@@ -619,10 +619,17 @@ Run the client tests from the checkout (CI uses Python 3.13 and 3.14), with `req
 ```bash
 pip install -r requirements.txt
 python -m unittest discover -s client/tests -t .
+python -m unittest discover -s cvengine_scanner/tests -t .
 ```
 
+The second command runs the scanner library's tests. `cvengine_scanner/` (see `pyproject.toml`) holds the code the
+cvENGINE server shares with the client: the scan flags, the output parsers, the scope floor, and the result contract
+(`contract/sentinel_contract.json`, a byte-identical copy of the server's `web/agentapi/sentinel_contract.json`) with its
+fixtures. The image installs it with `pip install`; `client/tools.py` and `client/scope.py` keep their old names for it.
+
 The tests never touch the host's gvmd, credentials or tool binaries. CI (`.github/workflows/`) runs them on every
-pull request and push to `main` (Python 3.13 and 3.14), checks the shell scripts with `sh -n`, `bash -n` and
+pull request and push to `main` (Python 3.13 and 3.14), checks that the vendored contract equals the server's (it only
+warns when the server's file cannot be fetched), checks the shell scripts with `sh -n`, `bash -n` and
 shellcheck, validates `docker-compose.yml` with and without the `openvas` profile, and builds the image and
 smoke-tests it.
 

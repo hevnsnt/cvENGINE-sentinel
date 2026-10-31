@@ -11,7 +11,7 @@ from unittest import mock
 
 from client import scope, tools
 
-FIXTURES = os.path.join(os.path.dirname(__file__), 'fixtures')
+FIXTURES = os.path.join(os.path.dirname(__file__), '..', '..', 'cvengine_scanner', 'tests', 'fixtures')  # the library's samples: the parsers' tests use them too
 
 # What host names resolve to in these tests: nothing here ever asks a real DNS server.
 NAMES = {'www.example.test': ['93.184.215.14'], 'mail.example.test': ['93.184.215.20'],
@@ -106,104 +106,6 @@ class ValidateTargetsTests(unittest.TestCase):
 
     def test_a_name_that_does_not_resolve_is_allowed(self):
         self.assertEqual(tools.validate_targets(['nowhere.example.test']), ['nowhere.example.test'])
-
-
-class NmapParsingTests(unittest.TestCase):
-    def test_parses_the_sample_xml_into_the_typed_shape(self):
-        result = tools.parse_nmap_xml(_read('sample_nmap.xml'))
-        self.assertEqual(len(result['hosts']), 2)
-        first = result['hosts'][0]
-        self.assertEqual(first['ip'], '192.0.2.10')
-        self.assertEqual(first['os_guess'], 'Linux 5.X')
-        # Only the open port is kept (closed 9999 is dropped), in document order.
-        self.assertEqual(len(first['ports']), 2)
-        self.assertEqual(first['ports'][0], {'number': 22, 'protocol': 'tcp', 'state': 'open', 'service_name': 'ssh',
-                                             'product': 'OpenSSH', 'version': '8.9'})
-        self.assertEqual(first['ports'][1]['number'], 80)
-        self.assertEqual(first['ports'][1]['product'], 'nginx')
-        second = result['hosts'][1]
-        self.assertEqual(second['ip'], '198.51.100.20')
-        self.assertEqual(second['os_guess'], '')  # no <os> block for this host
-
-    def test_empty_or_malformed_xml_yields_no_hosts_not_a_crash(self):
-        self.assertEqual(tools.parse_nmap_xml(''), {'hosts': []})
-        self.assertEqual(tools.parse_nmap_xml('not xml at all'), {'hosts': []})
-
-
-class NaabuParsingTests(unittest.TestCase):
-    def test_parses_the_sample_output_into_the_typed_shape(self):
-        result = tools.parse_naabu_output(_read('sample_naabu.jsonl'))
-        self.assertEqual(result, {'192.0.2.10': [22, 80], '198.51.100.20': [443], '203.0.113.5': [8080]})
-
-    def test_non_json_lines_are_skipped_not_fatal(self):
-        text = 'garbage\n{"ip": "192.0.2.1", "port": 80}\nmore garbage {{{\n'
-        self.assertEqual(tools.parse_naabu_output(text), {'192.0.2.1': [80]})
-
-    def test_a_tarpit_address_over_the_cap_is_sent_as_null_not_clipped_or_dropped(self):
-        lines = '\n'.join(f'{{"ip": "192.0.2.99", "port": {p}}}' for p in range(1, tools.MAX_OPEN_PER_IP + 10))
-        lines += '\n{"ip": "192.0.2.5", "port": 22}'
-        self.assertEqual(tools.parse_naabu_output(lines), {'192.0.2.99': None, '192.0.2.5': [22]})
-
-
-class NucleiParsingTests(unittest.TestCase):
-    def test_parses_the_sample_jsonl_carrying_matcher_name_through(self):
-        findings = tools.parse_nuclei_jsonl(_read('sample_nuclei.jsonl'))
-        self.assertEqual(len(findings), 2)
-        tech = findings[0]
-        self.assertEqual(tech['template_id'], 'tech-detect')
-        self.assertEqual(tech['matcher_name'], 'jquery')  # the field this phase adds end to end
-        self.assertEqual(tech['host'], 'www.example.test')
-        panel = findings[1]
-        self.assertEqual(panel['template_id'], 'exposed-panel')
-        self.assertEqual(panel['matcher_name'], 'admin-panel')
-        self.assertEqual(panel['severity'], 'high')
-        self.assertEqual(panel['extracted_results'], ['panel'])
-        self.assertEqual(panel['tags'], ['panel', 'exposure'])
-
-    def test_host_of_matches_cveFeed_nuclei_scan_host_of_shape(self):
-        self.assertEqual(tools.host_of({'host': 'https://www.example.test/admin'}), 'www.example.test')
-        self.assertEqual(tools.host_of({'host': 'www.example.test:8443'}), 'www.example.test')
-        self.assertEqual(tools.host_of({'host': 'www.example.test'}), 'www.example.test')
-
-    def test_malformed_lines_are_skipped_or_coerced_never_fatal(self):
-        lines = ['[1, 2]', '"a string"', '42', 'null', 'x' * 1_000_000, '{"broken": ',
-                 json.dumps({'template-id': 'a', 'info': 'not an object'}),
-                 json.dumps({'template-id': 7, 'host': 7, 'ip': '8.8.8.8', 'matched-at': ['x'], 'matcher-name': None,
-                             'extracted-results': 'one value', 'info': {'name': 5, 'severity': ['high'], 'tags': 'cve,rce, ,x'}}),
-                 json.dumps({'template-id': 'b', 'host': 'http://[::1', 'extracted-results': {'a': 1}, 'info': {'tags': 9}}),
-                 json.dumps({'template-id': 'c', 'host': {'nested': True}, 'extracted-results': ['ok', 3, None, ''],
-                             'info': {'tags': ['t', 1, None]}})]
-        findings = tools.parse_nuclei_jsonl('\n'.join(lines))
-        self.assertEqual([f['template_id'] for f in findings], ['a', '', 'b', 'c'])
-        self.assertEqual(findings[0]['name'], '')
-        self.assertEqual(findings[0]['severity'], 'unknown')
-        second = findings[1]
-        self.assertEqual((second['host'], second['matched_at'], second['matcher_name'], second['name'], second['severity']),
-                         ('8.8.8.8', '', '', '', 'unknown'))
-        self.assertEqual(second['extracted_results'], ['one value'])
-        self.assertEqual(second['tags'], ['cve', 'rce', 'x'])
-        self.assertEqual((findings[2]['host'], findings[2]['extracted_results'], findings[2]['tags']), ('', [], []))
-        self.assertEqual((findings[3]['host'], findings[3]['extracted_results'], findings[3]['tags']), ('', ['ok'], ['t']))
-
-    def test_the_number_of_findings_is_capped(self):
-        small = {'template-id': 't', 'host': 'www.example.test', 'info': {'name': 'n', 'severity': 'low'}}
-        findings = tools.parse_nuclei_jsonl('\n'.join([json.dumps(small)] * (tools.MAX_FINDINGS + 5)))
-        self.assertEqual(len(findings), tools.MAX_FINDINGS)
-
-    def test_findings_and_their_fields_are_capped(self):
-        row = {'template-id': 't' * 1000, 'host': 'www.example.test', 'matched-at': 'm' * 5000, 'matcher-name': 'n' * 1000,
-               'extracted-results': ['e' * 1000] * 50,
-               'info': {'name': 'x' * 5000, 'severity': 's' * 100, 'description': 'd' * 10000, 'tags': [f'tag{i}' for i in range(50)]}}
-        findings = tools.parse_nuclei_jsonl('\n'.join([json.dumps(row)] * 3))
-        first = findings[0]
-        self.assertEqual(len(first['description']), 4000)
-        self.assertEqual(len(first['matched_at']), 500)
-        self.assertEqual(len(first['name']), 500)
-        self.assertEqual(len(first['template_id']), 200)
-        self.assertEqual(len(first['severity']), 20)
-        self.assertEqual(len(first['tags']), 20)
-        self.assertEqual(len(first['extracted_results']), 20)
-        self.assertEqual({len(e) for e in first['extracted_results']}, {500})
 
 
 class RunnerArgvTests(unittest.TestCase):
@@ -690,11 +592,7 @@ class GvmAvailableTests(unittest.TestCase):
                 self.assertTrue(tools.gvm_available())
 
 
-DISCOVER_XML = """<?xml version="1.0"?><nmaprun><host><status state="up"/><address addr="10.20.0.5" addrtype="ipv4"/>
-<hostnames><hostname name="files.corp" type="PTR"/></hostnames></host>
-<host><status state="down"/><address addr="10.20.0.6" addrtype="ipv4"/></host>
-<host><status state="up"/><address addr="10.20.0.9" addrtype="ipv4"/><hostnames/></host>
-<host><status state="up"/><address addr="aa:bb:cc:dd:ee:ff" addrtype="mac"/></host></nmaprun>"""
+DISCOVER_XML = _read('sample_discover.xml')
 
 
 class DiscoverTests(unittest.TestCase):
@@ -702,12 +600,6 @@ class DiscoverTests(unittest.TestCase):
         patcher = mock.patch('client.config._local_internal', return_value=True)
         patcher.start()
         self.addCleanup(patcher.stop)
-
-    def test_only_up_hosts_with_an_ipv4_address_are_reported(self):
-        self.assertEqual(tools.parse_discover_xml(DISCOVER_XML)['hosts'],
-                         [{'ip': '10.20.0.5', 'hostnames': ['files.corp']}, {'ip': '10.20.0.9', 'hostnames': []}])
-        self.assertEqual(tools.parse_discover_xml('not xml'), {'hosts': []})
-        self.assertEqual(tools.parse_discover_xml(''), {'hosts': []})
 
     def test_the_run_is_a_fixed_ping_sweep_of_the_validated_chunk(self):
         with mock.patch('client.tools._run', return_value=DISCOVER_XML) as fake_run:

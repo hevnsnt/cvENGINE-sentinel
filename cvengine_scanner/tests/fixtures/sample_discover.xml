@@ -1,0 +1,5 @@
+<?xml version="1.0"?><nmaprun><host><status state="up"/><address addr="10.20.0.5" addrtype="ipv4"/>
+<hostnames><hostname name="files.corp" type="PTR"/></hostnames></host>
+<host><status state="down"/><address addr="10.20.0.6" addrtype="ipv4"/></host>
+<host><status state="up"/><address addr="10.20.0.9" addrtype="ipv4"/><hostnames/></host>
+<host><status state="up"/><address addr="aa:bb:cc:dd:ee:ff" addrtype="mac"/></host></nmaprun>
