@@ -6,7 +6,7 @@ import json
 import logging
 from xml.etree import ElementTree as ET
 
-from .flags import MAX_DISCOVER_HOSTS, MAX_OPEN_PER_IP, host_of
+from .flags import GENERIC_WAF_NAMES, MAX_DISCOVER_HOSTS, MAX_OPEN_PER_IP, MAX_WAF_PRODUCTS, WAF_NAME_LEN, host_of
 
 logger = logging.getLogger('cvengine_scanner.parsers')
 
@@ -168,3 +168,33 @@ def parse_testssl_report(raw):
         raw = [item for group in results if isinstance(group, dict) for value in group.values()
                if isinstance(value, list) for item in value]
     return [i for i in raw if isinstance(i, dict) and i.get('id')] if isinstance(raw, list) else []
+
+
+def parse_waf_output(text, strict=False):
+    """The result of a ``waf`` task from wafw00f's JSON report: ``{'products': [{'name', 'manufacturer'?}], 'generic': bool}``. A generic detection
+    (something blocks, no product known) and "no WAF" name nothing; names are stripped and cut, a generic or empty name and a repeat (any case)
+    are dropped, and at most ``MAX_WAF_PRODUCTS`` are kept. ``generic`` is true when something blocked and no product was named. ``strict`` (the
+    scan runner) refuses a report that is unreadable, not a list, or empty: wafw00f writes ``[]`` when the site never answered ("appears to be
+    down"), and that must be an error, never "no WAF"."""
+    try:
+        rows = json.loads(text or '[]')
+    except ValueError:
+        rows = None
+    rows = [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+    if strict and not rows:
+        raise ToolOutputError('wafw00f wrote no readable result (the site may not have answered)')
+    products, seen = [], set()
+    for row in rows:
+        if not row.get('detected'):
+            continue
+        name = str(row.get('firewall') or '').strip()[:WAF_NAME_LEN]
+        if name.lower() in GENERIC_WAF_NAMES or name.lower() in seen:
+            continue
+        seen.add(name.lower())
+        product = {'name': name}
+        manufacturer = str(row.get('manufacturer') or '').strip()[:WAF_NAME_LEN]
+        if manufacturer:
+            product['manufacturer'] = manufacturer
+        products.append(product)
+    products = products[:MAX_WAF_PRODUCTS]
+    return {'products': products, 'generic': any(row.get('detected') for row in rows) and not products}

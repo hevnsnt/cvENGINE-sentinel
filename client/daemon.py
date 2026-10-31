@@ -190,8 +190,9 @@ def bootstrap(blob_raw, name, max_concurrent, client_factory=httpclient.Client):
 
 
 def info():
-    """What this Sentinel reports about itself: its client version (when known) and its host-side updater's last state."""
-    out = {}
+    """What this Sentinel reports about itself: the result contract version it speaks, its client version (when known) and its host-side
+    updater's last state."""
+    out = {'contract_version': config.CONTRACT_VERSION}
     if config.version():
         out['version'] = config.version()
     update = control.read_update()
@@ -226,6 +227,7 @@ class Daemon:
         self._settings_rev = None  # fingerprint of the server's settings this Sentinel last applied
         self._registered = self._registration()  # what the server was last told, so a change after it is noticed
         self._warned_internal = False  # the "granted internal, configured external" warning is logged once
+        self._contract_warned = None  # the minimum contract version the server last said it needs, once it was logged that this Sentinel is behind it
         self._orphans_seen = set()  # leases the server held for this Sentinel, not running here, at the last heartbeat
         self._gvm_swept = False  # the one-time sweep of leftover GVM tasks has run (or been started)
         self._unsaved_token = None  # (path, token, server_url) when saving a freshly bootstrapped token failed: retried at every heartbeat
@@ -306,6 +308,7 @@ class Daemon:
                 return
             out = out if isinstance(out, dict) else {}
             update_reply = out.get('update')
+            self._note_contract(out)
             self._reconcile(out.get('leases'), asked_at)
             self.apply_settings(out.get('settings'))
             self._refresh_registration()
@@ -314,6 +317,17 @@ class Daemon:
             logger.exception('heartbeat failed')
         finally:
             self._write_control(update_reply)
+
+    def _note_contract(self, reply):
+        """A registration or heartbeat answer names the result contract the server speaks (``contract: {version, min_supported}``). A Sentinel whose
+        own version is below the server's minimum is told once per minimum, in one line, and goes on heartbeating: the server withholds the work
+        it cannot run, and an update is the operator's decision."""
+        contract = reply.get('contract') if isinstance(reply, dict) else None
+        minimum = contract.get('min_supported') if isinstance(contract, dict) else None
+        if isinstance(minimum, bool) or not isinstance(minimum, int) or minimum <= config.CONTRACT_VERSION or minimum == self._contract_warned:
+            return
+        self._contract_warned = minimum
+        logger.warning('this Sentinel speaks contract %s, the server needs at least %s: update it', config.CONTRACT_VERSION, minimum)
 
     def _sweep_gvm_orphans(self):
         """Once, when this Sentinel's GVM stack first reports ready: remove the ``cvengine-sentinel-`` tasks and targets an earlier process left in gvmd
@@ -386,6 +400,7 @@ class Daemon:
             logger.info('capabilities changed: now %s', ', '.join(current[2]))
         self._register_pending = False
         self._registered = current
+        self._note_contract(reply)
         return reply
 
     def _reconcile(self, leases, asked_at=None):
@@ -596,6 +611,8 @@ class Daemon:
             out = runner(target.get('url') or '', target.get('token') or '', register=register)
         elif kind == 'discover':
             out = runner(target.get('cidr') or '', register=register)
+        elif kind == 'waf':
+            out = runner(target.get('host') or '', target.get('ip') or '', target.get('port'), target.get('scheme') or '', register=register)
         else:  # openvas, the only other kind with a runner
             out = runner(target.get('hosts') or {}, target.get('excluded_families') or [], target.get('max_hours'), register=register,
                          preferences=target.get('preferences'))

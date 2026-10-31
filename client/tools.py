@@ -1,4 +1,4 @@
-"""Run a scan tool (nmap, naabu, nuclei, testssl.sh, nmap UDP, WPScan, an nmap discover sweep) against a server-issued SentinelTask's own
+"""Run a scan tool (nmap, naabu, nuclei, testssl.sh, nmap UDP, WPScan, wafw00f, an nmap discover sweep) against a server-issued SentinelTask's own
 typed target, and nothing else. (OpenVAS work runs over GMP, in ``client.openvas``.)
 
 Every argv built here is a fixed list of flags plus the addresses or hosts the task named: there is no shell, no
@@ -28,9 +28,10 @@ import threading
 import time
 
 from cvengine_scanner.flags import (DISCOVER_FLAGS, KERNEL_MARKERS, MAX_DISCOVER_ADDRESSES, MAX_DISCOVER_HOSTS, MAX_OPEN_PER_IP, MAX_TARGETS,  # noqa: F401
-                                    NAABU_FLAGS, NMAP_FLAGS, NUCLEI_FLAGS, TESTSSL_FLAGS, UDP_NSE_SCRIPTS, UDP_PORTS, WPSCAN_ARGS, host_of)
+                                    NAABU_FLAGS, NMAP_FLAGS, NUCLEI_FLAGS, TESTSSL_FLAGS, UDP_NSE_SCRIPTS, UDP_PORTS, WAFW00F_TIMEOUT, WPSCAN_ARGS, host_of,
+                                    wafw00f_flags)
 from cvengine_scanner.parsers import (MAX_FINDINGS, MAX_FINDINGS_BYTES, MAX_LIST_ITEMS, ToolOutputError, parse_discover_xml,  # noqa: F401
-                                      parse_naabu_output, parse_nmap_xml, parse_nuclei_jsonl, parse_testssl_report)
+                                      parse_naabu_output, parse_nmap_xml, parse_nuclei_jsonl, parse_testssl_report, parse_waf_output)
 
 from . import config, openvas, scope
 
@@ -525,15 +526,48 @@ def run_wpscan(url, token='', timeout=900, register=None):
                 'stderr_tail': _failure_line(err, out_text, token)}
 
 
+# --- wafw00f: which web application firewall answers for one site ------------------------------------------------------
+
+WAFW00F_BIN = os.environ.get('CVENGINE_WAFW00F_BIN', 'wafw00f')
+MAX_WAF_OUTPUT = 200_000  # characters of the report read: a handful of products fits in a few hundred, so more is not a report
+
+
+def run_waf(host, ip, port, scheme, timeout=WAFW00F_TIMEOUT, register=None):
+    """Run wafw00f at the root of ``scheme://host:port/`` and return ``{'products': [{'name', 'manufacturer'?}], 'generic': bool}``, the ``waf`` result of
+    the contract: a product name and no version or confidence, since wafw00f gives none. ``ip`` (the address the server vetted) must be one plain address
+    scope allows and ``host`` (a name or an address) is judged with every address it resolves to; wafw00f takes a URL and resolves the name again, so a
+    DNS answer that changes in between is the one gap. A site that never answers is an error, never "no WAF"."""
+    port = _validate_port(port)
+    if scheme not in ('http', 'https'):
+        raise TargetError(f'not a usable scheme: {str(scheme)[:20]!r}')
+    try:
+        ip = scope.check_ip(ip)
+        host = scope.check_target(host, resolve=True, resolver=_resolver())
+    except scope.ScopeError as exc:
+        raise TargetError(f'not a usable waf target: {str(host)[:100]!r} at {str(ip)[:50]!r} ({exc})') from None
+    netloc = f'[{host}]' if ':' in host else host
+    if port != (443 if scheme == 'https' else 80):
+        netloc += f':{port}'
+    with tempfile.TemporaryDirectory(prefix='wafw00f-') as work:
+        out = os.path.join(work, 'out.json')
+        _run([WAFW00F_BIN, *wafw00f_flags(timeout), '-o', out, f'{scheme}://{netloc}/'], timeout, register)
+        try:
+            with open(out, encoding='utf-8', errors='replace') as handle:
+                report = handle.read(MAX_WAF_OUTPUT)
+        except OSError:
+            raise ToolOutputError('wafw00f wrote no report') from None
+    return parse_waf_output(report, strict=True)
+
+
 RUNNERS = {'nmap': run_nmap, 'naabu': run_naabu, 'nuclei_light': run_nuclei, 'nuclei_targeted': run_nuclei,
            'nuclei_deep': run_nuclei, 'testssl': run_testssl, 'nmap_udp': run_nmap_udp, 'wpscan': run_wpscan,
-           'openvas': openvas.run_openvas, 'discover': run_discover}
+           'openvas': openvas.run_openvas, 'discover': run_discover, 'waf': run_waf}
 
 
 # --- version probing, for the capabilities a bootstrapping Sentinel declares ------------------------------------------
 
 VERSION_ARGS = {'nmap': [NMAP_BIN, '--version'], 'naabu': [NAABU_BIN, '-version'], 'nuclei': [NUCLEI_BIN, '-version'],
-                'testssl': [TESTSSL_BIN, '--version'], 'wpscan': [WPSCAN_BIN, '--version']}
+                'testssl': [TESTSSL_BIN, '--version'], 'wpscan': [WPSCAN_BIN, '--version'], 'wafw00f': [WAFW00F_BIN, '--version']}
 
 
 def gvm_available():
