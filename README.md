@@ -565,6 +565,10 @@ Re-running `install-updater.sh` rewrites that file (a `systemctl edit` drop-in s
 
 - The Sentinel long-polls for work (15 seconds per call) and heartbeats every 60 seconds; the heartbeat keeps its
   leases alive and carries its version, updater state and, on a full Sentinel, the GVM stack's readiness.
+- When cvENGINE answers a poll with no task and a `retry_after_seconds` above one second (it is holding the work for a
+  less loaded Sentinel, or this one is over a limit), the Sentinel waits that long (at most 30 seconds, with a little
+  jitter, and a stop request ends the wait) before asking again, so it is not parked by the rate limit. A full long poll
+  is answered with one second and is asked again at once.
 - A task the server takes back (it is no longer in the heartbeat's lease list) is killed and not reported.
 - A result that fails to post is retried up to 5 times within 2 minutes (network errors, 5xx and 429, with backoff).
   If it still cannot be delivered, the Sentinel releases the task so cvENGINE can run it again. Other refusals (400,

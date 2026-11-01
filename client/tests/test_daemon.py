@@ -368,6 +368,78 @@ class PollAndExecuteTests(unittest.TestCase):
         d._poll_once()
         self.assertEqual(fc.paths(), [('POST', 'sentinel/tasks/next')])
 
+    def _empty_poll(self, reply):
+        """One ``_poll_once`` answered with ``reply``; returns the waits it made on the stop event (the only thing the empty path waits on)."""
+        fc = FakeClient()
+        fc.next_responses = [reply]
+        d = daemon.Daemon('https://cve.example.test', 'tok', client=fc)
+        with mock.patch.object(d.stop_event, 'wait') as wait:
+            d._poll_once()
+        self.assertEqual(fc.count('sentinel/tasks/next'), 1)
+        return [call.args[0] for call in wait.call_args_list], d
+
+    def test_an_empty_answer_with_a_retry_after_waits_that_long_before_asking_again(self):
+        with mock.patch('client.daemon.random.uniform', return_value=1.0):
+            waits, _ = self._empty_poll({'task': None, 'reason': 'held for a less loaded Sentinel', 'retry_after_seconds': 5})
+        self.assertEqual(waits, [5.0])
+        with mock.patch('client.daemon.random.uniform', return_value=1.2):  # a little jitter, never shorter than asked
+            waits, _ = self._empty_poll({'task': None, 'retry_after_seconds': 5})
+        self.assertEqual(waits, [6.0])
+        for _ in range(20):
+            (wait,), _ = self._empty_poll({'task': None, 'retry_after_seconds': 5})
+            self.assertTrue(5.0 <= wait <= 6.0, wait)
+
+    def test_the_wait_is_never_longer_than_thirty_seconds(self):
+        for asked in (30, 31, 600, 1e9):
+            with self.subTest(asked=asked):
+                (wait,), _ = self._empty_poll({'task': None, 'retry_after_seconds': asked})
+                self.assertLessEqual(wait, 30.0)
+                self.assertGreaterEqual(wait, min(asked, 30) if asked <= 30 else 30.0)
+
+    def test_a_full_long_poll_answered_with_a_retry_after_of_one_is_asked_again_at_once(self):
+        waits, _ = self._empty_poll({'task': None, 'reason': 'no eligible work is queued', 'retry_after_seconds': 1})
+        self.assertEqual(waits, [])
+
+    def test_no_retry_after_or_one_that_is_not_a_usable_number_waits_for_nothing(self):
+        for value in (None, 0, -5, 0.5, 'soon', True, False, float('nan'), float('inf'), [5], {'s': 5}):
+            with self.subTest(retry_after=value):
+                waits, _ = self._empty_poll({'task': None, 'retry_after_seconds': value})
+                self.assertEqual(waits, [])
+        waits, _ = self._empty_poll({'task': None})
+        self.assertEqual(waits, [])
+        waits, _ = self._empty_poll('nonsense')
+        self.assertEqual(waits, [])
+
+    def test_a_task_in_the_answer_is_never_waited_for(self):
+        fc = FakeClient()
+        fc.next_responses = [{'task': {'id': 12, 'kind': 'nmap', 'target': {'addresses': ['192.0.2.10']}}, 'retry_after_seconds': 25}]
+        d = daemon.Daemon('https://cve.example.test', 'tok', client=fc)
+        with mock.patch.object(d.stop_event, 'wait') as wait, \
+                mock.patch.dict(tools.RUNNERS, {'nmap': mock.Mock(return_value={'hosts': []})}):
+            d._poll_once()
+            self._wait_idle(d)
+        wait.assert_not_called()
+        self.assertIn(('POST', 'sentinel/tasks/12/accept'), fc.paths())
+
+    def test_a_stop_request_ends_the_wait(self):
+        fc = FakeClient()
+        fc.next_responses = [{'task': None, 'retry_after_seconds': 30}]
+        d = daemon.Daemon('https://cve.example.test', 'tok', client=fc)
+        threading.Timer(0.1, d.request_stop).start()
+        started = time.monotonic()
+        d._poll_once()
+        self.assertLess(time.monotonic() - started, 5.0)
+        self.assertTrue(d.stop_event.is_set())
+
+    def test_a_poll_error_still_backs_off_as_before(self):
+        fc = FakeClient()
+        fc.script[('POST', 'sentinel/tasks/next')] = [requests.ConnectionError('down')]
+        d = daemon.Daemon('https://cve.example.test', 'tok', client=fc)
+        with mock.patch.object(d.stop_event, 'wait') as wait:
+            d._poll_once()
+        self.assertEqual(len(wait.call_args_list), 1)  # the doubling backoff, nothing else
+        self.assertLessEqual(wait.call_args_list[0].args[0], daemon.MIN_BACKOFF)
+
     def test_at_capacity_skips_polling_entirely(self):
         fc = FakeClient()
         d = daemon.Daemon('https://cve.example.test', 'tok', client=fc, max_concurrent=1)

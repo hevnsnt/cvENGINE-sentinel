@@ -15,6 +15,7 @@ and never report the killed run's output as a result.
 """
 import json
 import logging
+import math
 import os
 import random
 import re
@@ -54,6 +55,8 @@ def _clip(value, limit=40):
 MAX_ORPHAN_RELEASES = 20  # leases released per heartbeat, so a server with many stale ones cannot make one heartbeat very long
 RECONCILE_GRACE_SECONDS = 10.0  # a task accepted this recently may not be in the heartbeat's lease list yet
 MIN_BACKOFF = 1.0
+MAX_RETRY_AFTER = 30.0  # the longest this Sentinel waits when the server answers "no task" and says when to ask again (retry_after_seconds)
+IMMEDIATE_RETRY = 1.0  # a retry_after of this or less is the server's "ask again straight away", what it says after a full long poll: no extra wait
 MAX_BACKOFF = 60.0
 REPORT_ATTEMPTS = 5  # a result POST is tried this many times at most
 REPORT_BACKOFF = 2.0  # seconds before the first retry, doubling each time
@@ -496,6 +499,7 @@ class Daemon:
         task = out.get('task') if isinstance(out, dict) else None
         if not task:
             self._write_control()
+            self._wait_retry_after(out)
             return
         if not _valid_task(task):
             self._write_control()
@@ -504,6 +508,17 @@ class Daemon:
             return
         self._start_task(task, kinds)
         self._write_control()
+
+    def _wait_retry_after(self, reply):
+        """The server answered "no task" and said when to ask again (``retry_after_seconds``): wait that long, at most ``MAX_RETRY_AFTER``, instead of asking
+        at once. The claim endpoint is rate limited, so a Sentinel that re-polls the moment an empty answer comes back (a server holding tasks for a less
+        loaded Sentinel, a full waiter cap) soon gets a 429 and then a doubling backoff that parks it for a minute. A little jitter spreads Sentinels that
+        were told the same thing, a stop request ends the wait, and a value that is not a plain number, or ``IMMEDIATE_RETRY`` seconds or less (what a full
+        long poll is answered with), costs nothing."""
+        seconds = reply.get('retry_after_seconds') if isinstance(reply, dict) else None
+        if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or not math.isfinite(seconds) or seconds <= IMMEDIATE_RETRY:
+            return
+        self.stop_event.wait(min(MAX_RETRY_AFTER, min(seconds, MAX_RETRY_AFTER) * random.uniform(1.0, 1.2)))
 
     def _sleep_backoff(self):
         self.stop_event.wait(min(MAX_BACKOFF, self._backoff) * random.uniform(0.5, 1.0))
