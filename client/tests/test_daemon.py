@@ -63,6 +63,12 @@ class FakeProc:
         self.killed.set()
 
 
+def server_speaks(test, version):
+    """Let one test talk to a server whose replies name contract ``version`` (``None``: a cvENGINE 1.3 server, which names none)."""
+    config.set_server_contract({} if version is None else {'contract': {'version': version, 'min_supported': 1}})
+    test.addCleanup(config.set_server_contract, {})
+
+
 def fresh_tool_probe(test):
     """Let one test see ``tools.detect_tools`` (patched by it) through the daemon's once-per-process cache."""
     daemon._detected.clear()
@@ -97,8 +103,10 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual((method, path), ('POST', 'sentinels/bootstrap'))
         self.assertEqual(body['enrollment_token'], 'senr_abc')
         self.assertEqual(body['name'], 'my-sentinel')
+        # no reply has named the server's contract yet: only the version 1 kinds, which every server has (the registration after it adds waf
+        # when the server says it speaks contract 2)
         self.assertEqual(sorted(body['capabilities']),
-                         sorted(['nmap', 'naabu', 'nuclei_light', 'nuclei_targeted', 'nuclei_deep', 'testssl', 'nmap_udp', 'wpscan', 'openvas', 'waf']))
+                         sorted(['nmap', 'naabu', 'nuclei_light', 'nuclei_targeted', 'nuclei_deep', 'testssl', 'nmap_udp', 'wpscan', 'openvas']))
         self.assertEqual(body['max_concurrent'], 2)
         self.assertEqual(body['tools'], ['nmap'])
 
@@ -135,6 +143,7 @@ class RegisterTests(unittest.TestCase):
     def test_sends_name_capabilities_tools_and_max_concurrent_but_no_scope(self):
         fc = FakeClient()
         fresh_tool_probe(self)
+        server_speaks(self, config.CONTRACT_VERSION)
         with mock.patch('client.tools.detect_tools', return_value=['nmap', 'naabu']), mock.patch('client.tools.gvm_ready', return_value=True):
             daemon.register(fc, 'my-sentinel', 5)
         self.assertEqual(fc.paths(), [('PUT', 'sentinel')])
@@ -291,6 +300,7 @@ class PollAndExecuteTests(unittest.TestCase):
         self.assertEqual(fc.body_for('sentinel/tasks/7/result'), {'outcome': 'done', **fake_result})
 
     def test_each_new_kind_is_dispatched_with_the_fields_its_target_carries(self):
+        server_speaks(self, config.CONTRACT_VERSION)
         cases = [
             ('testssl', {'host': 'www.example.test', 'ip': '192.0.2.10', 'port': 443, 'starttls': ''},
              {'items': []}, (('www.example.test', '192.0.2.10', 443, ''), {})),
@@ -597,6 +607,8 @@ class DaemonTestCase(unittest.TestCase):
     def setUp(self):
         config.set_overrides({})
         self.addCleanup(config.set_overrides, {})
+        config.set_server_contract({})
+        self.addCleanup(config.set_server_contract, {})
         control.set_draining(False)
         self.addCleanup(control.set_draining, False)
         env = mock.patch.dict('os.environ')
@@ -844,6 +856,7 @@ class ContractVersionTests(DaemonTestCase):
         self.assertEqual(config.CONTRACT_VERSION, packaged)
         self.assertGreaterEqual(config.CONTRACT_VERSION, 2)  # the version that introduced the waf kind
         self.assertEqual(daemon.info()['contract_version'], packaged)
+        server_speaks(self, config.CONTRACT_VERSION)
         self.assertIn('waf', config.CAPABILITIES)
         self.assertIn('waf', daemon.declared_kinds())
         self.assertIn('waf', tools.RUNNERS)
@@ -887,6 +900,66 @@ class ContractVersionTests(DaemonTestCase):
         with self.assertNoLogs('sentinel.daemon', level='WARNING'):
             for reply in replies:
                 d._note_contract(reply)
+
+
+class ServerContractKindsTests(DaemonTestCase):
+    """cvENGINE 1.3 (contract 1, its replies name no contract) answers a poll whose ``kinds`` names one it does not have with a 400 ("kinds must be a
+    list drawn from ...", agentapi.sentinel_broker.next_task) and a registration whose ``settings.disabled_kinds`` does with a 400 too: a Sentinel that
+    asked such a server for ``waf`` got no work at all. Only the kinds of the server's contract are asked for, declared and reported."""
+
+    V1_KINDS = ('nmap', 'naabu', 'nuclei_light', 'nuclei_targeted', 'nuclei_deep', 'testssl', 'nmap_udp', 'wpscan')
+
+    def poll_kinds_sent(self, d):
+        d._poll_once()
+        return self.fc.body_for('sentinel/tasks/next')['kinds']
+
+    def test_every_kind_this_sentinel_runs_has_a_contract_version(self):
+        self.assertEqual(sorted(set(config.KNOWN_KINDS) - set(config.KIND_SINCE)), [])
+        self.assertEqual(config.KIND_SINCE['waf'], 2)
+
+    def test_a_server_that_names_no_contract_is_never_asked_for_waf(self):
+        d = self.make()
+        d.reregister = lambda: {'id': 1, 'status': 'active', 'settings': {'values': {}, 'rev': 'r1'}}  # a cvENGINE 1.3 registration reply
+        d.start_registration()
+        self.assertEqual(config.server_contract(), 1)
+        self.assertNotIn('waf', daemon.declared_kinds())
+        kinds = self.poll_kinds_sent(d)
+        self.assertNotIn('waf', kinds)
+        self.assertEqual(sorted(kinds), sorted(self.V1_KINDS))
+
+    def test_a_contract_2_server_is_asked_for_waf_and_it_is_declared_at_startup(self):
+        d = self.make()
+        sent = []
+        d.reregister = lambda: sent.append(daemon.declared_kinds()) or {'contract': {'version': 2, 'min_supported': 1}}
+        with self.assertLogs('sentinel.daemon', level='INFO') as logs:
+            d.start_registration()
+        self.assertEqual(config.server_contract(), 2)
+        self.assertNotIn('waf', sent[0])  # before the reply nothing said the server has it
+        self.assertIn('waf', sent[-1])  # registered again at once with it
+        self.assertEqual(len(sent), 2)
+        self.assertIn('waf', self.poll_kinds_sent(d))
+        self.assertTrue(any('speaks result contract 2' in line for line in logs.output))
+
+    def test_a_heartbeat_reply_moves_it_both_ways(self):
+        d = self.make()  # no reregister: only the heartbeat replies speak here
+        self.fc.script[('POST', 'sentinel/heartbeat')] = [{'contract': {'version': 2, 'min_supported': 1}}, {'leases': []}]
+        d._heartbeat_once()
+        self.assertTrue(config.server_knows('waf'))
+        d._heartbeat_once()  # the server was rolled back to 1.3: its heartbeat names no contract
+        self.assertFalse(config.server_knows('waf'))
+
+    def test_an_odd_or_missing_reply_changes_nothing(self):
+        server_speaks(self, 2)
+        for reply in (None, 'x', [], {'contract': {'version': True}}, {'contract': {'version': '3'}}, {'contract': {'version': 0}}, {'contract': None}):
+            config.set_server_contract(reply)
+            self.assertEqual(config.server_contract(), 2, reply)
+
+    def test_a_locally_disabled_kind_the_server_lacks_is_not_reported(self):
+        os.environ['CVENGINE_SENTINEL_DISABLE'] = 'waf,wpscan'
+        self.assertEqual(config.local_settings()['disabled_kinds'], ['wpscan'])
+        server_speaks(self, 2)
+        self.assertEqual(config.local_settings()['disabled_kinds'], ['waf', 'wpscan'])
+        self.assertNotIn('waf', daemon.declared_kinds())  # still never run, whatever the server speaks
 
 
 class KindPolicyTests(DaemonTestCase):

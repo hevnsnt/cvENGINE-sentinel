@@ -140,9 +140,11 @@ def save_token(path, token, server_url):
 def runnable_kinds():
     """The scan kinds this Sentinel runs right now: what it polls for, declares, and accepts. ``openvas`` only while this Sentinel's own GVM
     stack answers, never a kind the operator disabled, and the internal-only kinds (``discover``) only when this machine's own configuration
-    says it sits inside a private network, whatever the server's ``network`` setting says."""
+    says it sits inside a private network, whatever the server's ``network`` setting says. A kind the server's contract does not have
+    (``waf`` on cvENGINE 1.3) is left out too: such a server refuses the whole poll with a 400 for it."""
     off = config.disabled_kinds()
-    kinds = [k for k in config.poll_kinds() if k not in off and (k not in config.INTERNAL_KINDS or config._local_internal())]
+    kinds = [k for k in config.poll_kinds()
+             if k not in off and config.server_knows(k) and (k not in config.INTERNAL_KINDS or config._local_internal())]
     if 'openvas' in kinds and not tools.gvm_ready():
         kinds.remove('openvas')
     return kinds
@@ -268,6 +270,8 @@ class Daemon:
         (the heartbeat retries it); the settings register again only when they change what the server was just told."""
         reply = self._refresh_registration(force=True)
         self.apply_settings((reply or {}).get('settings') if isinstance(reply, dict) else None)
+        if reply is not None:  # the reply may name a newer contract than this Sentinel assumed before it: declare the kinds it adds now
+            self._refresh_registration()
 
     def keep_saving_token(self, path, token, server_url):
         """The token from bootstrap could not be saved: keep it in memory and try saving it again at every heartbeat."""
@@ -324,7 +328,13 @@ class Daemon:
     def _note_contract(self, reply):
         """A registration or heartbeat answer names the result contract the server speaks (``contract: {version, min_supported}``). A Sentinel whose
         own version is below the server's minimum is told once per minimum, in one line, and goes on heartbeating: the server withholds the work
-        it cannot run, and an update is the operator's decision."""
+        it cannot run, and an update is the operator's decision. The server's own version decides which kinds are asked for (``runnable_kinds``):
+        an answer with no ``contract`` is a server from before it (cvENGINE 1.3), which has only the version 1 kinds."""
+        before = config.server_contract()
+        if config.set_server_contract(reply) != before:
+            held = sorted(k for k in config.KNOWN_KINDS if not config.server_knows(k))
+            logger.info('the server speaks result contract %s%s', config.server_contract(),
+                        f'; not asking it for {", ".join(held)} work, which it does not have' if held else '')
         contract = reply.get('contract') if isinstance(reply, dict) else None
         minimum = contract.get('min_supported') if isinstance(contract, dict) else None
         if isinstance(minimum, bool) or not isinstance(minimum, int) or minimum <= config.CONTRACT_VERSION or minimum == self._contract_warned:
@@ -380,8 +390,9 @@ class Daemon:
         self._refresh_registration()
 
     def _registration(self):
-        """What a registration tells the server, to notice when it has changed: name, concurrency and capabilities."""
-        return config.sentinel_name(), config.max_concurrent(), tuple(declared_kinds())
+        """What a registration tells the server, to notice when it has changed: name, concurrency and capabilities, and the server's contract
+        version, which decides which kinds and which disabled kinds are reported."""
+        return config.sentinel_name(), config.max_concurrent(), tuple(declared_kinds()), config.server_contract()
 
     def _refresh_registration(self, force=False):
         """Register again when what the server was last told has changed (a GVM stack that finished syncing after this Sentinel started makes
