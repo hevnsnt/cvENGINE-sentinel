@@ -11,6 +11,7 @@ from unittest import mock
 import requests
 
 from client import blob, config, control, daemon, httpclient, tools
+from client.daemon import HELD_STATUSES
 from cvengine_scanner import contract
 
 
@@ -1109,6 +1110,74 @@ class RevokedTokenTests(DaemonTestCase):
                 d._sleep_backoff()
         self.assertTrue(all(4.0 <= w <= 8.0 for w in waits))
         self.assertGreater(len(set(waits)), 1)
+
+
+class HeldSentinelTests(DaemonTestCase):
+    """A Sentinel cvENGINE holds (pending approval, or suspended: by an administrator, or by the 1.3.2 rule that holds a new agent of a user whose
+    other agent was suspended or revoked) has its poll refused with "403 no work can be assigned: ..." (agentapi.sentinel_broker._try_claim and
+    next_task) while its token, heartbeat and ``GET sentinel`` still work. It must wait, not stop and tell the operator to re-enroll."""
+
+    HELD = httpclient.ApiError(403, 'no work can be assigned: the agent is suspended')
+
+    def poll(self, *identity):
+        self.fc.script[('POST', 'sentinel/tasks/next')] = [self.HELD]
+        self.fc.script[('GET', 'sentinel')] = list(identity)
+        d = self.make(heartbeat_seconds=7)
+        with mock.patch.object(d.stop_event, 'wait') as wait:
+            d._poll_once()
+        return d, wait
+
+    def test_a_suspended_or_pending_sentinel_waits_a_heartbeat_and_says_why_once(self):
+        for status in HELD_STATUSES:
+            with self.subTest(status=status):
+                self.fc = FakeClient()
+                note = 'held: agent "old-box" of this user was suspended by an administrator'
+                with self.assertLogs('sentinel.daemon', level='WARNING') as logs:
+                    d, wait = self.poll({'registered': True, 'status': status, 'status_note': note})
+                self.assertEqual((d.stop_event.is_set(), d.exit_code), (False, 0))
+                wait.assert_called_once_with(7)
+                text = '\n'.join(logs.output)
+                self.assertIn('do not re-enroll', text)
+                self.assertIn('old-box', text)
+                self.assertNotIn('re-enroll it', text)
+                self.fc.script[('POST', 'sentinel/tasks/next')] = [self.HELD]
+                self.fc.script[('GET', 'sentinel')] = [{'status': status, 'status_note': note}]
+                with mock.patch.object(d.stop_event, 'wait'), self.assertNoLogs('sentinel.daemon', level='WARNING'):
+                    d._poll_once()  # the same hold is not logged again
+
+    def test_a_revoked_or_active_answer_still_stops_it(self):
+        for identity in ({'status': 'revoked'}, {'status': 'active'}, {}, 'x', httpclient.ApiError(401, 'invalid, expired or revoked token'),
+                         httpclient.ApiError(403, 'this agent was revoked by an administrator')):
+            with self.subTest(identity=identity):
+                self.fc = FakeClient()
+                with self.assertLogs('sentinel.daemon', level='ERROR') as logs:
+                    d, _wait = self.poll(identity)
+                self.assertEqual((d.stop_event.is_set(), d.exit_code), (True, 1))
+                self.assertIn('re-enroll', '\n'.join(logs.output))
+
+    def test_a_check_that_fails_on_the_network_backs_off_and_is_never_read_as_revoked(self):
+        for error in (requests.ConnectionError('down'), httpclient.ApiError(503, 'busy')):
+            with self.subTest(error=error):
+                self.fc = FakeClient()
+                d, wait = self.poll(error)
+                self.assertEqual((d.stop_event.is_set(), d.exit_code), (False, 0))
+                wait.assert_called_once()
+
+    def test_a_401_on_the_poll_stops_it_without_asking(self):
+        self.fc.script[('POST', 'sentinel/tasks/next')] = [httpclient.ApiError(401, 'invalid, expired or revoked token')]
+        d = self.make()
+        with self.assertLogs('sentinel.daemon', level='ERROR'):
+            d._poll_once()
+        self.assertEqual((d.stop_event.is_set(), d.exit_code), (True, 1))
+        self.assertEqual(self.fc.count('sentinel'), 0)
+
+    def test_work_resumes_once_reinstated(self):
+        d, _wait = self.poll({'status': 'suspended', 'status_note': ''})
+        self.fc.next_responses = [{'task': None}]
+        with self.assertLogs('sentinel.daemon', level='INFO') as logs:
+            d._poll_once()
+        self.assertTrue(any('no longer holds' in line for line in logs.output))
+        self.assertIsNone(d._held_logged)
 
 
 class AtomicTokenTests(unittest.TestCase):

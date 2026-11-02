@@ -65,6 +65,7 @@ REPORT_RETRY_SECONDS = 120.0  # and never for longer than this in all, so a dead
 MAX_RESULT_BYTES = 23 * 1024 * 1024  # the server's result route refuses a body over 24 MB with a 400 that would end the task
 RELEASE_WAIT_SECONDS = 10.0  # after the grace period, how long shutdown waits for a task thread that is still delivering its result
 AUTH_STATUSES = (401, 403)  # the server no longer accepts this Sentinel's token
+HELD_STATUSES = ('pending', 'suspended')  # cvENGINE holds the Sentinel (approval, or an administrator's decision): its poll answers 403, its token still works
 _TASK_ID = re.compile(r'[A-Za-z0-9_-]{1,64}')  # an id goes into URL paths, thread names and log lines
 
 
@@ -243,6 +244,7 @@ class Daemon:
         self._in_flight = {}  # task_id -> {'proc', 'done', 'started', 'dropped', 'finishing', 'kind', 'runnable'}
         self._polling = False  # a long poll is outstanding: it may return a task, so the updater must not see this Sentinel idle
         self._backoff = MIN_BACKOFF
+        self._held_logged = None  # (status, note) of the hold last logged, so a held Sentinel says why once, not at every poll
 
     # --- lifecycle --------------------------------------------------------------------------------------------
 
@@ -500,6 +502,8 @@ class Daemon:
         except (httpclient.ApiError, requests.RequestException) as exc:
             self._polling = False
             self._write_control()
+            if getattr(exc, 'status', None) == 403 and self._wait_while_held():
+                return
             if not self._auth_failed(exc):
                 logger.warning('poll failed: %s', exc)
                 self._sleep_backoff()
@@ -507,6 +511,9 @@ class Daemon:
         finally:
             self._polling = False  # a task it returned is counted as running from here on (``_start_task``)
         self._backoff = MIN_BACKOFF
+        if self._held_logged is not None:
+            logger.info('cvENGINE no longer holds this Sentinel; taking work again')
+            self._held_logged = None
         task = out.get('task') if isinstance(out, dict) else None
         if not task:
             self._write_control()
@@ -519,6 +526,33 @@ class Daemon:
             return
         self._start_task(task, kinds)
         self._write_control()
+
+    def _wait_while_held(self):
+        """The poll was refused with a 403. A Sentinel cvENGINE holds (``pending`` approval, or ``suspended`` by an administrator or by the rule that
+        holds a new agent of a user whose other agent was suspended or revoked) is answered so ("no work can be assigned: ...") while its token is
+        fine, and stopping then would only crash-loop the container and tell the operator to re-enroll, which a held user's new Sentinel inherits
+        anyway. So ask the server where this Sentinel stands (``GET sentinel``): when it is held, say why once, keep heartbeating and ask again after a
+        heartbeat interval. Returns False when it is not held (revoked, or a refusal of the token itself), so the caller stops as before; a check
+        that fails on the network or a server error backs off and is tried again, never read as revoked."""
+        try:
+            me = self.client.call('GET', 'sentinel')
+        except (httpclient.ApiError, requests.RequestException) as exc:
+            if _retryable(exc):
+                logger.warning('the poll was refused (403) and the server could not say why (%s); backing off', exc)
+                self._sleep_backoff()
+                return True
+            return False
+        status = me.get('status') if isinstance(me, dict) else None
+        if status not in HELD_STATUSES:
+            return False
+        note = _clip(me.get('status_note') or '', 300)
+        if self._held_logged != (status, note):
+            self._held_logged = (status, note)
+            what = 'waiting for an administrator to approve it' if status == 'pending' else 'suspended'
+            logger.warning('cvENGINE has this Sentinel %s, so it is given no work%s. Its token is fine: do not re-enroll. It keeps heartbeating and '
+                           'takes work again once an administrator approves or reinstates it in cvENGINE', what, f' ({note})' if note else '')
+        self.stop_event.wait(self.heartbeat_seconds)
+        return True
 
     def _wait_retry_after(self, reply):
         """The server answered "no task" and said when to ask again (``retry_after_seconds``): wait that long, at most ``MAX_RETRY_AFTER``, instead of asking
