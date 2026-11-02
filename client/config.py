@@ -8,6 +8,8 @@ from cvengine_scanner import contract
 
 CAPABILITIES = ['nmap', 'naabu', 'nuclei_light', 'nuclei_targeted', 'nuclei_deep', 'testssl', 'nmap_udp', 'wpscan', 'openvas', 'waf']
 CONTRACT_VERSION = contract.version()  # the result contract this Sentinel speaks: the packaged sentinel_contract.json's, declared at registration and every heartbeat
+KIND_SINCE = contract.load()['kind_since']  # the contract version that introduced each kind (waf: 2)
+PRE_CONTRACT_SERVER = 1  # what a server speaks when its replies name no contract: cvENGINE 1.3 and older, whose kinds are the version 1 kinds
 INTERNAL_CAPABILITY = 'network:internal'  # mirrors agentapi.sentinel_broker.INTERNAL_CAPABILITY
 INTERNAL_KINDS = ['discover']  # scan kinds only an internal Sentinel declares: the server sweeps a declared private range only through one
 HEARTBEAT_SECONDS = 60  # matches agentapi.agent_broker.HEARTBEAT_SECONDS; see that constant if it ever changes
@@ -29,6 +31,31 @@ def _env(name, default=None):
 # machine's policy, which the server can tighten but never loosen: a kind disabled here stays disabled, and a local self-update setting is a ceiling.
 SELF_UPDATE = ('off', 'manual', 'automatic')  # in rising order: the effective value is the lower of this machine's and the server's
 _overrides = {}  # replaced whole, never mutated, so a reader on another thread sees either the old settings or the new ones
+_server_contract = PRE_CONTRACT_SERVER  # the contract the server last said it speaks; until a reply says, the oldest, so nothing it may not know is asked for
+
+
+def set_server_contract(reply):
+    """Note the contract the server speaks from a registration or heartbeat answer (``contract: {version, min_supported}``). A reply that is an
+    object without it comes from a server older than the contract (cvENGINE 1.3), which speaks version 1. Returns the version now in force."""
+    global _server_contract
+    if isinstance(reply, dict):
+        info = reply.get('contract')
+        version = info.get('version') if isinstance(info, dict) else None
+        if isinstance(version, int) and not isinstance(version, bool) and version >= 1:
+            _server_contract = version
+        elif 'contract' not in reply:
+            _server_contract = PRE_CONTRACT_SERVER
+    return _server_contract
+
+
+def server_contract():
+    return _server_contract
+
+
+def server_knows(kind):
+    """Whether the server's contract has ``kind``. A server answers a poll that names a kind it does not know with a 400 (cvENGINE 1.3 for
+    ``waf``), so such a kind is never asked for, declared or reported. A kind the packaged contract does not list counts as the newest."""
+    return KIND_SINCE.get(kind, CONTRACT_VERSION) <= _server_contract
 _warned_disabled = set()  # unknown CVENGINE_SENTINEL_DISABLE entries already logged, so each is reported once, not at every poll
 
 
@@ -82,7 +109,8 @@ def local_settings():
     so it can tell a change made here from one made in cvENGINE. ``name`` and ``profile`` are reported only when this machine states one: an unnamed
     Sentinel's fallback name is the host name, which in Docker is the container id and changes at every recreate, so reporting it would undo a rename
     made in cvENGINE."""
-    out = {'network': 'internal' if _local_internal() else 'external', 'disabled_kinds': sorted(_local_disabled()),
+    # a disabled kind the server does not know is left out: cvENGINE 1.3 refuses the whole registration (400) for a disabled_kinds entry it has no such kind for
+    out = {'network': 'internal' if _local_internal() else 'external', 'disabled_kinds': sorted(k for k in _local_disabled() if server_knows(k)),
            'max_concurrent': _local_max_concurrent()}
     if _env('CVENGINE_SENTINEL_NAME'):
         out['name'] = _local_name()
