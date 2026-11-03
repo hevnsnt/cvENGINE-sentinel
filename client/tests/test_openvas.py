@@ -116,6 +116,10 @@ RESULT_NO_CVE = """
 </result>
 """
 
+# What gvmd 26.35+ sends while its NVT cache lacks the NVT (greenbone/gvmd#3220): the CERT references (database), none of its cve / url ones
+RESULT_STALE_CACHE = RESULT_WITH_CVE.replace('<ref type="cve" id="CVE-2024-12345"/>', '<ref type="cert-bund" id="WID-SEC-2024-0001"/>') \
+    .replace('<ref type="url" id="https://example.test/advisory"/>', '<ref type="dfn-cert" id="DFN-CERT-2024-0001"/>')
+
 RESULT_UNUSABLE = """
 <result id="r3">
   <nvt oid="not-an-oid-at-all"/>
@@ -144,6 +148,11 @@ class ParseResultTests(OpenvasTestCase):
         self.assertIsNotNone(parsed)
         self.assertEqual(parsed['cves'], [])
         self.assertEqual(parsed['address'], '192.0.2.20')
+
+    def test_cert_references_without_a_cve_reference_mean_gvmds_nvt_cache_is_stale(self):
+        self.assertEqual((openvas.parse_result(xml(RESULT_STALE_CACHE))['cves'], openvas.parse_result(xml(RESULT_STALE_CACHE))['stale_refs']), ([], True))
+        self.assertFalse(openvas.parse_result(xml(RESULT_WITH_CVE))['stale_refs'])
+        self.assertFalse(openvas.parse_result(xml(RESULT_NO_CVE))['stale_refs'])  # no reference at all: an NVT with no CVE
 
     def test_a_malformed_oid_or_missing_host_is_unusable(self):
         self.assertIsNone(openvas.parse_result(xml(RESULT_UNUSABLE)))
@@ -954,6 +963,19 @@ class RunOutcomeTests(OpenvasTestCase):
             result = openvas.run_openvas({HOST: ''})
         self.assertEqual(len(result['results']), 1)
         self.assertIs(result['partial'], True)
+
+    def test_a_run_whose_cves_gvmd_left_out_is_partial_and_says_so(self):
+        """camstork, cvENGINE #394: read as "without a CVE", a stale NVT cache made the server close every earlier finding on the host."""
+        gmp = self.happy()
+        gmp.responses['get_results'] = lambda **kw: results_page(RESULT_STALE_CACHE, RESULT_WITH_CVE)
+        with sessions(gmp), self.assertLogs('sentinel.openvas', 'WARNING') as logs:
+            result = openvas.run_openvas({HOST: ''})
+        self.assertEqual((result['nvt_cache_stale'], result['without_cve'], result['partial']), (1, 1, True))
+        self.assertIn('restart openvas-gvmd', '\n'.join(logs.output))
+        gmp.responses['get_results'] = lambda **kw: results_page(RESULT_WITH_CVE)
+        with sessions(gmp):
+            result = openvas.run_openvas({HOST: ''})
+        self.assertEqual((result['nvt_cache_stale'], result['partial']), (0, False))
 
     def test_a_run_whose_every_result_is_unusable_is_partial_not_a_clean_scan(self):
         gmp = self.happy()
