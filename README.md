@@ -394,12 +394,18 @@ can scan and why not (for example `GVM is still syncing its ... feed(s)`).
 - **Excluded families:** "Denial of Service" and "Brute force attacks" are always excluded, whatever the task says.
   The task can exclude more; a name that matches no family is logged as a warning.
 - **Empty runs are errors:** a finished run that scanned no host is reported as an error naming the gvmd report id and
-  gvmd's own errors (`gvmd scanned no host: ...`), not as a clean result.
+  gvmd's own errors (`gvmd scanned no host: ...`), not as a clean result. A report host counts as scanned only once
+  gvmd finished it (it has an end time).
+- **Unreadable results are errors:** when gvmd counts results for the task (in the task, the `get_results` answer or
+  the report) but none could be read, the run is reported as an error (`gvmd counts results for the task but none
+  could be read ...`), never as a host scanned clean, and its GVM task and report are kept until the Sentinel next
+  starts.
 - **Results:** results without a CVE are sent as address and port only; the body is kept under 20 MB, and a run whose
   CVE results had to be cut is marked partial.
 - **Summary:** after every run the log has one line with the task's status, progress, report id, host count, results
   by severity, scan start and end, and gvmd's errors.
-- **Cleanup:** the GVM task, target and report are deleted after the run, unless `CVENGINE_OPENVAS_KEEP_TASKS=1`. A
+- **Cleanup:** the GVM task, target and report are deleted after the run, unless `CVENGINE_OPENVAS_KEEP_TASKS=1` (or
+  its results could not be read, above). A
   task cvENGINE takes back, or a shutdown, stops and deletes the GVM task.
 - **Leftovers:** once per start, when the stack first reports ready, the Sentinel sweeps `cvengine-sentinel-...` tasks
   and targets an earlier run left in gvmd. Finished ones are deleted; running ones are stopped and deleted only once
