@@ -69,6 +69,17 @@ class OpenvasTestCase(unittest.TestCase):
             self.addCleanup(patcher.stop)
 
 
+def results_page(*elements, count=None, first=1, rows=100):
+    """A get_results answer the way gvmd prints it (``handle_get_results``, ``send_get_end`` in src/gmp.c and src/gmp_get.c, v22.7 to 26.x): each
+    ``<result>`` a direct child of ``<get_results_response>``, then the filter, the sort, an empty ``<results start max/>`` paging marker and
+    ``<result_count>full<filtered>..</filtered><page>..</page></result_count>``."""
+    inner = ''.join(e if isinstance(e, str) else ET.tostring(e, encoding='unicode') for e in elements)
+    total = len(elements) if count is None else count
+    return xml(f'<get_results_response status="200" status_text="OK">{inner}<filters id=""><term>task_id=task-1</term></filters>'
+               f'<sort><field>severity<order>descending</order></field></sort><results start="{first}" max="{rows}"/>'
+               f'<result_count>{total}<filtered>{total}</filtered><page>{len(elements)}</page></result_count></get_results_response>')
+
+
 RESULT_WITH_CVE = """
 <result id="r1">
   <nvt oid="1.3.6.1.4.1.25623.1.0.100001">
@@ -148,8 +159,7 @@ class ParseResultTests(OpenvasTestCase):
 
 class FetchResultsTests(OpenvasTestCase):
     def _page(self, elements):
-        inner = ''.join(ET.tostring(e, encoding='unicode') for e in elements)
-        return xml(f'<get_results_response><results>{inner}</results></get_results_response>')
+        return results_page(*elements)
 
     def test_counts_cve_bearing_no_cve_and_unusable_results(self):
         page = self._page([xml(RESULT_WITH_CVE), xml(RESULT_NO_CVE), xml(RESULT_UNUSABLE)])
@@ -173,6 +183,21 @@ class FetchResultsTests(OpenvasTestCase):
         self.assertEqual(calls['n'], 2)
         self.assertEqual(len(items), openvas.RESULT_PAGE + 1)
 
+    def test_the_older_nested_shape_is_still_read(self):
+        nested = xml(f'<get_results_response><results>{RESULT_WITH_CVE}</results></get_results_response>')
+        items, _no_cve, _unusable = openvas.fetch_results(FakeGMP(get_results=lambda **kw: nested), 'task-1')
+        self.assertEqual([i['address'] for i in items], ['192.0.2.10'])
+
+    def test_the_empty_results_marker_is_not_read_as_a_result(self):
+        items, no_cve, unusable = openvas.fetch_results(FakeGMP(get_results=lambda **kw: results_page()), 'task-1')
+        self.assertEqual((items, no_cve, unusable), ([], 0, 0))
+
+    def test_the_count_gvmd_gives_for_the_filter_is_read_from_the_first_page(self):
+        got = openvas.read_results(FakeGMP(get_results=lambda **kw: results_page(xml(RESULT_WITH_CVE), count=7)), 'task-1')
+        self.assertEqual(got['count'], 7)
+        self.assertEqual(len(got['items']), 1)
+        self.assertIsNone(openvas.read_results(FakeGMP(get_results=lambda **kw: xml('<get_results_response/>')), 'task-1')['count'])
+
     def test_stops_at_the_result_cap(self):
         full_page = self._page([xml(RESULT_WITH_CVE)] * openvas.RESULT_PAGE)
         gmp = FakeGMP(get_results=lambda **kw: full_page)
@@ -189,6 +214,15 @@ class ScannedAddressesTests(OpenvasTestCase):
         gmp = FakeGMP(get_report=lambda *a, **kw: report_detail)
         seen = openvas.scanned_addresses(gmp, status, items)
         self.assertEqual(seen, {'192.0.2.10', '192.0.2.99'})
+
+    def test_a_report_host_gvmd_never_finished_does_not_count_as_scanned(self):
+        status = xml('<get_tasks_response><task><last_report><report id="rep1"/></last_report></task></get_tasks_response>')
+        report_detail = xml('<get_reports_response><report id="rep1"><report id="rep1">'
+                            '<host><ip>192.0.2.98</ip><start>2026-11-03T10:00:00Z</start><end>2026-11-03T11:00:00Z</end></host>'
+                            '<host><ip>192.0.2.99</ip><start>2026-11-03T10:00:00Z</start><end></end></host>'
+                            '</report></report></get_reports_response>')
+        gmp = FakeGMP(get_report=lambda *a, **kw: report_detail)
+        self.assertEqual(openvas.scanned_addresses(gmp, status, []), {'192.0.2.98'})
 
     def test_a_report_read_failure_falls_back_to_just_the_results(self):
         items = [{'address': '192.0.2.10'}]
@@ -308,7 +342,7 @@ class WaitForTaskTests(OpenvasTestCase):
 
 def happy_gmp():
     """A gvmd that runs one task to Done with one CVE-bearing result on a host its report lists."""
-    results_page = xml(f'<get_results_response><results>{RESULT_WITH_CVE}</results></get_results_response>')
+    page = results_page(RESULT_WITH_CVE)
     report_detail = xml('<get_report_response><report><host><ip>192.0.2.10</ip></host></report></get_report_response>')
     done_status = xml('<get_tasks_response><task><status>Done</status>'
                       '<last_report><report id="rep1"/></last_report></task></get_tasks_response>')
@@ -326,7 +360,7 @@ def happy_gmp():
         create_task=lambda *a, **kw: xml('<create_task_response id="task-1"/>'),
         start_task=lambda *a: None,
         get_task=lambda *a: done_status,
-        get_results=lambda **kw: results_page,
+        get_results=lambda **kw: page,
         get_report=lambda *a, **kw: report_detail,
         delete_task=lambda *a, **kw: None,
         delete_target=lambda *a, **kw: None,
@@ -361,7 +395,7 @@ class RunOpenvasTests(OpenvasTestCase):
                                                    '<current_report><report id="rep1"/></current_report></task></get_tasks_response>')
         gmp.responses['stop_task'] = lambda *a: None
         if not results:
-            gmp.responses['get_results'] = lambda **kw: xml('<get_results_response><results></results></get_results_response>')
+            gmp.responses['get_results'] = lambda **kw: results_page()
         return gmp
 
     def test_a_task_past_its_budget_is_stopped_and_what_it_found_is_returned_as_partial(self):
@@ -803,7 +837,7 @@ class RunOutcomeTests(OpenvasTestCase):
 
     def test_a_done_run_with_no_result_and_no_host_is_an_error_naming_the_report(self):
         gmp = self.happy()
-        gmp.responses['get_results'] = lambda **kw: xml('<get_results_response><results/></get_results_response>')
+        gmp.responses['get_results'] = lambda **kw: results_page()
         gmp.responses['get_report'] = lambda *a, **kw: xml(
             '<get_reports_response><report id="rep1"><report id="rep1"><hosts><count>0</count></hosts><result_count><full>0</full></result_count>'
             '<errors><error><host>' + HOST + '</host><description>Host dead</description></error></errors></report></report></get_reports_response>')
@@ -838,10 +872,74 @@ class RunOutcomeTests(OpenvasTestCase):
         self.assertIs(result['partial'], True)
         self.assertEqual(result['scanned_addresses'], ['192.0.2.10'])
 
+    def test_the_results_of_a_done_task_are_read_as_gvmd_sends_them(self):
+        """The bug from cvENGINE #394: gvmd puts each result directly under get_results_response, so reading ./results/result found nothing and
+        a host the report listed was reported as scanned clean."""
+        with sessions(self.happy()):
+            result = openvas.run_openvas({HOST: ''})
+        self.assertEqual([r['cves'] for r in result['results']], [['CVE-2024-12345']])
+
+    def done_with_counts(self, counts):
+        return lambda *a: xml('<get_tasks_response><task><status>Done</status><last_report><report id="rep1">'
+                              f'<result_count>{counts}<false_positive>0</false_positive></result_count></report></last_report></task>'
+                              '</get_tasks_response>')
+
+    def test_results_gvmd_counts_but_none_read_is_an_error_not_a_clean_scan_and_the_task_is_kept(self):
+        gmp = self.happy()
+        gmp.responses['get_task'] = self.done_with_counts('<critical>0</critical><high>2</high><medium>1</medium><low>0</low><log>4</log>')
+        gmp.responses['get_results'] = lambda **kw: xml('<get_results_response><unknown_shape/></get_results_response>')
+        with sessions(gmp), self.assertRaises(openvas.OpenvasError) as raised:
+            openvas.run_openvas({HOST: ''})
+        message = str(raised.exception)
+        self.assertIn(openvas.READ_MISMATCH, message)
+        self.assertIn('7', message)
+        self.assertIn('rep1', message)
+        self.assertLessEqual(len(message), 280)  # the daemon clips an error to 280 characters
+        self.assertNotIn('delete_task', gmp.names())  # kept for a person to look at
+        self.assertNotIn('delete_target', gmp.names())
+
+    def test_the_count_from_get_results_or_the_report_alone_also_stops_an_empty_read(self):
+        for where in ('get_results', 'get_report'):
+            with self.subTest(where):
+                gmp = self.happy()
+                if where == 'get_results':
+                    gmp.responses['get_results'] = lambda **kw: results_page(count=3)  # counted, but nothing in a shape this reads
+                else:
+                    gmp.responses['get_results'] = lambda **kw: results_page()
+                    gmp.responses['get_report'] = lambda *a, **kw: xml(
+                        '<get_reports_response><report id="rep1"><report id="rep1"><host><ip>192.0.2.10</ip></host>'
+                        '<result_count>3<full>3</full><filtered>3</filtered></result_count></report></report></get_reports_response>')
+                with sessions(gmp), self.assertRaises(openvas.OpenvasError) as raised:
+                    openvas.run_openvas({HOST: ''})
+                self.assertIn(openvas.READ_MISMATCH, str(raised.exception))
+
+    def test_a_host_scanned_with_no_result_is_still_a_clean_scan_when_gvmd_counts_none(self):
+        gmp = self.happy()
+        gmp.responses['get_task'] = self.done_with_counts('<critical>0</critical><high>0</high><medium>0</medium><low>0</low><log>0</log>')
+        gmp.responses['get_results'] = lambda **kw: results_page()
+        with sessions(gmp):
+            result = openvas.run_openvas({HOST: ''})
+        self.assertEqual((result['results'], result['scanned_addresses']), ([], ['192.0.2.10']))
+        self.assertIn('delete_task', gmp.names())
+
+    def test_gvmds_task_counts_are_read_in_both_the_22_7_and_the_newer_names(self):
+        def status(counts):
+            return xml(f'<get_tasks_response><task><last_report><report id="r"><result_count>{counts}</result_count></report></last_report>'
+                       '</task></get_tasks_response>')
+        # gvmd 22.7: hole (high), warning (medium), info (low), log
+        self.assertEqual(openvas.gvm_result_count(status('<hole>2</hole><info>1</info><log>3</log><warning>4</warning>'
+                                                         '<false_positive>9</false_positive>')), 10)
+        # 26.x: the new names, with the old ones repeated as deprecated copies (not counted twice)
+        self.assertEqual(openvas.gvm_result_count(status(
+            '<critical>1</critical><hole deprecated="1">2</hole><high>2</high><info deprecated="1">1</info><low>1</low><log>3</log>'
+            '<warning deprecated="1">4</warning><medium>4</medium><false_positive>0</false_positive>')), 11)
+        self.assertIsNone(openvas.gvm_result_count(xml('<get_tasks_response><task><last_report><report id="r"/></last_report></task>'
+                                                       '</get_tasks_response>')))
+
     def test_an_interrupted_task_with_nothing_found_is_an_error(self):
         gmp = self.happy()
         gmp.responses['get_task'] = lambda *a: xml('<get_tasks_response><task><status>Interrupted</status></task></get_tasks_response>')
-        gmp.responses['get_results'] = lambda **kw: xml('<get_results_response><results/></get_results_response>')
+        gmp.responses['get_results'] = lambda **kw: results_page()
         with sessions(gmp), self.assertRaises(openvas.OpenvasError) as raised:
             openvas.run_openvas({HOST: ''})
         self.assertIn('Interrupted', str(raised.exception))

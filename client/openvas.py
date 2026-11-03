@@ -5,7 +5,7 @@
 Unlike nmap/naabu/nuclei/testssl/wpscan, there is no subprocess here: this Sentinel talks GMP (the Greenbone
 Management Protocol) directly to the gvmd this container's own GVM stack runs (see docker-compose.yml), the same way
 cvENGINE's own server talks to its sidecar (``cveFeed/openvas_scan.py``). The parsing logic below
-(``parse_result``/``fetch_results``/``scanned_addresses``) is a direct, dependency-free port of that module's own
+(``parse_result``/``fetch_results``/``gvm_result_count``/``scanned_addresses``) is a direct, dependency-free port of that module's own
 functions, since this client has no Django app to import them from; keep the two in step if either changes.
 
 Every GMP exchange is a short session of its own (one poll, one fetch, one cleanup), so a gvmd restart or a dropped socket during a scan that
@@ -70,6 +70,10 @@ def task_preferences(wanted=None):
         checks = int(TASK_PREFERENCES['max_checks'])
     return {'max_checks': str(min(10, max(1, checks))), 'max_hosts': '1'}
 ACTIVE_STATUSES = ('New', 'Requested', 'Queued', 'Running', 'Processing', 'Stop Requested')
+
+# The error of a run gvmd counts results for of which none could be read: never reported as a clean scan (the server would close what earlier
+# scans found). The same words as cveFeed.openvas_scan.READ_MISMATCH.
+READ_MISMATCH = 'gvmd counts results for the task but none could be read'
 
 CVE_RE = re.compile(r'^CVE-\d{4}-\d{4,}$')
 _CONTROL = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]')
@@ -510,27 +514,75 @@ def parse_result(result):
     }
 
 
-def fetch_results(gmp, task_id):
-    """Every result of a task as parsed dicts (at most ``MAX_RESULTS``), a page at a time, plus how many had no CVE
-    reference and how many were unusable. Mirrors ``cveFeed.openvas_scan.fetch_results`` exactly: a result with no
-    CVE is still kept in ``items`` (``cves: []``), for the scanned-host set only, never stored by the server."""
-    items, no_cve, unusable, first = [], 0, 0, 1
+def _results_of(container):
+    """The ``<result>`` elements of a GMP answer, wherever gvmd put them: direct children of ``<get_results_response>`` (gvmd's own shape, from
+    ``handle_get_results`` and ``send_get_end`` in its src/gmp.c and src/gmp_get.c, 22.7 to 26.x: the ``<results start max/>`` after them is an
+    empty paging marker), or inside ``<results>`` (a report's shape, and what an older fake answered). Mirrors ``cveFeed.openvas_scan``."""
+    if container is None:
+        return []
+    return container.findall('result') or container.findall('./results/result')
+
+
+def _count(counts, filtered_only=False):
+    """The number in a ``<result_count>`` that applies to the filter asked (``<filtered>``), else in all (``<full>``, or its own text), else
+    ``None``. ``filtered_only`` for a ``get_results`` answer, whose full count is not limited to the task."""
+    if counts is None:
+        return None
+    values = (_text(counts, 'filtered'),) if filtered_only else (_text(counts, 'filtered'), _text(counts, 'full'), (counts.text or '').strip())
+    for value in values:
+        if value.isdigit():
+            return int(value)
+    return None
+
+
+def read_results(gmp, task_id):
+    """Every result of a task as parsed dicts (at most ``MAX_RESULTS``), a page at a time: ``{items, no_cve, unusable, count}``, ``count``
+    being how many results gvmd says match the filter (from the first page's ``<result_count>``; ``None`` when it does not say). A result with
+    no CVE is still kept in ``items`` (``cves: []``), for the scanned-host set only, never stored by the server."""
+    out, first = {'items': [], 'no_cve': 0, 'unusable': 0, 'count': None}, 1
     while first <= MAX_RESULTS:
         page = gmp.get_results(filter_string=f'task_id={task_id} levels=chmlg min_qod=0 apply_overrides=0 '
                                               f'sort-reverse=severity rows={RESULT_PAGE} first={first}', details=True)
-        elements = page.findall('./results/result')
+        if first == 1:
+            out['count'] = _count(page.find('result_count') if page is not None else None, filtered_only=True)
+        elements = _results_of(page)
         for element in elements:
             parsed = parse_result(element)
             if parsed is None:
-                unusable += 1
+                out['unusable'] += 1
                 continue
             if not parsed['cves']:
-                no_cve += 1
-            items.append(parsed)
+                out['no_cve'] += 1
+            out['items'].append(parsed)
         if len(elements) < RESULT_PAGE:
             break
         first += RESULT_PAGE
-    return items, no_cve, unusable
+    return out
+
+
+def fetch_results(gmp, task_id):
+    """``(items, no_cve, unusable)`` of ``read_results``. Mirrors ``cveFeed.openvas_scan.fetch_results``."""
+    got = read_results(gmp, task_id)
+    return got['items'], got['no_cve'], got['unusable']
+
+
+def gvm_result_count(task_status):
+    """How many results gvmd counts in the task's last report, or ``None`` when it does not say. gvmd 22.7 names the levels ``hole``,
+    ``warning``, ``info`` and ``log``; later versions add ``critical``, ``high``, ``medium`` and ``low`` and keep the old names as deprecated
+    copies, so each level is counted once, by whichever name is there. False positives are not counted (``apply_overrides=0`` reads none)."""
+    counts = task_status.find('./task/last_report/report/result_count') if task_status is not None else None
+    if counts is None:
+        return None
+
+    def level(*names):
+        return max(_int(_text(counts, name)) for name in names)
+    return level('critical') + level('high', 'hole') + level('medium', 'warning') + level('low', 'info') + level('log')
+
+
+def report_result_count(detail):
+    """How many results a report (``_report_detail``) holds under the filter it was read with, or ``None`` when it does not say."""
+    inner = _report_element(detail)
+    return _count(inner.find('result_count')) if inner is not None else None
 
 
 def bound_results(items, limit=MAX_PAYLOAD_BYTES):
@@ -563,8 +615,25 @@ def _report_detail(gmp, report_id):
     return gmp.get_report(report_id, filter_string='result_hosts_only=0 rows=1 min_qod=0 levels=chmlg', details=True)
 
 
+def _report_element(detail):
+    """The report itself in a ``get_reports`` answer: ``<report>`` (the envelope) holds ``<report>`` (the report)."""
+    if detail is None:
+        return None
+    inner = detail.find('.//report/report')
+    return inner if inner is not None else detail.find('.//report')
+
+
+def _finished(host):
+    """A report host gvmd finished: one with an end time (a host whose scan never ended proves nothing), or one of a gvmd that gives no times.
+    Mirrors ``cveFeed.openvas_scan._scanned_host``."""
+    return bool(_text(host, 'end')) or not (_text(host, 'start') or _text(host, 'end'))
+
+
 def _report_hosts(detail):
-    return {_text(h, 'ip') for h in detail.findall('.//report/host') if _text(h, 'ip')} if detail is not None else set()
+    """The hosts a report lists as scanned (finished, see ``_finished``)."""
+    if detail is None:
+        return set()
+    return {_text(h, 'ip') for h in detail.findall('.//report/host') if _text(h, 'ip') and _finished(h)}
 
 
 def _report_id(task_status):
@@ -589,11 +658,7 @@ def scanned_addresses(gmp, task_status, items):
 
 def report_summary(detail):
     """What a report says about its own run: host and result counts, result counts by severity, scan start and end, and gvmd's own errors."""
-    if detail is None:
-        return {}
-    inner = detail.find('.//report/report')
-    if inner is None:
-        inner = detail.find('.//report')
+    inner = _report_element(detail)
     if inner is None:
         return {}
     by_level = {}
@@ -782,6 +847,7 @@ class OpenvasRun:
         self.status = None  # gvmd's last get_task answer
         self.detail = None  # the report, once read
         self.labels = {}
+        self.keep = False  # set when gvmd's answer could not be read: the task and its report stay for a person to look at
         self._removed = set()
         self._cleanup_lock = threading.Lock()
 
@@ -829,9 +895,10 @@ class OpenvasRun:
                 with session(self.connection_factory) as gmp:
                     if task_id and stop:
                         _stop_and_wait(gmp, task_id)
-                    if keep_tasks():
-                        logger.info('keeping GVM task %s, target %s and report %s for inspection (CVENGINE_OPENVAS_KEEP_TASKS)',
-                                    task_id, target_id, self.report_id)
+                    if keep_tasks() or self.keep:
+                        logger.info('keeping GVM task %s, target %s and report %s for inspection (%s)', task_id, target_id, self.report_id,
+                                    'CVENGINE_OPENVAS_KEEP_TASKS' if keep_tasks() else 'its results could not be read; removed when this '
+                                    'Sentinel next starts')
                         self._removed.update(i for i in (task_id, target_id) if i)
                         return
                     if task_id:
@@ -942,8 +1009,10 @@ def _start(run, gmp, addresses, excluded, preferences):
 
 
 def _collect(run):
+    """The task's results, its report, and how many results gvmd itself counts for the task (the most any of the task, ``get_results`` and the
+    report says; ``None`` when none of them says)."""
     def step(gmp):
-        items, no_cve, unusable = fetch_results(gmp, run.task_id)
+        got = read_results(gmp, run.task_id)
         run.report_id = run.report_id or _report_id(run.status)
         detail = None
         if run.report_id:
@@ -951,9 +1020,13 @@ def _collect(run):
                 detail = _report_detail(gmp, run.report_id)
             except Exception as exc:  # noqa: BLE001 - the report's host list is a bonus; the results are the floor
                 logger.info('could not read the report %s (%s)', run.report_id, reason(exc))
-        return items, no_cve, unusable, detail
-    items, no_cve, unusable, run.detail = run.call(step)
-    return items, no_cve, unusable
+        return got, detail
+    got, run.detail = run.call(step)
+    counted = [c for c in (gvm_result_count(run.status), got['count'], report_result_count(run.detail)) if c is not None]
+    gvm_count = max(counted) if counted else None
+    logger.info('gvmd counts %s result(s) for task %s (report %s); %s read', gvm_count if gvm_count is not None else 'no', run.task_id,
+                run.report_id or 'unknown', len(got['items']) + got['unusable'])
+    return got['items'], got['no_cve'], got['unusable'], gvm_count
 
 
 def _empty_error(run):
@@ -977,7 +1050,13 @@ def _execute(run, addresses, excluded, hours, preferences):
         logger.warning('GVM task %s: %s; keeping what it found so far', run.task_id, ended)
     partial = ended is not None
     run.status = status
-    items, no_cve, unusable = _collect(run)
+    items, no_cve, unusable, gvm_count = _collect(run)
+    if gvm_count and not (items or unusable):
+        # An empty read of a task gvmd says has results must not reach the server as a scan that found nothing: it would count the host as
+        # scanned clean and close what earlier scans found. It is an error, and the task is kept to look at.
+        run.keep = True
+        raise OpenvasError(f'{READ_MISMATCH} ({gvm_count} counted); not reported as a clean scan, and the GVM task is kept until this '
+                           f'Sentinel restarts')
     if partial and not items:
         raise OpenvasError(f'{ended} and found nothing')
     found = {i['address'] for i in items}
