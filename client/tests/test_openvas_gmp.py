@@ -14,6 +14,23 @@ REPORT = (f'<get_reports_response status="200" status_text="OK"><report id="rep1
           f'<result_count><full>0</full><high><full>0</full></high><log><full>0</full></log></result_count>'
           f'<scan_start>2026-10-28T10:00:00Z</scan_start><scan_end>2026-10-28T11:30:00Z</scan_end>'
           f'<errors><count>0</count></errors></report></report></get_reports_response>')
+RESULT = (f'<result id="res-1"><name>Test NVT</name><owner><name>cvengine-sentinel</name></owner><host>{HOST}<asset asset_id=""/>'
+          f'<hostname>www.example.test</hostname></host><port>443/tcp</port><nvt oid="1.3.6.1.4.1.25623.1.0.100001"><type>nvt</type>'
+          f'<name>Test NVT</name><family>Web application abuses</family><cvss_base>7.5</cvss_base><tags>summary=Summary text</tags>'
+          f'<solution type="VendorFix">Update it</solution><refs><ref type="cve" id="CVE-2024-12345"/></refs></nvt><scan_nvt_version/>'
+          f'<threat>High</threat><severity>7.5</severity><qod><value>80</value><type>remote_banner</type></qod>'
+          f'<description>Installed version: 1.0</description></result>')
+
+
+def results_answer(*results, count=None):
+    """get_results as gvmd prints it (src/gmp.c handle_get_results, src/gmp_get.c send_get_end, 22.7 to 26.x): the results are direct children
+    of the response; <results start max/> after them is an empty paging marker."""
+    total = len(results) if count is None else count
+    return (f'<get_results_response status="200" status_text="OK">{"".join(results)}<filters id=""><term>task_id=task-1</term></filters>'
+            f'<sort><field>severity<order>descending</order></field></sort><results start="1" max="100"/>'
+            f'<result_count>{total}<filtered>{total}</filtered><page>{len(results)}</page></result_count></get_results_response>')
+
+
 FAMILIES = ('Denial of Service', 'Brute force attacks', 'Web application abuses', 'General')
 
 
@@ -48,7 +65,7 @@ class ScriptedGvmd:
             'start_task': '<start_task_response status="202" status_text="OK, request submitted"><report_id>rep1</report_id></start_task_response>',
             'get_tasks': ('<get_tasks_response status="200" status_text="OK"><task id="task-1"><status>Done</status><progress>-1</progress>'
                           '<last_report><report id="rep1"/></last_report></task></get_tasks_response>'),
-            'get_results': '<get_results_response status="200" status_text="OK"><results/></get_results_response>',
+            'get_results': results_answer(),
             'get_reports': REPORT,
         }
         self.script.update(script)
@@ -169,6 +186,34 @@ class RunXmlTests(GmpTestCase):
         self.assertEqual(result['scanned_addresses'], [HOST])
         self.assertEqual(result['results'], [])
         self.assertIs(result['partial'], False)
+
+    def test_a_result_gvmd_sends_is_read_and_reported(self):
+        result = self.run_scan(ScriptedGvmd(get_results=results_answer(RESULT)))
+        self.assertEqual(len(result['results']), 1)
+        self.assertEqual(result['results'][0]['cves'], ['CVE-2024-12345'])
+        self.assertEqual(result['results'][0]['address'], HOST)
+        self.assertEqual(result['scanned_addresses'], [HOST])
+
+    def test_results_asked_for_with_every_level_and_no_qod_floor(self):
+        gvmd = ScriptedGvmd(get_results=results_answer(RESULT))
+        self.run_scan(gvmd)
+        command = gvmd.commands('get_results')[0]
+        self.assertEqual(command.get('details'), '1')
+        for part in ('task_id=task-1', 'levels=chmlg', 'min_qod=0', 'apply_overrides=0', 'first=1'):
+            self.assertIn(part, command.get('filter'))
+
+    def test_a_22_7_task_that_counts_results_none_of_which_are_read_is_an_error_and_is_kept(self):
+        tasks = ('<get_tasks_response status="200" status_text="OK"><task id="task-1"><status>Done</status><progress>-1</progress>'
+                 '<last_report><report id="rep1"><timestamp>2026-10-28T11:30:00Z</timestamp><scan_start>2026-10-28T10:00:00Z</scan_start>'
+                 '<scan_end>2026-10-28T11:30:00Z</scan_end><result_count><hole>1</hole><info>0</info><log>2</log><warning>0</warning>'
+                 '<false_positive>0</false_positive></result_count><severity>7.5</severity></report></last_report></task></get_tasks_response>')
+        gvmd = ScriptedGvmd(get_tasks=tasks, get_results=results_answer(count=0))  # a read that comes back empty
+        with self.assertRaises(openvas.OpenvasError) as raised:
+            self.run_scan(gvmd)
+        self.assertIn(openvas.READ_MISMATCH, str(raised.exception))
+        self.assertIn('rep1', str(raised.exception))
+        self.assertEqual(gvmd.commands('delete_task'), [])
+        self.assertEqual(gvmd.commands('delete_target'), [])
 
 
 if __name__ == '__main__':
