@@ -401,7 +401,8 @@ can scan and why not (for example `GVM is still syncing its ... feed(s)`).
   could be read ...`), never as a host scanned clean, and its GVM task and report are kept until the Sentinel next
   starts.
 - **Results:** results without a CVE are sent as address and port only; the body is kept under 20 MB, and a run whose
-  CVE results had to be cut is marked partial.
+  CVE results had to be cut is marked partial. So is a run that hit the 5000-result cap, read fewer results than gvmd
+  counts, or whose every result was unusable: a partial run never closes what earlier scans found.
 - **Summary:** after every run the log has one line with the task's status, progress, report id, host count, results
   by severity, scan start and end, and gvmd's errors.
 - **Cleanup:** the GVM task, target and report are deleted after the run, unless `CVENGINE_OPENVAS_KEEP_TASKS=1` (or

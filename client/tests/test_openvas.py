@@ -936,6 +936,57 @@ class RunOutcomeTests(OpenvasTestCase):
         self.assertIsNone(openvas.gvm_result_count(xml('<get_tasks_response><task><last_report><report id="r"/></last_report></task>'
                                                        '</get_tasks_response>')))
 
+    def test_a_run_that_hits_the_result_cap_is_partial(self):
+        """Results come highest severity first and stop at MAX_RESULTS: what lies past the cap was never read, so the run must not close earlier
+        findings (the broker trusts ``partial``)."""
+        gmp = self.happy()
+        full = results_page(*[RESULT_WITH_CVE] * openvas.RESULT_PAGE, count=openvas.MAX_RESULTS)
+        gmp.responses['get_results'] = lambda **kw: full
+        with sessions(gmp):
+            result = openvas.run_openvas({HOST: ''})
+        self.assertEqual(len(result['results']), openvas.MAX_RESULTS)
+        self.assertIs(result['partial'], True)
+
+    def test_a_run_that_read_fewer_results_than_gvmd_counts_is_partial(self):
+        gmp = self.happy()
+        gmp.responses['get_results'] = lambda **kw: results_page(RESULT_WITH_CVE, count=3)
+        with sessions(gmp):
+            result = openvas.run_openvas({HOST: ''})
+        self.assertEqual(len(result['results']), 1)
+        self.assertIs(result['partial'], True)
+
+    def test_a_run_whose_every_result_is_unusable_is_partial_not_a_clean_scan(self):
+        gmp = self.happy()
+        gmp.responses['get_task'] = self.done_with_counts('<critical>0</critical><high>2</high><medium>0</medium><low>0</low><log>0</log>')
+        gmp.responses['get_results'] = lambda **kw: results_page(RESULT_UNUSABLE, RESULT_UNUSABLE)
+        with sessions(gmp):
+            result = openvas.run_openvas({HOST: ''})
+        self.assertEqual((result['results'], result['unusable']), ([], 2))
+        self.assertIs(result['partial'], True)
+
+    def test_a_negative_count_from_gvmd_is_zero_and_raises_no_false_mismatch(self):
+        self.assertEqual(openvas.gvm_result_count(xml(
+            '<get_tasks_response><task><last_report><report id="r"><result_count><critical>-1</critical><high>-1</high><medium>0</medium>'
+            '<low>0</low><log>-1</log></result_count></report></last_report></task></get_tasks_response>')), 0)
+        self.assertIsNone(openvas.report_result_count(xml(
+            '<get_reports_response><report id="r"><report id="r"><result_count>-1<full>-1</full><filtered>-1</filtered></result_count>'
+            '</report></report></get_reports_response>')))
+        gmp = self.happy()
+        gmp.responses['get_task'] = self.done_with_counts('<critical>0</critical><high>-1</high><medium>0</medium><low>0</low><log>0</log>')
+        gmp.responses['get_results'] = lambda **kw: results_page()
+        with sessions(gmp):
+            result = openvas.run_openvas({HOST: ''})  # a clean scan, not a read mismatch
+        self.assertEqual((result['results'], result['scanned_addresses'], result['partial']), ([], ['192.0.2.10'], False))
+
+    def test_a_count_in_digits_int_does_not_take_is_skipped_not_an_error(self):
+        for odd in ('²', '¹²', '①'):  # superscript two, superscript one two, circled one: str.isdigit() says yes to these
+            with self.subTest(odd=odd):
+                self.assertIsNone(openvas._count(xml(f'<result_count><filtered>{odd}</filtered></result_count>')))
+                self.assertIsNone(openvas.report_result_count(xml(
+                    f'<get_reports_response><report id="r"><report id="r"><result_count>{odd}<full>{odd}</full><filtered>{odd}</filtered>'
+                    '</result_count></report></report></get_reports_response>')))
+        self.assertEqual(openvas._count(xml('<result_count>9<filtered>²</filtered><full>4</full></result_count>')), 4)
+
     def test_an_interrupted_task_with_nothing_found_is_an_error(self):
         gmp = self.happy()
         gmp.responses['get_task'] = lambda *a: xml('<get_tasks_response><task><status>Interrupted</status></task></get_tasks_response>')

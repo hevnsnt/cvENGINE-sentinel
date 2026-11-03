@@ -530,7 +530,7 @@ def _count(counts, filtered_only=False):
         return None
     values = (_text(counts, 'filtered'),) if filtered_only else (_text(counts, 'filtered'), _text(counts, 'full'), (counts.text or '').strip())
     for value in values:
-        if value.isdigit():
+        if re.fullmatch(r'[0-9]+', value):  # ASCII digits only: str.isdigit() also says yes to superscripts, which int() refuses
             return int(value)
     return None
 
@@ -574,8 +574,8 @@ def gvm_result_count(task_status):
     if counts is None:
         return None
 
-    def level(*names):
-        return max(_int(_text(counts, name)) for name in names)
+    def level(*names):  # never below 0: a -1 must neither lower the sum nor make it a truthy negative
+        return max(0, *(_int(_text(counts, name)) for name in names))
     return level('critical') + level('high', 'hole') + level('medium', 'warning') + level('low', 'info') + level('log')
 
 
@@ -1051,7 +1051,8 @@ def _execute(run, addresses, excluded, hours, preferences):
     partial = ended is not None
     run.status = status
     items, no_cve, unusable, gvm_count = _collect(run)
-    if gvm_count and not (items or unusable):
+    read = len(items) + unusable
+    if gvm_count and not read:
         # An empty read of a task gvmd says has results must not reach the server as a scan that found nothing: it would count the host as
         # scanned clean and close what earlier scans found. It is an error, and the task is kept to look at.
         run.keep = True
@@ -1067,9 +1068,20 @@ def _execute(run, addresses, excluded, hours, preferences):
     if dropped_compact or dropped_cve:
         logger.warning('the results of GVM task %s were over %s bytes: left out %s without a CVE and %s with one (lowest severity first)',
                        run.task_id, MAX_PAYLOAD_BYTES, dropped_compact, dropped_cve)
-    # Results with a CVE left out must not read as fixed on the server: a cut result set is a partial one.
+    # What was not read or sent must not read as fixed on the server (the broker trusts ``partial``): a run is partial when it hit the result
+    # cap (results come highest severity first, so the tail was never read), when gvmd counts more results than were read, when every result
+    # it has was unusable, and when results with a CVE were cut to fit the payload.
+    incomplete = []
+    if read >= MAX_RESULTS:
+        incomplete.append(f'hit the cap of {MAX_RESULTS} results')
+    if gvm_count is not None and gvm_count > read:
+        incomplete.append(f'gvmd counts {gvm_count} result(s), {read} read')
+    if unusable and not items:
+        incomplete.append(f'all {unusable} result(s) unusable')
+    if incomplete:
+        logger.warning('GVM task %s is reported as partial: %s', run.task_id, '; '.join(incomplete))
     return {'results': results, 'scanned_addresses': sorted(scanned), 'without_cve': no_cve, 'unusable': unusable,
-            'partial': partial or bool(dropped_cve)}
+            'partial': partial or bool(dropped_cve) or bool(incomplete)}
 
 
 def run_openvas(hosts, excluded_families=None, max_hours_=None, register=None, connection_factory=None, preferences=None):
