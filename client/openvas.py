@@ -498,6 +498,10 @@ def parse_result(result):
     cves = sorted(set(cves) | {c for c in (x.strip().upper() for x in re.split(r'[,\s]+', _text(nvt, 'cve'))) if CVE_RE.match(c)})[:MAX_CVES]
     urls = [clean(r.get('id'), 500) for r in refs if r.get('type', '').lower() == 'url' and re.match(r'^https?://', r.get('id', ''))][:MAX_URLS]
     tags = _tags(_text(nvt, 'tags'))
+    # gvmd prints an NVT's cve and url references from its in-memory NVT cache and the CERT-Bund / DFN-CERT ones from its database, linked
+    # through the NVT's CVEs. CERT references with no CVE reference mean the cache lacks this NVT: gvmd 26.35 and later reload it only in their
+    # periodic-jobs process, until gvmd restarts (greenbone/gvmd#3220). Such a result has CVEs that were not sent.
+    stale = not cves and any(r.get('type', '').lower() in ('cert-bund', 'dfn-cert') for r in refs)
     port, port_number = _port(_text(result, 'port'))
     solution = nvt.find('solution')
     # Since GMP 20.08 the solution type is an attribute of <solution>; older feeds carried it in the tags.
@@ -510,7 +514,7 @@ def parse_result(result):
         'result': clean(_text(result, 'description'), 2000), 'summary': clean(tags.get('summary'), 1500),
         'insight': clean(tags.get('insight'), 1500), 'impact': clean(tags.get('impact'), 1500), 'affected': clean(tags.get('affected'), 800),
         'solution': clean(_text(nvt, 'solution') or tags.get('solution'), 1500), 'solution_type': clean(solution_type, 30),
-        'cvss_vector': clean(tags.get('cvss_base_vector'), 200), 'cves': cves, 'urls': urls,
+        'cvss_vector': clean(tags.get('cvss_base_vector'), 200), 'cves': cves, 'urls': urls, 'stale_refs': stale,
     }
 
 
@@ -539,7 +543,7 @@ def read_results(gmp, task_id):
     """Every result of a task as parsed dicts (at most ``MAX_RESULTS``), a page at a time: ``{items, no_cve, unusable, count}``, ``count``
     being how many results gvmd says match the filter (from the first page's ``<result_count>``; ``None`` when it does not say). A result with
     no CVE is still kept in ``items`` (``cves: []``), for the scanned-host set only, never stored by the server."""
-    out, first = {'items': [], 'no_cve': 0, 'unusable': 0, 'count': None}, 1
+    out, first = {'items': [], 'no_cve': 0, 'unusable': 0, 'count': None, 'stale': 0}, 1
     while first <= MAX_RESULTS:
         page = gmp.get_results(filter_string=f'task_id={task_id} levels=chmlg min_qod=0 apply_overrides=0 '
                                               f'sort-reverse=severity rows={RESULT_PAGE} first={first}', details=True)
@@ -553,6 +557,7 @@ def read_results(gmp, task_id):
                 continue
             if not parsed['cves']:
                 out['no_cve'] += 1
+                out['stale'] += parsed['stale_refs']
             out['items'].append(parsed)
         if len(elements) < RESULT_PAGE:
             break
@@ -848,6 +853,7 @@ class OpenvasRun:
         self.detail = None  # the report, once read
         self.labels = {}
         self.keep = False  # set when gvmd's answer could not be read: the task and its report stay for a person to look at
+        self.stale = 0  # results that came without their CVE references (a stale gvmd NVT cache, ``parse_result``)
         self._removed = set()
         self._cleanup_lock = threading.Lock()
 
@@ -1026,6 +1032,7 @@ def _collect(run):
     gvm_count = max(counted) if counted else None
     logger.info('gvmd counts %s result(s) for task %s (report %s); %s read', gvm_count if gvm_count is not None else 'no', run.task_id,
                 run.report_id or 'unknown', len(got['items']) + got['unusable'])
+    run.stale = got['stale']
     return got['items'], got['no_cve'], got['unusable'], gvm_count
 
 
@@ -1078,10 +1085,14 @@ def _execute(run, addresses, excluded, hours, preferences):
         incomplete.append(f'gvmd counts {gvm_count} result(s), {read} read')
     if unusable and not items:
         incomplete.append(f'all {unusable} result(s) unusable')
+    stale = run.stale
+    if stale:  # their CVEs exist and were not sent: an absence of them proves nothing (the server closes nothing for a partial run)
+        incomplete.append(f'{stale} result(s) came without their CVE references: gvmd\'s NVT cache is out of date, restart openvas-gvmd on this host '
+                          '(docker compose restart openvas-gvmd)')
     if incomplete:
         logger.warning('GVM task %s is reported as partial: %s', run.task_id, '; '.join(incomplete))
     return {'results': results, 'scanned_addresses': sorted(scanned), 'without_cve': no_cve, 'unusable': unusable,
-            'partial': partial or bool(dropped_cve) or bool(incomplete)}
+            'partial': partial or bool(dropped_cve) or bool(incomplete), 'nvt_cache_stale': stale}
 
 
 def run_openvas(hosts, excluded_families=None, max_hours_=None, register=None, connection_factory=None, preferences=None):
