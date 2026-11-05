@@ -48,8 +48,37 @@ jobs:
           from cvengine_scanner import contract
           assert 'site-packages' in cvengine_scanner.__file__, cvengine_scanner.__file__
           print('cvengine-scanner', cvengine_scanner.__version__, 'contract', contract.version())
-          for half in ('results', 'targets'):
+          for half in ('results', 'targets', 'results/v1'):
               assert sorted((contract.FIXTURES / half).glob('*.json')), half
+          from cvengine_scanner import nmap  # the one runtime dependency (xmltodict) came with the install
+          assert nmap.parse_xml('<nmaprun><host><status state="up"/><address addr="192.0.2.1" addrtype="ipv4"/></host></nmaprun>') is not None
+          PY
+
+  # The cvENGINE server pins the library the way this job installs it: `cvengine-scanner @ git+https://...cvENGINE-sentinel@<tag>` in its
+  # web/requirements.txt. A tag must give a package whose version is the tag, with the contract and the fixtures inside.
+  install-from-tag:
+    name: Installs from a git tag (the server's pin)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: Tag this commit locally and install it by git URL
+        run: |
+          git -c user.name=ci -c user.email=ci@example.com tag -a v99.0.0 -m "CI install check, never pushed"
+          python -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install -q "cvengine-scanner @ git+file://$GITHUB_WORKSPACE@v99.0.0"
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/venv/bin/python" -I - <<'PY'
+          import cvengine_scanner
+          from cvengine_scanner import contract, fingerprint, flags, nmap, parsers
+          assert cvengine_scanner.__version__ == '99.0.0', cvengine_scanner.__version__
+          assert (contract.FIXTURES / 'results' / 'v1' / 'nmap.json').is_file()
+          assert flags.NUCLEI_FLAGS[flags.NUCLEI_FLAGS.index('-etags') + 1] == 'dos'
+          print('installed', cvengine_scanner.__version__, 'contract', contract.version())
           PY
 
   contract:
