@@ -324,6 +324,8 @@ class PollAndExecuteTests(unittest.TestCase):
             ('openvas', {'hosts': {'192.0.2.10': 'www.example.test'}, 'excluded_families': ['Denial of Service'], 'max_hours': 4},
              {'results': [], 'scanned_addresses': [], 'without_cve': 0, 'unusable': 0},
              (({'192.0.2.10': 'www.example.test'}, ['Denial of Service'], 4), {'preferences': None})),
+            ('http_probe', HTTP_PROBE_TARGET, {'probes': [], 'touched': [], 'refused': []}, ((HTTP_PROBE_TARGET,), {})),
+            ('dns_resolve', DNS_TARGET, {'resolved': {}, 'errors': {}, 'refused': []}, ((DNS_TARGET,), {})),
             ('openvas', {'hosts': {'192.0.2.10': 'www.example.test'}, 'excluded_families': [], 'max_hours': 24, 'preferences': {'max_checks': 3}},
              {'results': [], 'scanned_addresses': [], 'without_cve': 0, 'unusable': 0, 'partial': True},
              (({'192.0.2.10': 'www.example.test'}, [], 24), {'preferences': {'max_checks': 3}})),
@@ -913,6 +915,12 @@ class ContractVersionTests(DaemonTestCase):
                 d._note_contract(reply)
 
 
+HTTP_PROBE_TARGET = {'probes': [{'id': 'p1', 'host': 'www.example.test', 'probe': 'headers-root', 'base': 'https://www.example.test'}],
+                     'scope': {'hosts': ['www.example.test'], 'domains': [], 'excluded': [], 'excluded_trees': [], 'private': False, 'addresses': [],
+                               'blocked': []}}
+DNS_TARGET = {'names': ['www.example.test'], 'scope': HTTP_PROBE_TARGET['scope']}
+
+
 class ServerContractKindsTests(DaemonTestCase):
     """cvENGINE 1.3 (contract 1, its replies name no contract) answers a poll whose ``kinds`` names one it does not have with a 400 ("kinds must be a
     list drawn from ...", agentapi.sentinel_broker.next_task) and a registration whose ``settings.disabled_kinds`` does with a 400 too: a Sentinel that
@@ -950,6 +958,17 @@ class ServerContractKindsTests(DaemonTestCase):
         self.assertEqual(len(sent), 2)
         self.assertIn('waf', self.poll_kinds_sent(d))
         self.assertTrue(any('speaks result contract 2' in line for line in logs.output))
+
+    def test_the_probe_kinds_are_asked_for_only_from_a_contract_3_server(self):
+        self.assertEqual((config.KIND_SINCE['http_probe'], config.KIND_SINCE['dns_resolve']), (3, 3))
+        d = self.make()
+        server_speaks(self, 2)
+        kinds = self.poll_kinds_sent(d)
+        self.assertIn('waf', kinds)
+        self.assertFalse({'http_probe', 'dns_resolve'} & set(kinds))  # a 1.4 server before contract 3 answers 400 to a kind it does not know
+        server_speaks(self, 3)
+        self.assertTrue({'http_probe', 'dns_resolve'} <= set(daemon.runnable_kinds()))  # what the next poll asks for
+        self.assertTrue({'http_probe', 'dns_resolve'} <= set(daemon.declared_kinds()))
 
     def test_a_heartbeat_reply_moves_it_both_ways(self):
         d = self.make()  # no reregister: only the heartbeat replies speak here

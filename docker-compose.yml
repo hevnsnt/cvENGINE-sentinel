@@ -86,6 +86,11 @@ services:
       HTTPS_PROXY: "${HTTPS_PROXY:-}"
       HTTP_PROXY: "${HTTP_PROXY:-}"
       NO_PROXY: "${NO_PROXY:-}"
+      # Optional: a proxy the in-process probes (http_probe) go through, apart from the corporate proxy above (README.md); the bypass list and
+      # whether private addresses go through it too.
+      CVENGINE_SENTINEL_PROBE_PROXY: "${CVENGINE_SENTINEL_PROBE_PROXY:-}"
+      CVENGINE_PROXY_BYPASS: "${CVENGINE_PROXY_BYPASS:-}"
+      CVENGINE_PROXY_PRIVATE: "${CVENGINE_PROXY_PRIVATE:-}"
       # Optional: 1 keeps each OpenVAS task and report in gvmd after it finishes, to investigate a scan (they are deleted otherwise).
       CVENGINE_OPENVAS_KEEP_TASKS: "${CVENGINE_OPENVAS_KEEP_TASKS:-}"
     # nmap's OS detection, naabu's SYN scanning and the UDP sweep need raw sockets; NET_RAW/NET_ADMIN are enough, no --privileged.

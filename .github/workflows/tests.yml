@@ -50,6 +50,8 @@ jobs:
           print('cvengine-scanner', cvengine_scanner.__version__, 'contract', contract.version())
           for half in ('results', 'targets', 'results/v1'):
               assert sorted((contract.FIXTURES / half).glob('*.json')), half
+          from cvengine_scanner.probes import dns, policy, version_probes  # the probes, with no dependency of their own
+          assert 'site-packages' in version_probes.__file__, version_probes.__file__
           from cvengine_scanner import nmap  # the one runtime dependency (xmltodict) came with the install
           assert nmap.parse_xml('<nmaprun><host><status state="up"/><address addr="192.0.2.1" addrtype="ipv4"/></host></nmaprun>') is not None
           PY

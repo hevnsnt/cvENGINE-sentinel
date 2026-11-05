@@ -8,7 +8,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cvengine-scanner"
-description = "Scan flags, output parsers, scope floor and result contract shared by the cvENGINE Sentinel and server"
+description = "Scan flags, output parsers, scope floor, network probes and result contract shared by the cvENGINE Sentinel and server"
 dynamic = ["version"]
 requires-python = ">=3.12"
 license = "GPL-3.0-only"
@@ -21,7 +21,7 @@ test = ["jsonschema==4.26.0"]  # validates the fixtures against the contract (JS
 Source = "https://github.com/hevnsnt/cvENGINE-sentinel"
 
 [tool.setuptools]
-packages = ["cvengine_scanner", "cvengine_scanner.contract"]
+packages = ["cvengine_scanner", "cvengine_scanner.contract", "cvengine_scanner.probes"]
 
 [tool.setuptools.package-data]
 cvengine_scanner = ["contract/*.json", "fixtures/results/*.json", "fixtures/results/v*/*.json", "fixtures/targets/*.json", "fixtures/partials/*.json"]
