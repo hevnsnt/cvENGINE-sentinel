@@ -670,6 +670,9 @@ and no Django. The image installs it with `pip install`.
 git tag -a v1.4.0 -m "cvengine-scanner 1.4.0" && git push origin v1.4.0
 ```
 
+Or, without a local clone, run the **Tag a release** workflow (Actions, `tag-release.yml`) with the tag and, optionally, the commit
+of `main` to tag. It refuses a tag that is not `vMAJOR.MINOR.PATCH`, a commit that is not on `main`, and a tag that already exists.
+
 Use `vMAJOR.MINOR.PATCH`. Raise MAJOR when a function the server calls changes or goes away, and MINOR for a new kind or
 function. A tag is never moved or reused. The server pins the tag in its `web/requirements.txt`, and its Docker build and its
 CI both install it from there:
