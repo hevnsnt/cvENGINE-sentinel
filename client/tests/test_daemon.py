@@ -326,6 +326,7 @@ class PollAndExecuteTests(unittest.TestCase):
              (({'192.0.2.10': 'www.example.test'}, ['Denial of Service'], 4), {'preferences': None})),
             ('http_probe', HTTP_PROBE_TARGET, {'probes': [], 'touched': [], 'refused': []}, ((HTTP_PROBE_TARGET,), {})),
             ('dns_resolve', DNS_TARGET, {'resolved': {}, 'errors': {}, 'refused': []}, ((DNS_TARGET,), {})),
+            ('bucket_check', BUCKET_TARGET, {'buckets': [], 'touched': [], 'refused': []}, ((BUCKET_TARGET,), {})),
             ('openvas', {'hosts': {'192.0.2.10': 'www.example.test'}, 'excluded_families': [], 'max_hours': 24, 'preferences': {'max_checks': 3}},
              {'results': [], 'scanned_addresses': [], 'without_cve': 0, 'unusable': 0, 'partial': True},
              (({'192.0.2.10': 'www.example.test'}, [], 24), {'preferences': {'max_checks': 3}})),
@@ -919,6 +920,8 @@ HTTP_PROBE_TARGET = {'probes': [{'id': 'p1', 'host': 'www.example.test', 'probe'
                      'scope': {'hosts': ['www.example.test'], 'domains': [], 'excluded': [], 'excluded_trees': [], 'private': False, 'addresses': [],
                                'blocked': []}}
 DNS_TARGET = {'names': ['www.example.test'], 'scope': HTTP_PROBE_TARGET['scope']}
+BUCKET_TARGET = {'buckets': [{'id': 's3:example-static', 'provider': 's3', 'name': 'example-static'}], 'rate': 2.0,
+                 'scope': {**HTTP_PROBE_TARGET['scope'], 'hosts': [], 'domains': ['amazonaws.com']}}
 
 
 class ServerContractKindsTests(DaemonTestCase):
@@ -960,7 +963,7 @@ class ServerContractKindsTests(DaemonTestCase):
         self.assertTrue(any('speaks result contract 2' in line for line in logs.output))
 
     def test_the_probe_kinds_are_asked_for_only_from_a_contract_3_server(self):
-        self.assertEqual((config.KIND_SINCE['http_probe'], config.KIND_SINCE['dns_resolve']), (3, 3))
+        self.assertEqual((config.KIND_SINCE['http_probe'], config.KIND_SINCE['dns_resolve'], config.KIND_SINCE['bucket_check']), (3, 3, 3))
         d = self.make()
         server_speaks(self, 2)
         kinds = self.poll_kinds_sent(d)
