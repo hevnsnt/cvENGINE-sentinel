@@ -33,7 +33,7 @@ from cvengine_scanner.flags import (DISCOVER_FLAGS, KERNEL_MARKERS, MAX_DISCOVER
 from cvengine_scanner.parsers import (MAX_FINDINGS, MAX_FINDINGS_BYTES, MAX_LIST_ITEMS, ToolOutputError, parse_discover_xml,  # noqa: F401
                                       parse_naabu_output, parse_nmap_xml, parse_nuclei_jsonl, parse_testssl_report, parse_waf_output)
 
-from . import config, openvas, scope
+from . import config, egress, openvas, scope
 
 logger = logging.getLogger('sentinel.tools')
 
@@ -59,6 +59,15 @@ NMAP_MIN_TIMEOUT, NMAP_SECONDS_PER_TARGET, NMAP_MAX_TIMEOUT = 600, 90, 3600
 class TargetError(ValueError):
     """A SentinelTask's ``target`` did not have the shape a Sentinel will ever act on, or named something this Sentinel never scans.
     Always reported back as ``{'outcome': 'error', ...}``, never retried blindly, and the raw target is never passed to a shell."""
+
+
+def _proxy_args(tool, hosts):
+    """The arguments that send ``tool`` through cvENGINE's egress proxy (a built-in scanner only, ``client.egress``), or ``TargetError`` when the proxy
+    is on and none of its proxies suits the tool: the run never goes out directly then."""
+    try:
+        return egress.for_tool(tool, hosts)
+    except egress.ProxyUnavailable as exc:
+        raise TargetError(str(exc)) from None
 
 
 class ToolExitError(RuntimeError):
@@ -372,13 +381,18 @@ def _clean_words(values, pattern):
     return sorted({v for v in values if isinstance(v, str) and pattern.fullmatch(v)})
 
 
-def run_nuclei(targets, tags=None, severities=None, timeout=3600, register=None, templates=None):
+def run_nuclei(targets, tags=None, severities=None, timeout=3600, register=None, templates=None, secret_file=None):
     """Host names are passed to nuclei as names, because each finding reports the host it was given. They were judged by scope (and by
     every address they resolved to) just before; nuclei resolves them again, so a name whose DNS answer changes in between is the one gap.
     ``templates`` is a directory of approved templates (the server's verified bundle, ``client.templates``): nuclei then runs exactly that set and
-    nothing else; without it nuclei uses the templates baked into this image."""
+    nothing else; without it nuclei uses the templates baked into this image. ``secret_file`` is a signed-in run's nuclei secrets file
+    (``client.signed_in``): passed with ``-sf`` and ``-dr`` (no redirects, so the sign-in is never carried to wherever one leads), as the server does."""
     targets = validate_targets(targets, endpoint=True)
-    flags = list(NUCLEI_FLAGS)
+    flags = list(NUCLEI_FLAGS) + _proxy_args('nuclei', targets)
+    if secret_file is not None:
+        if not isinstance(secret_file, str) or not os.path.isabs(secret_file) or not os.path.isfile(secret_file):
+            raise TargetError('the signed-in run has no usable secrets file')
+        flags += ['-sf', secret_file, '-dr']
     if templates is not None:
         if not isinstance(templates, str) or not os.path.isabs(templates) or not os.path.isdir(templates):
             raise TargetError('the approved template directory is not usable')
@@ -427,7 +441,7 @@ def run_testssl(host, ip, port, starttls=None, timeout=900, register=None):
     destination = f'[{host}]:{port}' if ':' in host else f'{host}:{port}'
     with tempfile.TemporaryDirectory(prefix='testssl-') as work:
         out = os.path.join(work, 'out.json')
-        argv = [TESTSSL_BIN, *TESTSSL_FLAGS, '--ip', ip, '--jsonfile', out]
+        argv = [TESTSSL_BIN, *TESTSSL_FLAGS, *_proxy_args('testssl', [host]), '--ip', ip, '--jsonfile', out]
         if starttls:
             if not isinstance(starttls, str) or not _STARTTLS.fullmatch(starttls):
                 raise TargetError(f'not a usable starttls: {str(starttls)[:30]!r}')
@@ -508,7 +522,7 @@ def run_wpscan(url, token='', timeout=900, register=None):
         env['WPSCAN_API_TOKEN'] = token
     with tempfile.TemporaryDirectory(prefix='wpscan-') as work:
         out = os.path.join(work, 'report.json')
-        argv = [WPSCAN_BIN, '--url', url, *WPSCAN_ARGS, '--max-scan-duration', str(max(30, timeout - 30)), '-o', out]
+        argv = [WPSCAN_BIN, '--url', url, *WPSCAN_ARGS, *_proxy_args('wpscan', [url]), '--max-scan-duration', str(max(30, timeout - 30)), '-o', out]
         proc = _start(argv, register, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         try:
             out_text, err = proc.communicate(timeout=timeout)
@@ -550,7 +564,7 @@ def run_waf(host, ip, port, scheme, timeout=WAFW00F_TIMEOUT, register=None):
         netloc += f':{port}'
     with tempfile.TemporaryDirectory(prefix='wafw00f-') as work:
         out = os.path.join(work, 'out.json')
-        _run([WAFW00F_BIN, *wafw00f_flags(timeout), '-o', out, f'{scheme}://{netloc}/'], timeout, register)
+        _run([WAFW00F_BIN, *wafw00f_flags(timeout), *_proxy_args('wafw00f', [host]), '-o', out, f'{scheme}://{netloc}/'], timeout, register)
         try:
             with open(out, encoding='utf-8', errors='replace') as handle:
                 report = handle.read(MAX_WAF_OUTPUT)
