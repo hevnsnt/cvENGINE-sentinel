@@ -569,9 +569,28 @@ def run_waf(host, ip, port, scheme, timeout=WAFW00F_TIMEOUT, register=None):
     return parse_waf_output(report, strict=True)
 
 
+def run_http_probe(target, register=None):
+    """The ``http_probe`` kind: the version and identity probes cvENGINE planned, in this process (``cvengine_scanner.probes.version_probes``), under
+    the scope policy the task carries; no tool is started, so ``register`` is unused."""
+    from cvengine_scanner.probes import version_probes
+    try:
+        return version_probes.run_batch(target)
+    except ValueError as exc:
+        raise TargetError(f'not a usable http_probe task ({exc})') from None
+
+
+def run_dns_resolve(target, register=None):
+    """The ``dns_resolve`` kind: this Sentinel's resolver answers for the names of the task (``cvengine_scanner.probes.dns``)."""
+    from cvengine_scanner.probes import dns
+    try:
+        return dns.run_batch(target)
+    except ValueError as exc:
+        raise TargetError(f'not a usable dns_resolve task ({exc})') from None
+
+
 RUNNERS = {'nmap': run_nmap, 'naabu': run_naabu, 'nuclei_light': run_nuclei, 'nuclei_targeted': run_nuclei,
            'nuclei_deep': run_nuclei, 'testssl': run_testssl, 'nmap_udp': run_nmap_udp, 'wpscan': run_wpscan,
-           'openvas': openvas.run_openvas, 'discover': run_discover, 'waf': run_waf,
+           'openvas': openvas.run_openvas, 'discover': run_discover, 'waf': run_waf, 'http_probe': run_http_probe, 'dns_resolve': run_dns_resolve,
            'bbot_discovery': bbot.run_bbot_discovery}  # streamed: the daemon passes it its client and task id (client/bbot.py)
 
 
