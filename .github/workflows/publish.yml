@@ -1,0 +1,187 @@
+name: Publish
+
+# Builds the Sentinel image for amd64 and arm64 and pushes it to ghcr.io/hevnsnt/cvengine-sentinel, with an SBOM and build provenance attached to
+# each platform's image. cvENGINE pins it by digest (its scanner.lock.json): the built-in scanner of every install runs exactly the image this
+# workflow pushed, and the digest is printed in the job summary for that pin.
+#
+# Tags: `sha-<12 characters of the commit>` (the version the client reports, client/config.py version()), `main` for the newest build of main, and
+# for a git tag `vX.Y.Z` the tags `X.Y.Z` and `X.Y`. A tag is only a name: what a server pins is the digest.
+#
+# Each platform builds on a runner of its own architecture (nmap is compiled on arm64, which under emulation takes hours), pushes its image by
+# digest only, and the last job joins the two into one multi-platform image under the tags. Pull requests never push: image.yml builds and checks
+# them. A manual run publishes only from main or a tag.
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/hevnsnt/cvengine-sentinel
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }}
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+            slug: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            slug: arm64
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push by digest, with an SBOM and provenance
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          pull: true
+          no-cache: true  # every published image is built from the Dockerfile's pins, never from a layer an older build left in a cache
+          sbom: true
+          provenance: mode=max
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+      - name: Keep the digest for the join
+        run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          digest='${{ steps.build.outputs.digest }}'
+          [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::the build returned no digest ($digest)"; exit 1; }
+          echo "$digest" > "$RUNNER_TEMP/digests/${{ matrix.slug }}"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: digest-${{ matrix.slug }}
+          path: ${{ runner.temp }}/digests/${{ matrix.slug }}
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Join the platforms, tag, check and print the digest
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: digest-*
+          path: ${{ runner.temp }}/digests
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Tags
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        env:
+          DOCKER_METADATA_SHORT_SHA_LENGTH: 12  # the length of the version the client reports
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=sha,prefix=sha-
+            type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+          flavor: latest=false
+      - name: Join amd64 and arm64 under the tags
+        run: |
+          sources=()
+          for slug in amd64 arm64; do
+            digest=$(cat "$RUNNER_TEMP/digests/$slug")
+            sources+=("${IMAGE}@${digest}")
+          done
+          tags=()
+          while read -r tag; do [ -n "$tag" ] && tags+=(-t "$tag"); done <<<"$DOCKER_METADATA_OUTPUT_TAGS"
+          docker buildx imagetools create "${tags[@]}" "${sources[@]}"
+      - name: The published image has both platforms, its SBOM and provenance
+        id: digest
+        run: |
+          short=$(git rev-parse --short=12 HEAD)
+          ref="${IMAGE}:sha-${short}"
+          digest=$(docker buildx imagetools inspect "$ref" --format '{{json .Manifest}}' | python3 -c 'import json, sys; print(json.load(sys.stdin)["digest"])')
+          [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::could not read the digest of $ref"; exit 1; }
+          platforms=$(docker buildx imagetools inspect "$ref" --format '{{json .Manifest}}' | python3 -c '
+          import json, sys
+          m = json.load(sys.stdin)
+          print(" ".join(sorted("{}/{}".format(x["platform"]["os"], x["platform"]["architecture"]) for x in m.get("manifests", []) if x.get("platform", {}).get("os") != "unknown")))')
+          echo "platforms: $platforms"
+          [ "$platforms" = "linux/amd64 linux/arm64" ] || { echo "::error::the image does not carry exactly amd64 and arm64 ($platforms)"; exit 1; }
+          for arch in amd64 arm64; do
+            docker buildx imagetools inspect "$ref" --format "{{ json (index .SBOM \"linux/$arch\") }}" | python3 -c 'import json, sys; d = json.load(sys.stdin); assert d and d.get("SPDX"), "no SBOM"' \
+              || { echo "::error::no SBOM for linux/$arch"; exit 1; }
+            docker buildx imagetools inspect "$ref" --format "{{ json (index .Provenance \"linux/$arch\") }}" | python3 -c 'import json, sys; d = json.load(sys.stdin); assert d and d.get("SLSA"), "no provenance"' \
+              || { echo "::error::no provenance for linux/$arch"; exit 1; }
+          done
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "short=$short" >> "$GITHUB_OUTPUT"
+      - name: The image runs, reports its commit, and carries nothing it must not
+        run: |
+          ref="${IMAGE}@${{ steps.digest.outputs.digest }}"
+          docker pull -q "$ref"
+          stamped=$(docker run --rm --entrypoint python3 "$ref" -c "from client import config; print(config.version())")
+          [ "$stamped" = "${{ steps.digest.outputs.short }}" ] || { echo "::error::the image reports version $stamped, not ${{ steps.digest.outputs.short }}"; exit 1; }
+          docker run --rm --entrypoint python3 "$ref" -m client.control status | python3 -m json.tool >/dev/null
+          docker run --rm --entrypoint sh "$ref" -c '
+            bad=""
+            for tool in git go gvmd openvas ospd-openvas docker; do command -v "$tool" >/dev/null 2>&1 && bad="$bad $tool"; done
+            [ -e /usr/local/go ] && bad="$bad /usr/local/go"
+            [ -e /root/go ] && bad="$bad /root/go"
+            [ -S /var/run/docker.sock ] && bad="$bad docker.sock"
+            [ -z "$bad" ] || { echo "the image carries:$bad"; exit 1; }'
+      - name: Job summary
+        run: |
+          {
+            echo "## ghcr.io/hevnsnt/cvengine-sentinel"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Commit | \`${{ github.sha }}\` |"
+            echo "| Version (client) | \`${{ steps.digest.outputs.short }}\` |"
+            echo "| Digest | \`${{ steps.digest.outputs.digest }}\` |"
+            echo "| Platforms | linux/amd64, linux/arm64 |"
+            echo
+            echo "Tags:"
+            echo
+            while read -r tag; do [ -n "$tag" ] && echo "- \`$tag\`"; done <<<"$DOCKER_METADATA_OUTPUT_TAGS"
+            echo
+            echo "Pin it in cvENGINE's \`scanner.lock.json\`:"
+            echo
+            echo '```json'
+            echo "{\"image\": \"${IMAGE}\", \"digest\": \"${{ steps.digest.outputs.digest }}\", \"version\": \"${{ steps.digest.outputs.short }}\"}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

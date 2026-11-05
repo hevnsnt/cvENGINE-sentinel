@@ -36,7 +36,7 @@ from cvengine_scanner.parsers import (MAX_FINDINGS, MAX_FINDINGS_BYTES, MAX_LIST
                                       parse_naabu_output, parse_nmap_xml, parse_nuclei_jsonl, parse_port_reasons, parse_testssl_report,
                                       parse_waf_output)
 
-from . import config, dbprobe, egress, openvas, rdp, scope
+from . import bbot, config, dbprobe, egress, openvas, rdp, scope
 
 logger = logging.getLogger('sentinel.tools')
 
@@ -894,15 +894,17 @@ def run_nuclei_validate(mode, template, targets=None, register=None):
 
 RUNNERS = {'nmap': run_nmap, 'naabu': run_naabu, 'nuclei_light': run_nuclei, 'nuclei_targeted': run_nuclei,
            'nuclei_deep': run_nuclei, 'testssl': run_testssl, 'nmap_udp': run_nmap_udp, 'wpscan': run_wpscan,
-           'openvas': openvas.run_openvas, 'discover': run_discover, 'waf': run_waf, 'nmap_full': run_nmap_full, 'nmap_verify': run_nmap_verify,
-           'node2shell': run_node2shell, 'rdp_shot': run_rdp_shot, 'db_probe': run_db_probe, 'path_probe': run_path_probe,
-           'nuclei_validate': run_nuclei_validate}
+           'openvas': openvas.run_openvas, 'discover': run_discover, 'waf': run_waf,
+           'bbot_discovery': bbot.run_bbot_discovery,  # streamed: the daemon passes it its client and task id (client/bbot.py)
+           'nmap_full': run_nmap_full, 'nmap_verify': run_nmap_verify, 'node2shell': run_node2shell, 'rdp_shot': run_rdp_shot,
+           'db_probe': run_db_probe, 'path_probe': run_path_probe, 'nuclei_validate': run_nuclei_validate}
 
 
 # --- version probing, for the capabilities a bootstrapping Sentinel declares ------------------------------------------
 
 VERSION_ARGS = {'nmap': [NMAP_BIN, '--version'], 'naabu': [NAABU_BIN, '-version'], 'nuclei': [NUCLEI_BIN, '-version'],
-                'testssl': [TESTSSL_BIN, '--version'], 'wpscan': [WPSCAN_BIN, '--version'], 'wafw00f': [WAFW00F_BIN, '--version']}
+                'testssl': [TESTSSL_BIN, '--version'], 'wpscan': [WPSCAN_BIN, '--version'], 'wafw00f': [WAFW00F_BIN, '--version'],
+                'bbot': [bbot.BBOT_BIN, '--version']}
 
 
 def gvm_available():
