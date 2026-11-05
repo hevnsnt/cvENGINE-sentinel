@@ -145,9 +145,12 @@ RUN pip install --no-cache-dir wafw00f==${WAFW00F_VERSION} PySocks==${PYSOCKS_VE
 # client's. The same pins as the server repository's web/Dockerfile (BBOT_VERSION, TZDATA_VERSION: without zone data bbot cannot find "UTC").
 ARG BBOT_VERSION=3.0.2
 ARG TZDATA_VERSION=2026.6
-RUN python3 -m venv /opt/bbot-venv && \
+# One of its dependencies (yara-python) is built from source on this Python, so the headers it compiles against are installed for the build only.
+RUN apt-get update -y && apt-get install -y --no-install-recommends python3-dev libssl-dev && \
+    python3 -m venv /opt/bbot-venv && \
     /opt/bbot-venv/bin/pip install --no-cache-dir bbot==${BBOT_VERSION} tzdata==${TZDATA_VERSION} && \
-    ln -s /opt/bbot-venv/bin/bbot /usr/local/bin/bbot
+    ln -s /opt/bbot-venv/bin/bbot /usr/local/bin/bbot && \
+    apt-get purge -y python3-dev libssl-dev && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
 # Fail the build when this bbot no longer reads API keys the way client/bbot.py hands them over (a preset file listed after the named presets) or
 # no longer loads gowitness. It runs no scan, but bbot installs the dependencies of the modules it loads before the dry run stops, so this is also
 # what bakes gowitness and its browser into the image instead of fetching them in a running Sentinel. It runs as root (bbot installs system
