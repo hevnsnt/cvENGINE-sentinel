@@ -22,6 +22,20 @@ RUN python3 -m venv /opt/bbot-venv && \
     /opt/bbot-venv/bin/pip install --no-cache-dir bbot==${BBOT_VERSION} tzdata==${TZDATA_VERSION} && \
     /opt/bbot-venv/bin/bbot --version
 
+# The Python packages that ship no wheel for this image's Python on every architecture (arc4, a C extension, everywhere; aardwolf, a Rust
+# extension, on arm64) are built here, in a stage that is thrown away: the same toolchain the server repository's web/Dockerfile builds them with
+# (build-essential, python3-dev, rustc, cargo), on the same base image, so the wheels match the image's Python. Only the wheels are copied into the
+# image below, which installs them with --no-index: no Python headers or Rust toolchain ship in it, and nothing is compiled or fetched there.
+FROM ubuntu:26.04@sha256:0e73b71479e7bc5f006bca872e25c3cd680dc052a0116f90d63ae363537db0dd AS wheels
+ENV DEBIAN_FRONTEND="noninteractive" PIP_DISABLE_PIP_VERSION_CHECK=1
+RUN apt-get update -y && \
+    apt-get install -y --no-install-recommends build-essential ca-certificates cargo python3 python3-dev python3-venv rustc && \
+    rm -rf /var/lib/apt/lists/*
+RUN python3 -m venv /opt/wheelvenv
+COPY requirements.txt /tmp/requirements.txt
+RUN /opt/wheelvenv/bin/pip install --no-cache-dir pip==25.2 setuptools==80.9.0 wheel==0.45.1 && \
+    /opt/wheelvenv/bin/pip wheel --no-cache-dir -r /tmp/requirements.txt -w /wheels
+
 FROM ubuntu:26.04@sha256:0e73b71479e7bc5f006bca872e25c3cd680dc052a0116f90d63ae363537db0dd
 
 ARG GOVERSION=1.27.3
@@ -185,8 +199,11 @@ RUN python3 -m venv /opt/venv
 COPY requirements.txt /opt/sentinel/requirements.txt
 # The bootstrap packages are pinned like everything else (requirements.txt pins the client's own). setuptools-scm and packaging build the scanner
 # library below without build isolation, so the build tools are these pins and nothing fetched at build time.
+# The client's own packages come from the wheels built in the first stage, and only from there (--no-index).
+COPY --from=wheels /wheels /tmp/wheels
 RUN pip install --no-cache-dir pip==25.2 setuptools==80.9.0 wheel==0.45.1 setuptools-scm==8.3.1 packaging==25.0 && \
-    pip install --no-cache-dir -r /opt/sentinel/requirements.txt
+    pip install --no-cache-dir --no-index --find-links /tmp/wheels -r /opt/sentinel/requirements.txt && \
+    rm -rf /tmp/wheels
 
 # wafw00f, pinned like every other tool, into the same venv: a plain pip package, no compiler and no network at run time.
 RUN pip install --no-cache-dir wafw00f==${WAFW00F_VERSION} PySocks==${PYSOCKS_VERSION} && wafw00f --version | grep "v${WAFW00F_VERSION}" >/dev/null

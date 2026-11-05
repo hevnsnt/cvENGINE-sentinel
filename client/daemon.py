@@ -747,6 +747,24 @@ class Daemon:
             out = runner(target.get('host') or '', target.get('ip') or '', target.get('port'), target.get('scheme') or '', register=register)
         elif kind == 'bbot_discovery':  # streamed: it posts its batches itself and returns the result that closes the run
             return runner(target, self.client, task['id'], register=register, internal=config.is_internal(), halted=self._halted)
+        elif kind in ('http_probe', 'dns_resolve'):  # in-process probes: the whole target, scope policy included
+            out = runner(target, register=register)
+        elif kind == 'nmap_full':
+            out = runner(target.get('address') or '', register=register)
+        elif kind == 'nmap_verify':
+            out = runner(target.get('address') or '', target.get('ports'), version_all=target.get('version_all') is True,
+                         version_intensity=target.get('version_intensity'), scripts=target.get('scripts'), host_timeout=target.get('host_timeout'),
+                         register=register)
+        elif kind == 'node2shell':
+            out = runner(target.get('url') or '', register=register)
+        elif kind == 'rdp_shot':
+            out = runner(target.get('address') or '', target.get('port'), register=register)
+        elif kind == 'db_probe':
+            out = runner(target.get('address') or '', target.get('port'), target.get('db'), register=register)
+        elif kind == 'path_probe':
+            out = runner(target.get('targets'), register=register)
+        elif kind == 'nuclei_validate':
+            out = runner(target.get('mode'), target.get('template'), target.get('targets'), register=register)
         elif kind == 'secrets_scan':
             out = runner(target, register=register, rules=self._secret_rules(target))
         else:  # openvas, the only other kind with a runner

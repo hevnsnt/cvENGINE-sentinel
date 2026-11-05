@@ -43,9 +43,18 @@ defaults:
 
 jobs:
   build:
-    name: Build and smoke-test the Sentinel image
-    runs-on: ubuntu-latest
+    # each architecture builds on a native runner (the server repository's build-pr.yml does the same; arm64 under QEMU takes hours)
+    name: Build and smoke-test the Sentinel image${{ matrix.arch == 'arm64' && ' (arm64)' || '' }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
@@ -73,6 +82,17 @@ jobs:
         run: |
           docker run --rm --entrypoint bbot cvengine-sentinel-local:ci --version | grep -F "$(grep -m1 '^ARG BBOT_VERSION=' Dockerfile | cut -d= -f2)"
           docker run --rm --entrypoint sh cvengine-sentinel-local:ci -c 'test -w "$HOME/.bbot" && echo "bbot home: $HOME/.bbot"'
+      - name: The contract 3 kinds' packages import, and the toolchain that built them stayed in the wheels stage
+        run: |
+          docker run --rm --entrypoint python3 cvengine-sentinel-local:ci -c "
+          import arc4, h11, pymongo, pymysql, redis
+          from aardwolf.commons.factory import RDPConnectionFactory
+          from client import config, rdp, tools
+          from client.vendor import node2shell
+          assert rdp.available()
+          assert {'nmap_full', 'nmap_verify', 'node2shell', 'rdp_shot', 'db_probe', 'path_probe', 'nuclei_validate'} <= set(tools.RUNNERS) & set(config.CAPABILITIES)
+          print('contract 3 kinds ready')"
+          docker run --rm --entrypoint sh cvengine-sentinel-local:ci -c '! command -v rustc && ! command -v cargo && ! ls /usr/include/python3*/Python.h 2>/dev/null'
       - name: Kingfisher runs as the image's unprivileged user, with its notices, and the client declares secrets_scan
         run: |
           docker run --rm --entrypoint kingfisher cvengine-sentinel-local:ci --version

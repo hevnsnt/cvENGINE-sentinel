@@ -3,7 +3,7 @@ name: OpenVAS integration
 # Brings up the pinned Greenbone gvmd and runs the Sentinel's login bootstrap and readiness check against it, because a mock cannot catch gvmd
 # refusing a request python-gvm builds (the default user changing its own password answered "Failed to find user", 404, and shipped untested).
 # It does NOT run a scan: a scan needs the vulnerability-test feeds, which take hours and tens of GB to sync; see README.md, "Testing OpenVAS".
-# Runs when the OpenVAS client, the compose pins, the image or the pinned python-gvm change, weekly (Greenbone replaces what its images point
+# Runs when the OpenVAS client, the compose pins, the image or the pinned python-gvm change, daily (Greenbone replaces what its images point
 # to, so a pin can vanish from the registry), and on demand.
 on:
   pull_request:
@@ -28,7 +28,7 @@ on:
       - scripts/greenbone-digests.sh
       - .github/workflows/openvas-integration.yml
   schedule:
-    - cron: "23 5 * * 1"
+    - cron: "23 5 * * *"
   workflow_dispatch:
 
 permissions:

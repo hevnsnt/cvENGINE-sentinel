@@ -27,13 +27,16 @@ import tempfile
 import threading
 import time
 
-from cvengine_scanner.flags import (DISCOVER_FLAGS, KERNEL_MARKERS, MAX_DISCOVER_ADDRESSES, MAX_DISCOVER_HOSTS, MAX_OPEN_PER_IP, MAX_TARGETS,  # noqa: F401
-                                    NAABU_FLAGS, NMAP_FLAGS, NUCLEI_FLAGS, TESTSSL_FLAGS, UDP_NSE_SCRIPTS, UDP_PORTS, WAFW00F_TIMEOUT, WPSCAN_ARGS, host_of,
-                                    udp_nmap_flags, wafw00f_flags)
+from cvengine_scanner.flags import (DISCOVER_FLAGS, KERNEL_MARKERS, MAX_DISCOVER_ADDRESSES, MAX_DISCOVER_HOSTS, MAX_OPEN_PER_IP,  # noqa: F401
+                                    MAX_PATH_TARGETS, MAX_TARGETS, MAX_TEMPLATE_BYTES, MAX_VERIFY_PORTS, NAABU_FLAGS, NMAP_FLAGS, NMAP_FULL_FLAGS,
+                                    NMAP_VERIFY_FLAGS, NSE_SCRIPT_TIMEOUT, NSE_SCRIPTS, NUCLEI_FIXTURE_FLAGS, NUCLEI_FLAGS, NUCLEI_TEMPLATE_FLAGS,
+                                    NUCLEI_VALIDATE_FLAGS, PATH_PROBE_ODD, PATH_PROBE_PLAIN, TESTSSL_FLAGS, UDP_NSE_SCRIPTS, UDP_PORTS, WAFW00F_TIMEOUT,
+                                    WPSCAN_ARGS, host_of, udp_nmap_flags, wafw00f_flags)
 from cvengine_scanner.parsers import (MAX_FINDINGS, MAX_FINDINGS_BYTES, MAX_LIST_ITEMS, ToolOutputError, parse_discover_xml,  # noqa: F401
-                                      parse_naabu_output, parse_nmap_xml, parse_nuclei_jsonl, parse_testssl_report, parse_waf_output)
+                                      parse_naabu_output, parse_nmap_xml, parse_nuclei_jsonl, parse_port_reasons, parse_testssl_report,
+                                      parse_waf_output)
 
-from . import bbot, config, egress, openvas, scope
+from . import bbot, config, dbprobe, egress, openvas, rdp, scope
 
 logger = logging.getLogger('sentinel.tools')
 
@@ -571,10 +574,351 @@ def run_waf(host, ip, port, scheme, timeout=WAFW00F_TIMEOUT, register=None):
     return parse_waf_output(report, strict=True)
 
 
+def run_http_probe(target, register=None):
+    """The ``http_probe`` kind: the version and identity probes cvENGINE planned, in this process (``cvengine_scanner.probes.version_probes``), under
+    the scope policy the task carries; no tool is started, so ``register`` is unused."""
+    from cvengine_scanner.probes import version_probes
+    try:
+        return version_probes.run_batch(target)
+    except ValueError as exc:
+        raise TargetError(f'not a usable http_probe task ({exc})') from None
+
+
+def run_dns_resolve(target, register=None):
+    """The ``dns_resolve`` kind: this Sentinel's resolver answers for the names of the task (``cvengine_scanner.probes.dns``)."""
+    from cvengine_scanner.probes import dns
+    try:
+        return dns.run_batch(target)
+    except ValueError as exc:
+        raise TargetError(f'not a usable dns_resolve task ({exc})') from None
+
+
+# --- nmap_full and nmap_verify: one address, the raw report read by the server's own parser -----------------------------------------------
+
+MAX_NMAP_REPORT = 4 * 1024 * 1024  # agentapi.sentinel_broker.MAX_NMAP_UDP_XML: the server refuses a larger report
+
+
+def _one_address(value):
+    try:
+        return scope.check_ip(value)
+    except scope.ScopeError as exc:
+        raise TargetError(f'not a usable address: {str(value)[:60]!r} ({exc})') from None
+
+
+def _finished(xml):
+    """``xml`` when it is a finished nmap report, else ``ToolOutputError``: a cut-off sweep must never read as "nothing open"."""
+    parse_nmap_xml(xml, strict=True)
+    return xml
+
+
+def run_nmap_full(address, timeout=1500, register=None):
+    """Every TCP port of one address, open ports only (the server's background full sweep), as the raw ``-oX`` report: the server reads it with the
+    same parser as a local sweep and keeps only the address it asked about."""
+    address = _one_address(address)
+    argv = [NMAP_BIN, *(['-6'] if _is_ipv6(address) else []), *NMAP_FULL_FLAGS, '-oX', '-', address]
+    return {'xml': _finished(_run(argv, timeout, register, max_bytes=MAX_NMAP_REPORT))}
+
+
+def run_nmap_verify(address, ports, version_all=False, version_intensity=None, scripts=None, host_timeout=None, timeout=280, register=None):
+    """Service detection on the named ports of one address, at full intensity (``version_all``) or the named one, with NSE scripts from the reviewed
+    list only (``NSE_SCRIPTS``: a name not on it is refused, never run). Returns the raw ``-oX`` report."""
+    address = _one_address(address)
+    if not isinstance(ports, list) or not ports or len(ports) > MAX_VERIFY_PORTS:
+        raise TargetError(f'nmap_verify names 1 to {MAX_VERIFY_PORTS} ports')
+    numbers = sorted({_validate_port(p) for p in ports})
+    flags = list(NMAP_VERIFY_FLAGS)
+    if version_all is True:
+        flags.append('--version-all')
+    elif version_intensity is not None:
+        if isinstance(version_intensity, bool) or not isinstance(version_intensity, int) or not 0 <= version_intensity <= 9:
+            raise TargetError('version_intensity must be 0 to 9')
+        flags += ['--version-intensity', str(version_intensity)]
+    names = scripts or []
+    if not isinstance(names, list) or any(n not in NSE_SCRIPTS for n in names):
+        raise TargetError('nmap_verify names a script that is not on the reviewed list')
+    if names:
+        flags += ['--script', ','.join(sorted(set(names))), '--script-timeout', NSE_SCRIPT_TIMEOUT]
+    seconds = 90
+    if host_timeout is not None:
+        if isinstance(host_timeout, bool) or not isinstance(host_timeout, int) or not 10 <= host_timeout <= 600:
+            raise TargetError('host_timeout must be 10 to 600 seconds')
+        seconds = host_timeout
+    argv = [NMAP_BIN, *(['-6'] if _is_ipv6(address) else []), *flags, '--host-timeout', f'{seconds}s', '-p', ','.join(map(str, numbers)),
+            '-oX', '-', address]
+    return {'xml': _finished(_run(argv, max(timeout, seconds + 30), register, max_bytes=MAX_NMAP_REPORT))}
+
+
+# --- node2shell: the vendored detector (client/vendor/node2shell.py, as on the server) -----------------------------------------------------
+
+NODE2SHELL_TIMEOUT = 90  # cveFeed.node2shell_scan.DEFAULT_TIMEOUT
+NODE2SHELL_EVIDENCE = 2048
+
+
+def _checked_url(url):
+    if not isinstance(url, str) or not url.strip() or not _URL.match(url.strip()) or any(not ch.isprintable() for ch in url.strip()):
+        raise TargetError(f'not a usable url: {str(url)[:100]!r}')
+    url = url.strip()
+    try:
+        scope.check_url(url, resolver=_resolver())
+    except scope.ScopeError as exc:
+        raise TargetError(f'not a usable url: {url[:100]!r} ({exc})') from None
+    return url
+
+
+def run_node2shell(url, timeout=NODE2SHELL_TIMEOUT, register=None):
+    """Assetnote's read-only detector on one URL: about 23 MB is uploaded, nothing is executed and no credential is sent. Returns its verdict (``vulnerable``
+    True, False or None for inconclusive), reason, status code and a bounded excerpt of the response. The URL's host is judged by scope; the detector
+    resolves it again, so a DNS answer that changes in between is the one gap."""
+    url = _checked_url(url)
+    from .vendor import node2shell
+    try:
+        result = node2shell.check_vulnerability(url, timeout=timeout, verify_ssl=True)
+    except Exception as exc:  # noqa: BLE001 - the detector folds its own errors into INCONCLUSIVE; anything else the same way here
+        result = {'vulnerable': None, 'verdict': 'ERROR', 'reason': str(exc)[:200]}
+    vulnerable = result.get('vulnerable')
+    status = result.get('status_code')
+    return {'vulnerable': vulnerable if vulnerable in (True, False) else None, 'verdict': str(result.get('verdict') or '')[:40],
+            'reason': str(result.get('reason') or '')[:300],
+            'status_code': status if isinstance(status, int) and not isinstance(status, bool) and 100 <= status <= 599 else None,
+            'evidence': str(result.get('response') or '')[:NODE2SHELL_EVIDENCE]}
+
+
+# --- rdp_shot: the pre-authentication screen, as a PNG; the reading of it stays on the server ----------------------------------------------
+
+def run_rdp_shot(address, port, register=None):
+    """One screenshot of an RDP server's pre-authentication screen, no credentials sent. A server that cannot be reached or paints nothing returns
+    ``painted`` False, which the server records exactly as a local capture that failed."""
+    address = _one_address(address)
+    port = _validate_port(port)
+    if not rdp.available():
+        raise TargetError('this Sentinel has no RDP client (aardwolf is not installed)')
+    try:
+        png = rdp.capture(address, port)
+    except Exception as exc:  # noqa: BLE001 - refused, reset, NLA required, timed out: nothing was painted
+        logger.info('rdp capture of %s:%s failed: %s', address, port, type(exc).__name__)
+        png = None
+    if not png:
+        return {'painted': False}
+    if len(png) > rdp.MAX_IMAGE_BYTES:
+        raise ToolOutputError('the capture is larger than the server accepts')
+    import base64
+    return {'painted': True, 'image': base64.b64encode(png).decode('ascii')}
+
+
+# --- db_probe: one credential-less attempt -------------------------------------------------------------------------------------------------
+
+def run_db_probe(address, port, db, register=None):
+    """One credential-less connection attempt to the database on ``address:port`` (``client.dbprobe``). ``open`` None: no client for it here."""
+    address = _one_address(address)
+    port = _validate_port(port)
+    if db not in dbprobe.CHECKS:
+        raise TargetError(f'not a database this Sentinel probes: {str(db)[:20]!r}')
+    return dbprobe.probe(address, port, db)
+
+
+# --- path_probe: whether this Sentinel's own path loses a malformed segment --------------------------------------------------------------
+
+def _reset_back(ip, port, flags, register):
+    xml = _run([NMAP_BIN, *flags, '-p', str(port), '-oX', '-', ip], 30, register, max_bytes=256 * 1024)
+    return parse_port_reasons(xml).get((ip, port), ('', ''))[1] == 'reset'
+
+
+def run_path_probe(targets, register=None, pause=0.2):
+    """For each address and closed port: did a plain SYN draw a reset, and did nmap's FIN+PSH+URG probe (sent only where the SYN was answered)?
+    The server turns the rows into its verdict on this path (``cveFeed.path_probe.verdict``). An address nmap could not probe is left out: it is not
+    evidence either way. IPv4 only, as on the server."""
+    if not isinstance(targets, list) or not targets or len(targets) > MAX_PATH_TARGETS:
+        raise TargetError(f'path_probe names 1 to {MAX_PATH_TARGETS} targets')
+    clean = []
+    for item in targets:
+        if not isinstance(item, dict):
+            raise TargetError('a path_probe target is an object with ip and port')
+        ip = _one_address(item.get('ip'))
+        if _is_ipv6(ip):
+            raise TargetError('path_probe takes IPv4 addresses only')
+        clean.append((ip, _validate_port(item.get('port'))))
+    rows = []
+    for ip, port in clean:
+        try:
+            plain = _reset_back(ip, port, PATH_PROBE_PLAIN, register)
+            odd = _reset_back(ip, port, PATH_PROBE_ODD, register) if plain else None
+        except (ToolExitError, ToolOutputError, subprocess.TimeoutExpired) as exc:
+            logger.info('path probe: %s not probed: %s', ip, exc)
+            continue
+        rows.append({'ip': ip, 'port': port, 'plain': plain, 'odd': odd})
+        time.sleep(pause)
+    return {'results': rows}
+
+
+# --- nuclei_validate: an AI-written or approved template, as cveFeed.templategen runs it ---------------------------------------------------
+
+NUCLEI_VALIDATE_TIMEOUT = 60
+NUCLEI_TEMPLATE_TIMEOUT = 540
+# Top-level template keys this Sentinel never runs, whatever the server sent: they read local files, run local code or drive a browser. nuclei
+# itself also needs -file, -code or -headless for them, which are never passed.
+_REFUSED_PROTOCOLS = re.compile(r'^(code|file|headless|javascript|flow|workflows|self-contained)\s*:', re.MULTILINE)
+
+
+def _template_text(text):
+    if not isinstance(text, str) or not text.strip() or len(text.encode('utf-8', 'replace')) > MAX_TEMPLATE_BYTES or '\0' in text:
+        raise TargetError(f'the template must be text of at most {MAX_TEMPLATE_BYTES} bytes')
+    if _REFUSED_PROTOCOLS.search(text):
+        raise TargetError('the template uses a protocol this Sentinel never runs (code, file, headless, javascript, flow or a workflow)')
+    return text
+
+
+def _run_status(argv, timeout, register):
+    """``(returncode, stdout, stderr)`` of a run whose non-zero exit is an answer (nuclei -validate), each stream bounded."""
+    proc = _start(argv, register, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL)
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_group(proc)
+        proc.communicate()
+        raise
+    return proc.returncode, out[-MAX_TOOL_OUTPUT:].decode('utf-8', 'replace'), err[-_STDERR_KEPT:].decode('utf-8', 'replace')
+
+
+def is_hit(row):
+    """Whether a nuclei result line is a matcher hit (cveFeed.templategen.is_hit): a matcher fired, not only an extractor."""
+    if row.get('matcher-status') is False:
+        return False
+    return bool(row.get('matcher-name') or row.get('matcher-status') is True)
+
+
+def _benign_fixture(path, register):
+    """The template must not match a loopback page that only says "not found" (cveFeed.templategen.test_benign_fixture): ``(ok, note)``."""
+    import http.server
+
+    class Benign(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(404)
+            self.end_headers()
+            self.wfile.write(b'CVEngine benign fixture: resource not found')
+
+        do_HEAD = do_GET
+        do_OPTIONS = do_GET
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Benign)
+    server.daemon_threads = True
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        code, out, _err = _run_status([NUCLEI_BIN, '-t', path, '-u', f'http://127.0.0.1:{server.server_port}', *NUCLEI_FIXTURE_FLAGS], 30, register)
+        if code != 0:
+            return False, 'local fixture execution failed'
+        for line in out.splitlines():
+            if line.strip():
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    return False, 'local fixture returned malformed output'
+                if isinstance(row, dict) and is_hit(row):
+                    return False, 'matched a benign local fixture (possible false positive)'
+        return True, 'no match on benign local fixture; positive detection remains unverified'
+    except (OSError, subprocess.TimeoutExpired):
+        return False, 'local fixture test unavailable or timed out'
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def _host_key(value):
+    """The bare lowercase host of a host or URL (cveFeed.templategen._host_key), to pair a result line with the host that was asked about."""
+    value = str(value or '').strip().lower()
+    value = value.split('://', 1)[-1].split('/', 1)[0]
+    if value.startswith('['):
+        return value.split(']', 1)[0].lstrip('[')
+    return value.rsplit(':', 1)[0] if value.count(':') == 1 else value
+
+
+def _trim_hit(row):
+    return {k: (v[:8000] if isinstance(v, str) and k in ('request', 'response', 'curl-command') else v) for k, v in row.items()} if row else None
+
+
+def _template_test(path, hosts, register):
+    """One outcome per host, in order (cveFeed.templategen._run_template's shape). A host scope refuses is not tested, never run."""
+    allowed, refused = [], {}
+    resolve = _resolver()
+    for host in hosts:
+        try:
+            _validate_one(host, True, resolve)
+            allowed.append(host)
+        except TargetError as exc:
+            refused[host] = str(exc)[:300]
+    rows, hits, error = {}, {}, ''
+    if allowed:
+        proxy = _proxy_args('nuclei', allowed)  # cvENGINE's egress proxy, as the server's own template test (cveFeed.templategen._run_template) takes it
+        host_path = _targets_file(allowed)
+        try:
+            code, out, err = _run_status([NUCLEI_BIN, '-t', path, '-l', host_path, *NUCLEI_TEMPLATE_FLAGS, *proxy], NUCLEI_TEMPLATE_TIMEOUT, register)
+        finally:
+            os.unlink(host_path)
+        if code != 0:
+            error = (err or f'nuclei exited with status {code}').strip()[-300:]
+        for line in out.splitlines() if not error else []:
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except ValueError:
+                error = 'nuclei returned malformed JSON output'
+                break
+            if not isinstance(row, dict):
+                error = 'nuclei returned malformed JSON output'
+                break
+            if is_hit(row):
+                key = _host_key(row.get('host') or row.get('matched-at') or row.get('ip'))
+                hits.setdefault(key, []).append(line)
+                rows.setdefault(key, row)
+    outcomes = []
+    for host in hosts:
+        if host in refused:
+            outcomes.append({'host': host, 'vulnerable': False, 'output': '', 'error': refused[host]})
+        elif error:
+            outcomes.append({'host': host, 'vulnerable': False, 'output': '', 'error': error})
+        else:
+            key = _host_key(host)
+            outcomes.append({'host': host, 'vulnerable': bool(hits.get(key)), 'output': '\n'.join(hits.get(key, []))[-2000:],
+                             'hit': _trim_hit(rows.get(key))})
+    return outcomes
+
+
+def run_nuclei_validate(mode, template, targets=None, register=None):
+    """Mode ``validate``: ``nuclei -validate`` on a new template and, when it passes, the benign loopback fixture. Mode ``test``: the approved template
+    against ``targets`` (each judged by scope, as every nuclei target is), one outcome per target. The template is written to a private scratch
+    directory and nothing else is loaded with it."""
+    text = _template_text(template)
+    with tempfile.TemporaryDirectory(prefix='nuclei-validate-') as work:
+        path = os.path.join(work, 'template.yaml')
+        with open(path, 'w', encoding='utf-8') as handle:
+            handle.write(text)
+        if mode == 'validate':
+            code, out, err = _run_status([NUCLEI_BIN, *NUCLEI_VALIDATE_FLAGS[:1], '-t', path, *NUCLEI_VALIDATE_FLAGS[1:]], NUCLEI_VALIDATE_TIMEOUT,
+                                         register)
+            output = (out + err).strip()
+            valid = code == 0 and 'error' not in output.lower()
+            result = {'valid': valid, 'output': output[-2000:], 'fixture_ok': None, 'fixture_note': ''}
+            if valid:
+                result['fixture_ok'], result['fixture_note'] = _benign_fixture(path, register)
+            return result
+        if mode == 'test':
+            if not isinstance(targets, list) or not targets or len(targets) > MAX_TARGETS or not all(isinstance(t, str) for t in targets):
+                raise TargetError(f'a template test names 1 to {MAX_TARGETS} targets')
+            return {'outcomes': _template_test(path, targets, register)}
+    raise TargetError(f'not a nuclei_validate mode: {str(mode)[:20]!r}')
+
+
 RUNNERS = {'nmap': run_nmap, 'naabu': run_naabu, 'nuclei_light': run_nuclei, 'nuclei_targeted': run_nuclei,
            'nuclei_deep': run_nuclei, 'testssl': run_testssl, 'nmap_udp': run_nmap_udp, 'wpscan': run_wpscan,
-           'openvas': openvas.run_openvas, 'discover': run_discover, 'waf': run_waf,
-           'bbot_discovery': bbot.run_bbot_discovery}  # streamed: the daemon passes it its client and task id (client/bbot.py)
+           'openvas': openvas.run_openvas, 'discover': run_discover, 'waf': run_waf, 'http_probe': run_http_probe, 'dns_resolve': run_dns_resolve,
+           'bbot_discovery': bbot.run_bbot_discovery,  # streamed: the daemon passes it its client and task id (client/bbot.py)
+           'nmap_full': run_nmap_full, 'nmap_verify': run_nmap_verify, 'node2shell': run_node2shell, 'rdp_shot': run_rdp_shot,
+           'db_probe': run_db_probe, 'path_probe': run_path_probe, 'nuclei_validate': run_nuclei_validate}
 
 
 def run_secrets_scan(target, register=None, rules=None):
