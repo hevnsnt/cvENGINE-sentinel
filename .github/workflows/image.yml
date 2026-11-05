@@ -13,8 +13,10 @@ on:
       - cvengine_scanner/**
       - docker-compose.yml
       - docker-entrypoint.sh
+      - docker/**
       - scripts/**
       - .github/workflows/image.yml
+      - .github/workflows/publish.yml
   push:
     branches: [main]
     paths:
@@ -26,8 +28,10 @@ on:
       - cvengine_scanner/**
       - docker-compose.yml
       - docker-entrypoint.sh
+      - docker/**
       - scripts/**
       - .github/workflows/image.yml
+      - .github/workflows/publish.yml
   workflow_dispatch:
 
 permissions:
@@ -71,3 +75,19 @@ jobs:
           docker run --rm --entrypoint sh cvengine-sentinel-local:ci -c 'test -w "$HOME/.bbot" && echo "bbot home: $HOME/.bbot"'
       - name: The OpenVAS bootstrap check is in the image
         run: docker run --rm --entrypoint test cvengine-sentinel-local:ci -f /opt/sentinel/scripts/ci_openvas_bootstrap.py
+      - name: WPScan is the pinned version, from the locked gems, and its database is not baked in
+        run: |
+          docker run --rm --entrypoint wpscan cvengine-sentinel-local:ci --version | grep -F "$(grep -m1 '^ARG WPSCAN_VERSION=' Dockerfile | cut -d= -f2)"
+          docker run --rm --entrypoint sh cvengine-sentinel-local:ci -c '! ls /home/sentinel/.wpscan/db/*.json >/dev/null 2>&1' \
+            || { echo "::error::the image carries a WPScan database fetched at build time"; exit 1; }
+      - name: The image carries no git, Go, GVM stack or docker socket
+        run: |
+          docker run --rm --entrypoint sh cvengine-sentinel-local:ci -c '
+            bad=""
+            for tool in git go gvmd openvas ospd-openvas docker; do command -v "$tool" >/dev/null 2>&1 && bad="$bad $tool"; done
+            [ -e /usr/local/go ] && bad="$bad /usr/local/go"
+            [ -e /root/go ] && bad="$bad /root/go"
+            [ -S /var/run/docker.sock ] && bad="$bad docker.sock"
+            [ -z "$bad" ] || { echo "the image carries:$bad"; exit 1; }'
+      - name: The image declares its health check
+        run: docker inspect --format '{{json .Config.Healthcheck.Test}}' cvengine-sentinel-local:ci | grep -F 'client.control'
