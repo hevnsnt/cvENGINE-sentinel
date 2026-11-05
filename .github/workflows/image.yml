@@ -64,6 +64,10 @@ jobs:
       - name: wafw00f runs as the image's unprivileged user and the client declares the waf kind
         run: |
           docker run --rm --entrypoint wafw00f cvengine-sentinel-local:ci --version | grep -F "$(grep -m1 '^ARG WAFW00F_VERSION=' Dockerfile | cut -d= -f2)"
-          docker run --rm --entrypoint python3 cvengine-sentinel-local:ci -c "from client import config; assert 'waf' in config.CAPABILITIES; print('contract', config.CONTRACT_VERSION)"
+          docker run --rm --entrypoint python3 cvengine-sentinel-local:ci -c "from client import config, tools; assert 'waf' in config.CAPABILITIES and 'bbot_discovery' in config.CAPABILITIES; assert 'bbot' in tools.detect_tools(); print('contract', config.CONTRACT_VERSION)"
+      - name: bbot runs as the image's unprivileged user, from its own home
+        run: |
+          docker run --rm --entrypoint bbot cvengine-sentinel-local:ci --version | grep -F "$(grep -m1 '^ARG BBOT_VERSION=' Dockerfile | cut -d= -f2)"
+          docker run --rm --entrypoint sh cvengine-sentinel-local:ci -c 'test -w "$HOME/.bbot" && echo "bbot home: $HOME/.bbot"'
       - name: The OpenVAS bootstrap check is in the image
         run: docker run --rm --entrypoint test cvengine-sentinel-local:ci -f /opt/sentinel/scripts/ci_openvas_bootstrap.py

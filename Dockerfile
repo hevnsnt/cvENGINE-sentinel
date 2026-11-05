@@ -1,9 +1,27 @@
-# The Sentinel client: a standalone image with nmap, naabu, nuclei, testssl.sh, WPScan, wafw00f and the client daemon, pinned
+# The Sentinel client: a standalone image with nmap, naabu, nuclei, testssl.sh, WPScan, wafw00f, bbot and the client daemon, pinned
 # to the exact same tool versions the cvENGINE server repository's web/Dockerfile pins (its scripts/check_tool_versions.py checks both; keep them equal on
 # purpose, see docs/UPDATES.md "Pinned tools" in that repository), so a Sentinel's results are never skewed by running a different
 # nmap/naabu/nuclei/testssl/wpscan than the instance it reports to would have run locally. The OpenVAS (GVM) stack
 # itself is NOT in this image: it runs as the separate Greenbone services in docker-compose.yml, which this daemon
 # talks GMP to over a shared unix socket (client/openvas.py), the same way cvENGINE's own server talks to its sidecar.
+# bbot and the tzdata it needs, the same pins as the server repository's web/Dockerfile. Declared once, before the first stage, and used by two.
+ARG BBOT_VERSION=3.0.2
+ARG TZDATA_VERSION=2026.6
+# bbot's own virtual environment is built in a stage of its own: one of its dependencies (yara-python) compiles from source on this Python, and
+# the compiler and the headers it needs stay in this stage. The final image copies the finished venv to the same path, on the same base image.
+FROM ubuntu:26.04@sha256:0e73b71479e7bc5f006bca872e25c3cd680dc052a0116f90d63ae363537db0dd AS bbot-builder
+ARG BBOT_VERSION
+ARG TZDATA_VERSION
+ENV DEBIAN_FRONTEND="noninteractive"
+RUN apt-get update -y && \
+    apt-get install -y --no-install-recommends build-essential ca-certificates libssl-dev python3 python3-dev python3-venv && \
+    rm -rf /var/lib/apt/lists/*
+# The build tools are the same pins as the client's venv below; yara-python and the other source packages build with them.
+RUN python3 -m venv /opt/bbot-venv && \
+    /opt/bbot-venv/bin/pip install --no-cache-dir pip==25.2 setuptools==80.9.0 wheel==0.45.1 && \
+    /opt/bbot-venv/bin/pip install --no-cache-dir bbot==${BBOT_VERSION} tzdata==${TZDATA_VERSION} && \
+    /opt/bbot-venv/bin/bbot --version
+
 FROM ubuntu:26.04@sha256:0e73b71479e7bc5f006bca872e25c3cd680dc052a0116f90d63ae363537db0dd
 
 ARG GOVERSION=1.27.3
@@ -140,6 +158,25 @@ RUN pip install --no-cache-dir pip==25.2 setuptools==80.9.0 wheel==0.45.1 setupt
 
 # wafw00f, pinned like every other tool, into the same venv: a plain pip package, no compiler and no network at run time.
 RUN pip install --no-cache-dir wafw00f==${WAFW00F_VERSION} PySocks==${PYSOCKS_VERSION} && wafw00f --version | grep "v${WAFW00F_VERSION}" >/dev/null
+
+# bbot (GPLv3, run as a separate program, never imported) for a bbot_discovery task (client/bbot.py), in its own venv so its pins cannot clash with the
+# client's. The same pins as the server repository's web/Dockerfile (BBOT_VERSION, TZDATA_VERSION: without zone data bbot cannot find "UTC").
+ARG BBOT_VERSION
+# The venv comes finished from the bbot-builder stage above (no compiler or headers in this image for it).
+COPY --from=bbot-builder /opt/bbot-venv /opt/bbot-venv
+RUN ln -s /opt/bbot-venv/bin/bbot /usr/local/bin/bbot && bbot --version | grep -F "${BBOT_VERSION}"
+# Fail the build when this bbot no longer reads API keys the way client/bbot.py hands them over (a preset file listed after the named presets) or
+# no longer loads gowitness. It runs no scan, but bbot installs the dependencies of the modules it loads before the dry run stops, so this is also
+# what bakes gowitness and its browser into the image instead of fetching them in a running Sentinel. It runs as root (bbot installs system
+# packages) with the run-time user's home, so bbot's own directory (~/.bbot) is the one the Sentinel uses, and is handed to that user.
+RUN printf '{"config": {"modules": {"shodan_dns": {"api_key": "build-check"}}}}\n' > /tmp/keys.yml && \
+    HOME=/home/sentinel bbot -t example.com -p subdomain-enum web web-screenshots /tmp/keys.yml -rf safe --force --dry-run -v 2>&1 | \
+        tee /tmp/bbot-check.txt | grep -q 'Loading [0-9]* scan modules:.*shodan_dns' && \
+    grep -q 'gowitness' /tmp/bbot-check.txt && \
+    HOME=/home/sentinel bbot -t example.com -p subdomain-enum /tmp/keys.yml --current-preset 2>&1 | grep -q 'api_key: build-check' && \
+    ! grep -q 'Error parsing' /tmp/bbot-check.txt && \
+    rm -f /tmp/keys.yml /tmp/bbot-check.txt && rm -rf /var/lib/apt/lists/* /root/.cache && \
+    chown -R sentinel:sentinel /home/sentinel
 
 # The scanner library (pyproject.toml, cvengine_scanner/: flags, parsers, scope floor, result contract), installed from a build directory that is
 # removed again so nothing beside the client can shadow it. It has no dependencies. The build context carries no git tag, so its version is the

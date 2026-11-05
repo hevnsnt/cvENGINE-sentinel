@@ -25,6 +25,7 @@ import time
 
 import requests
 
+from . import bbot
 from . import blob as blob_mod
 from . import config
 from . import control
@@ -154,12 +155,15 @@ def runnable_kinds():
     """The scan kinds this Sentinel runs right now: what it polls for, declares, and accepts. ``openvas`` only while this Sentinel's own GVM
     stack answers, never a kind the operator disabled, and the internal-only kinds (``discover``) only when this machine's own configuration
     says it sits inside a private network, whatever the server's ``network`` setting says. A kind the server's contract does not have
-    (``waf`` on cvENGINE 1.3) is left out too: such a server refuses the whole poll with a 400 for it."""
+    (``waf`` on cvENGINE 1.3) is left out too: such a server refuses the whole poll with a 400 for it, and so is ``bbot_discovery`` when bbot is
+    not installed here."""
     off = config.disabled_kinds()
     kinds = [k for k in config.poll_kinds()
              if k not in off and config.server_knows(k) and (k not in config.INTERNAL_KINDS or config._local_internal())]
     if 'openvas' in kinds and not tools.gvm_ready():
         kinds.remove('openvas')
+    if 'bbot_discovery' in kinds and 'bbot' not in detected_tools():  # an image built without bbot (or a source checkout) never takes discovery work
+        kinds.remove('bbot_discovery')
     return kinds
 
 
@@ -673,7 +677,10 @@ class Daemon:
             result = self._execute(task, self._register_proc(state))
             outcome = result.get('outcome', 'done')
             self._report_unless_dropped(task_id, state, result)
-        except tools.TargetError as exc:
+        except bbot.Stopped as exc:  # the server ended a streamed task (cancelled, expired, its scan stopped): nothing more is sent
+            outcome = 'stopped by the server'
+            logger.info('task %s was ended by the server: %s', task_id, _clip(str(exc), 200))
+        except (tools.TargetError, bbot.RunError) as exc:
             self._report_unless_dropped(task_id, state, {'outcome': 'error', 'error': str(exc)[:280]})
         except Exception as exc:  # noqa: BLE001 - one bad task must never take the daemon down
             if not state.get('dropped'):
@@ -734,6 +741,8 @@ class Daemon:
             out = runner(target.get('cidr') or '', register=register)
         elif kind == 'waf':
             out = runner(target.get('host') or '', target.get('ip') or '', target.get('port'), target.get('scheme') or '', register=register)
+        elif kind == 'bbot_discovery':  # streamed: it posts its batches itself and returns the result that closes the run
+            return runner(target, self.client, task['id'], register=register, internal=config.is_internal(), halted=self._halted)
         else:  # openvas, the only other kind with a runner
             out = runner(target.get('hosts') or {}, target.get('excluded_families') or [], target.get('max_hours'), register=register,
                          preferences=target.get('preferences'))
