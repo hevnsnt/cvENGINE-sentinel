@@ -4,6 +4,22 @@
 # nmap/naabu/nuclei/testssl/wpscan than the instance it reports to would have run locally. The OpenVAS (GVM) stack
 # itself is NOT in this image: it runs as the separate Greenbone services in docker-compose.yml, which this daemon
 # talks GMP to over a shared unix socket (client/openvas.py), the same way cvENGINE's own server talks to its sidecar.
+# bbot and the tzdata it needs, the same pins as the server repository's web/Dockerfile. Declared once, before the first stage, and used by two.
+ARG BBOT_VERSION=3.0.2
+ARG TZDATA_VERSION=2026.6
+# bbot's own virtual environment is built in a stage of its own: one of its dependencies (yara-python) compiles from source on this Python, and
+# the compiler and the headers it needs stay in this stage. The final image copies the finished venv to the same path, on the same base image.
+FROM ubuntu:26.04@sha256:0e73b71479e7bc5f006bca872e25c3cd680dc052a0116f90d63ae363537db0dd AS bbot-builder
+ARG BBOT_VERSION
+ARG TZDATA_VERSION
+ENV DEBIAN_FRONTEND="noninteractive"
+RUN apt-get update -y && \
+    apt-get install -y --no-install-recommends build-essential ca-certificates libssl-dev python3 python3-dev python3-venv && \
+    rm -rf /var/lib/apt/lists/*
+RUN python3 -m venv /opt/bbot-venv && \
+    /opt/bbot-venv/bin/pip install --no-cache-dir bbot==${BBOT_VERSION} tzdata==${TZDATA_VERSION} && \
+    /opt/bbot-venv/bin/bbot --version
+
 FROM ubuntu:26.04@sha256:0e73b71479e7bc5f006bca872e25c3cd680dc052a0116f90d63ae363537db0dd
 
 ARG GOVERSION=1.27.3
@@ -143,14 +159,10 @@ RUN pip install --no-cache-dir wafw00f==${WAFW00F_VERSION} PySocks==${PYSOCKS_VE
 
 # bbot (GPLv3, run as a separate program, never imported) for a bbot_discovery task (client/bbot.py), in its own venv so its pins cannot clash with the
 # client's. The same pins as the server repository's web/Dockerfile (BBOT_VERSION, TZDATA_VERSION: without zone data bbot cannot find "UTC").
-ARG BBOT_VERSION=3.0.2
-ARG TZDATA_VERSION=2026.6
-# One of its dependencies (yara-python) is built from source on this Python, so the headers it compiles against are installed for the build only.
-RUN apt-get update -y && apt-get install -y --no-install-recommends python3-dev libssl-dev && \
-    python3 -m venv /opt/bbot-venv && \
-    /opt/bbot-venv/bin/pip install --no-cache-dir bbot==${BBOT_VERSION} tzdata==${TZDATA_VERSION} && \
-    ln -s /opt/bbot-venv/bin/bbot /usr/local/bin/bbot && \
-    apt-get purge -y python3-dev libssl-dev && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
+ARG BBOT_VERSION
+# The venv comes finished from the bbot-builder stage above (no compiler or headers in this image for it).
+COPY --from=bbot-builder /opt/bbot-venv /opt/bbot-venv
+RUN ln -s /opt/bbot-venv/bin/bbot /usr/local/bin/bbot && bbot --version | grep -F "${BBOT_VERSION}"
 # Fail the build when this bbot no longer reads API keys the way client/bbot.py hands them over (a preset file listed after the named presets) or
 # no longer loads gowitness. It runs no scan, but bbot installs the dependencies of the modules it loads before the dry run stops, so this is also
 # what bakes gowitness and its browser into the image instead of fetching them in a running Sentinel. It runs as root (bbot installs system
