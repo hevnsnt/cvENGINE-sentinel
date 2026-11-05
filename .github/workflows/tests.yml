@@ -81,6 +81,53 @@ jobs:
           print('installed', cvengine_scanner.__version__, 'contract', contract.version())
           PY
 
+  # The secrets_scan kind runs Kingfisher (cvENGINE docs/SECRETS-PLAN.md 6.3). The pinned release tarballs are verified here the way Kingfisher
+  # documents (docs/INSTALLATION.md, "Verifying release artifacts"): the build attestation, then the sha256 the Dockerfile pins. Then the real
+  # binary: every flag the client passes exists, and a detection pass finds the synthetic secrets with no network at all (a namespace with no route).
+  kingfisher:
+    name: Kingfisher (pinned, attested, offline)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.14"
+      - run: pip install -r requirements.txt ".[test]"
+      - name: The pinned release, its attestation and its sha256 (both architectures)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version=$(grep -m1 '^ARG KINGFISHER_VERSION=' Dockerfile | cut -d= -f2)
+          dir="$RUNNER_TEMP/kingfisher"
+          mkdir -p "$dir" && cd "$dir"
+          gh release download "v$version" --repo mongodb/kingfisher --pattern kingfisher-linux-x64.tgz --pattern kingfisher-linux-arm64.tgz \
+            --pattern multiple.intoto.jsonl
+          for arch in x64:AMD64 arm64:ARM64; do
+            asset="kingfisher-linux-${arch%%:*}.tgz"
+            gh attestation verify "$asset" --repo mongodb/kingfisher --signer-workflow mongodb/kingfisher/.github/workflows/release.yml \
+              --source-ref "refs/tags/v$version" --bundle multiple.intoto.jsonl
+            pinned=$(grep -m1 "^ARG KINGFISHER_SHA256_${arch##*:}=" "$GITHUB_WORKSPACE/Dockerfile" | cut -d= -f2)
+            printf '%s  %s\n' "$pinned" "$asset" | sha256sum --check
+          done
+          mkdir bin && tar -xzf kingfisher-linux-x64.tgz -C bin
+          printf 'CVENGINE_KINGFISHER_BIN=%s\n' "$dir/bin/kingfisher" >> "$GITHUB_ENV"
+      - name: The flags, the version pin and a detection pass over synthetic pages
+        env:
+          CVENGINE_KINGFISHER_REAL: '1'
+        run: python -m unittest client.tests.test_secrets_kingfisher -v
+      - name: The detection pass needs no network (a network namespace with no route)
+        run: sudo -E env "PATH=$PATH" CVENGINE_KINGFISHER_REAL=1 CVENGINE_KINGFISHER_BIN="$CVENGINE_KINGFISHER_BIN" unshare --net -- python -m unittest client.tests.test_secrets_kingfisher.DetectionTests -v
+      - name: A newer Kingfisher release (a warning, never a failure)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pinned=$(grep -m1 '^ARG KINGFISHER_VERSION=' Dockerfile | cut -d= -f2)
+          latest=$(gh api 'repos/mongodb/kingfisher/releases/latest' --jq .tag_name 2>/dev/null || true)
+          if [ -n "$latest" ] && [ "${latest#v}" != "$pinned" ]; then
+            echo "::warning::Kingfisher $latest is out; the image pins $pinned. Bump the version and both sha256 pins, and re-review the server's validation allow-list."
+          fi
+
   contract:
     name: Vendored contract equals the server's
     runs-on: ubuntu-latest

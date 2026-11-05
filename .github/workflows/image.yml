@@ -65,5 +65,10 @@ jobs:
         run: |
           docker run --rm --entrypoint wafw00f cvengine-sentinel-local:ci --version | grep -F "$(grep -m1 '^ARG WAFW00F_VERSION=' Dockerfile | cut -d= -f2)"
           docker run --rm --entrypoint python3 cvengine-sentinel-local:ci -c "from client import config; assert 'waf' in config.CAPABILITIES; print('contract', config.CONTRACT_VERSION)"
+      - name: Kingfisher runs as the image's unprivileged user, with its notices, and the client declares secrets_scan
+        run: |
+          docker run --rm --entrypoint kingfisher cvengine-sentinel-local:ci --version
+          docker run --rm --entrypoint test cvengine-sentinel-local:ci -f /usr/share/doc/kingfisher/NOTICE
+          docker run --rm --entrypoint python3 cvengine-sentinel-local:ci -c "from client import tools; assert tools.kingfisher_ready(); assert 'secrets_scan' in tools.RUNNERS"
       - name: The OpenVAS bootstrap check is in the image
         run: docker run --rm --entrypoint test cvengine-sentinel-local:ci -f /opt/sentinel/scripts/ci_openvas_bootstrap.py

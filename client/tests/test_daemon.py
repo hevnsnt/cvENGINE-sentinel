@@ -145,7 +145,8 @@ class RegisterTests(unittest.TestCase):
         fc = FakeClient()
         fresh_tool_probe(self)
         server_speaks(self, config.CONTRACT_VERSION)
-        with mock.patch('client.tools.detect_tools', return_value=['nmap', 'naabu']), mock.patch('client.tools.gvm_ready', return_value=True):
+        with mock.patch('client.tools.detect_tools', return_value=['nmap', 'naabu']), mock.patch('client.tools.gvm_ready', return_value=True), \
+                mock.patch('client.tools.kingfisher_ready', return_value=True):
             daemon.register(fc, 'my-sentinel', 5)
         self.assertEqual(fc.paths(), [('PUT', 'sentinel')])
         body = fc.body_for('sentinel')

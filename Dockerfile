@@ -1,4 +1,4 @@
-# The Sentinel client: a standalone image with nmap, naabu, nuclei, testssl.sh, WPScan, wafw00f and the client daemon, pinned
+# The Sentinel client: a standalone image with nmap, naabu, nuclei, testssl.sh, WPScan, wafw00f, Kingfisher and the client daemon, pinned
 # to the exact same tool versions the cvENGINE server repository's web/Dockerfile pins (its scripts/check_tool_versions.py checks both; keep them equal on
 # purpose, see docs/UPDATES.md "Pinned tools" in that repository), so a Sentinel's results are never skewed by running a different
 # nmap/naabu/nuclei/testssl/wpscan than the instance it reports to would have run locally. The OpenVAS (GVM) stack
@@ -28,6 +28,12 @@ ARG TESTSSL_VERSION=3.2.4
 ARG TESTSSL_SHA256=98528f8a0ac07f1e226efaa8ead438247df8efcb8fee4e056a937ab82a305490
 # The nuclei templates baked into the image: a pinned community release with its checksum, used only for a task that names no approved bundle
 # (an older server). Tasks under the server's template policy run on the server's own verified bundle instead (client/templates.py).
+# Kingfisher (Apache-2.0, MongoDB; run as a separate program) finds secrets in the pages and scripts of the secrets_scan kind. The release tarball per
+# architecture, pinned by sha256 (its build attestation is verified in CI, .github/workflows/tests.yml); never the PyPI kingfisher-bin. The library's
+# cvengine_scanner/secrets.py KINGFISHER_VERSION is the same pin (a test holds them together), and so is the server's validation allow-list.
+ARG KINGFISHER_VERSION=2.16.0
+ARG KINGFISHER_SHA256_AMD64=97cdbe7706a722ea085d1e83a00a98b0e9432fc58b21c9a3e36f591b5c1446d7
+ARG KINGFISHER_SHA256_ARM64=fece052a018c127f664e96f76c1ad6be39fe3d4df71db91caaa462e92a99aed1
 ARG NUCLEI_TEMPLATES_VERSION=v10.5.1
 ARG NUCLEI_TEMPLATES_SHA256=30fe1cfaced4635f886e4a2673641bba86998dceec28e468274524e789aa56eb
 
@@ -129,6 +135,18 @@ RUN apt-get update -y && \
     rm -f /tmp/testssl.tar.gz && rm -rf /var/lib/apt/lists/* && \
     testssl.sh --version 2>&1 | grep -q "${TESTSSL_VERSION}"
 
+# Kingfisher: the checksum-verified release tarball; its NOTICE files (Apache-2.0, Vectorscan) are kept with the binary. The client always passes
+# --no-update-check and refuses self-update and revoke (cvengine_scanner/secrets.py check_argv).
+RUN ARCH=$(dpkg --print-architecture) \
+    && if [ "${ARCH}" = "arm64" ]; then KF_ARCH=arm64; KF_SHA="${KINGFISHER_SHA256_ARM64}"; else KF_ARCH=x64; KF_SHA="${KINGFISHER_SHA256_AMD64}"; fi \
+    && curl -fsSLo /tmp/kingfisher.tgz "https://github.com/mongodb/kingfisher/releases/download/v${KINGFISHER_VERSION}/kingfisher-linux-${KF_ARCH}.tgz" \
+    && echo "${KF_SHA}  /tmp/kingfisher.tgz" | sha256sum -c - \
+    && mkdir -p /tmp/kingfisher && tar -xzf /tmp/kingfisher.tgz -C /tmp/kingfisher \
+    && install -m 0755 /tmp/kingfisher/kingfisher /usr/local/bin/kingfisher \
+    && mkdir -p /usr/share/doc/kingfisher && cp -r /tmp/kingfisher/notices/. /usr/share/doc/kingfisher/ \
+    && rm -rf /tmp/kingfisher /tmp/kingfisher.tgz \
+    && kingfisher --version | grep -q "${KINGFISHER_VERSION}"
+
 WORKDIR /opt/sentinel
 
 RUN python3 -m venv /opt/venv
@@ -179,7 +197,7 @@ ENV NMAP_PRIVILEGED=1 \
 # Last on purpose: a label change must not invalidate the build layers above it.
 LABEL \
     name="CVEngine Sentinel" \
-    description="Downloadable scan-stage agent for CVEngine: runs nmap, naabu, nuclei, testssl.sh, WPScan, wafw00f and OpenVAS work on your own network and reports typed results back." \
+    description="Downloadable scan-stage agent for CVEngine: runs nmap, naabu, nuclei, testssl.sh, WPScan, wafw00f, Kingfisher and OpenVAS work on your own network and reports typed results back." \
     org.opencontainers.image.source="https://github.com/hevnsnt/cvENGINE-sentinel" \
     org.opencontainers.image.licenses="GPL-3.0-only"
 
