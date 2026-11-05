@@ -64,6 +64,31 @@ def parse_nmap_xml(xml_text, strict=False):
     return {'hosts': hosts}
 
 
+def parse_port_reasons(xml_text):
+    """``{(address, port): (state, reason)}`` from an nmap ``-oX --reason`` report: what each probed port answered (``closed``/``reset``, a reset
+    came back; ``filtered``/``no-response``, nothing did). Used by the path survey, which reads only whether a reset came back."""
+    out = {}
+    try:
+        root = ET.fromstring(xml_text or '')
+    except ET.ParseError:
+        raise ToolOutputError('nmap produced a report that could not be read') from None
+    if root.tag != 'nmaprun' or root.find('runstats/finished[@exit="success"]') is None:
+        raise ToolOutputError('nmap did not finish its report')
+    for host_el in root.findall('host'):
+        addr_el = host_el.find("address[@addrtype='ipv4']")
+        if addr_el is None or not addr_el.get('addr'):
+            continue
+        for port_el in host_el.findall('ports/port'):
+            state_el = port_el.find('state')
+            try:
+                number = int(port_el.get('portid'))
+            except (TypeError, ValueError):
+                continue
+            if state_el is not None:
+                out[(addr_el.get('addr'), number)] = (state_el.get('state') or '', state_el.get('reason') or '')
+    return out
+
+
 def parse_discover_xml(xml_text):
     """The addresses nmap's ping sweep found up, each with the host names it learned, from ``-oX`` output."""
     hosts = []
