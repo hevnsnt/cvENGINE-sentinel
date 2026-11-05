@@ -572,6 +572,25 @@ def run_waf(host, ip, port, scheme, timeout=WAFW00F_TIMEOUT, register=None):
     return parse_waf_output(report, strict=True)
 
 
+def run_http_probe(target, register=None):
+    """The ``http_probe`` kind: the version and identity probes cvENGINE planned, in this process (``cvengine_scanner.probes.version_probes``), under
+    the scope policy the task carries; no tool is started, so ``register`` is unused."""
+    from cvengine_scanner.probes import version_probes
+    try:
+        return version_probes.run_batch(target)
+    except ValueError as exc:
+        raise TargetError(f'not a usable http_probe task ({exc})') from None
+
+
+def run_dns_resolve(target, register=None):
+    """The ``dns_resolve`` kind: this Sentinel's resolver answers for the names of the task (``cvengine_scanner.probes.dns``)."""
+    from cvengine_scanner.probes import dns
+    try:
+        return dns.run_batch(target)
+    except ValueError as exc:
+        raise TargetError(f'not a usable dns_resolve task ({exc})') from None
+
+
 # --- nmap_full and nmap_verify: one address, the raw report read by the server's own parser -----------------------------------------------
 
 MAX_NMAP_REPORT = 4 * 1024 * 1024  # agentapi.sentinel_broker.MAX_NMAP_UDP_XML: the server refuses a larger report
@@ -894,7 +913,7 @@ def run_nuclei_validate(mode, template, targets=None, register=None):
 
 RUNNERS = {'nmap': run_nmap, 'naabu': run_naabu, 'nuclei_light': run_nuclei, 'nuclei_targeted': run_nuclei,
            'nuclei_deep': run_nuclei, 'testssl': run_testssl, 'nmap_udp': run_nmap_udp, 'wpscan': run_wpscan,
-           'openvas': openvas.run_openvas, 'discover': run_discover, 'waf': run_waf,
+           'openvas': openvas.run_openvas, 'discover': run_discover, 'waf': run_waf, 'http_probe': run_http_probe, 'dns_resolve': run_dns_resolve,
            'bbot_discovery': bbot.run_bbot_discovery,  # streamed: the daemon passes it its client and task id (client/bbot.py)
            'nmap_full': run_nmap_full, 'nmap_verify': run_nmap_verify, 'node2shell': run_node2shell, 'rdp_shot': run_rdp_shot,
            'db_probe': run_db_probe, 'path_probe': run_path_probe, 'nuclei_validate': run_nuclei_validate}
