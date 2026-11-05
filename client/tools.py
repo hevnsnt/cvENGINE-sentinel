@@ -588,9 +588,19 @@ def run_dns_resolve(target, register=None):
         raise TargetError(f'not a usable dns_resolve task ({exc})') from None
 
 
+def run_alive_check(target, register=None):
+    """The ``alive_check`` kind: whether a retired name's last known addresses still answer (``cvengine_scanner.probes.alive``)."""
+    from cvengine_scanner.probes import alive
+    try:
+        return alive.run_batch(target)
+    except ValueError as exc:
+        raise TargetError(f'not a usable alive_check task ({exc})') from None
+
+
 RUNNERS = {'nmap': run_nmap, 'naabu': run_naabu, 'nuclei_light': run_nuclei, 'nuclei_targeted': run_nuclei,
            'nuclei_deep': run_nuclei, 'testssl': run_testssl, 'nmap_udp': run_nmap_udp, 'wpscan': run_wpscan,
-           'openvas': openvas.run_openvas, 'discover': run_discover, 'waf': run_waf, 'http_probe': run_http_probe, 'dns_resolve': run_dns_resolve}
+           'openvas': openvas.run_openvas, 'discover': run_discover, 'waf': run_waf, 'http_probe': run_http_probe, 'dns_resolve': run_dns_resolve,
+           'alive_check': run_alive_check}
 
 
 # --- version probing, for the capabilities a bootstrapping Sentinel declares ------------------------------------------
