@@ -16,7 +16,9 @@ ENV DEBIAN_FRONTEND="noninteractive"
 RUN apt-get update -y && \
     apt-get install -y --no-install-recommends build-essential ca-certificates libssl-dev python3 python3-dev python3-venv && \
     rm -rf /var/lib/apt/lists/*
+# The build tools are the same pins as the client's venv below; yara-python and the other source packages build with them.
 RUN python3 -m venv /opt/bbot-venv && \
+    /opt/bbot-venv/bin/pip install --no-cache-dir pip==25.2 setuptools==80.9.0 wheel==0.45.1 && \
     /opt/bbot-venv/bin/pip install --no-cache-dir bbot==${BBOT_VERSION} tzdata==${TZDATA_VERSION} && \
     /opt/bbot-venv/bin/bbot --version
 

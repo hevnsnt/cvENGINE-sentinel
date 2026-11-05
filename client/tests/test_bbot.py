@@ -210,6 +210,15 @@ class RunTests(unittest.TestCase):
         self.assertEqual(result['problems'][0]['module'], 'shodan_dns')
         self.assertNotIn('KEY-1234567', json.dumps(result))
 
+    def test_the_builtin_scanners_proxy_reaches_bbot_only_through_the_private_file(self):
+        with mock.patch.object(bbot.egress, 'for_tool', return_value=['http://user:pw-secret@proxy.example:3128']):
+            result, _client, seen = self.run_with(FakeProc(self.LINES))
+        self.assertEqual(json.loads(seen['keys'])['config']['web']['http_proxy'], 'http://user:pw-secret@proxy.example:3128')
+        self.assertNotIn('pw-secret', json.dumps(seen['cmd']))
+        with mock.patch.object(bbot.egress, 'for_tool', side_effect=bbot.egress.ProxyUnavailable('no proxy suits bbot')):
+            with self.assertRaises(bbot.RunError):
+                self.run_with(FakeProc(self.LINES))
+
     def test_a_run_that_fails_part_way_is_incomplete_and_one_that_found_nothing_is_an_error(self):
         result, _client, _seen = self.run_with(FakeProc(self.LINES, code=-9))
         self.assertIn('memory', result['incomplete'])

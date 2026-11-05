@@ -11,6 +11,9 @@ name (with its subdomains: an exclusion of one exact name keeps its subdomains o
 link-local, metadata, documentation ranges, and private space unless this Sentinel is internal) as its blacklist, so none of its modules reaches
 them; and everything bbot reports is held to the scope again before it is sent. The server applies the same rules a third time.
 
+Proxy. On the built-in scanner, cvENGINE's egress proxy (``client.egress``) reaches bbot as its ``web.http_proxy`` setting, in the same private file as
+the keys, exactly as the server's own bbot run used it; a proxy that suits no scheme bbot takes fails the run rather than go out directly.
+
 Credentials. A task whose project stored API keys for bbot's modules says ``api_keys`` and carries none: they are read once through
 ``sentinel/tasks/<id>/secret`` (only the built-in scanner is offered such a task) and handed to bbot in a preset file only this user can read, in a
 fresh private directory deleted when the run ends, never on its command line. Every key is masked in what bbot writes to its error stream.
@@ -34,7 +37,7 @@ import requests
 
 from cvengine_scanner import scope as floor
 
-from . import httpclient
+from . import egress, httpclient
 
 logger = logging.getLogger('sentinel.bbot')
 
@@ -470,6 +473,12 @@ def run_bbot_discovery(target, client, task_id, register=None, internal=False, h
     timeout = max(60, min(86400, timeout))
     keys = read_keys(client, task_id) if target.get('api_keys') is True else {}
     secrets = secrets_of(keys) if keys else []
+    try:  # the built-in scanner's egress proxy (client.egress), as the server's own bbot run used it: bbot's web.http_proxy, in the private file
+        proxy = egress.for_tool('bbot', [str(target.get('domain') or '')])
+    except egress.ProxyUnavailable as exc:
+        raise RunError(str(exc)) from None
+    config = {**keys, **({'web': {'http_proxy': proxy[0]}} if proxy else {})}
+    secrets += [proxy[0]] if proxy else []
     work = tempfile.mkdtemp(prefix='cvengine-bbot-')  # 0700: the key file and bbot's scan output live here and go with it
     sender = Sender(client, task_id, halted=halted)
     problems, hard_failures, stderr_tail = [], [], collections.deque(maxlen=40)
@@ -478,11 +487,11 @@ def run_bbot_discovery(target, client, task_id, register=None, internal=False, h
         with open(blacklist_file, 'w', encoding='utf-8') as handle:
             handle.write('\n'.join(policy.blacklist()) + '\n')
         keys_file = None
-        if keys:
+        if config:
             keys_file = os.path.join(work, 'keys.yml')  # JSON is YAML: bbot reads the preset as is
             fd = os.open(keys_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(fd, 'w', encoding='utf-8') as handle:
-                json.dump({'config': keys}, handle)
+                json.dump({'config': config}, handle)
         out_dir = os.path.join(work, 'scans')
         os.mkdir(out_dir, 0o700)
         collector = Collector(policy, out_dir)
