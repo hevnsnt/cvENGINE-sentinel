@@ -1,3 +1,4 @@
+import hashlib
 import json
 import unittest
 
@@ -54,6 +55,47 @@ class ContractFixtureTests(unittest.TestCase):
                     {'outcome': 'done', 'products': []}):
             with self.subTest(bad=bad):
                 self.assertFalse(check.is_valid(bad))
+
+
+# Each frozen set is what a Sentinel of that contract version sent, kept byte for byte (the server's tests.test_sentinel_contract holds the same
+# hashes): the server keeps accepting it down to ``min_supported_contract_version``. A bump to version N copies the then-current results into
+# ``fixtures/results/v<N>/`` and adds it to FROZEN; a fixture that needs to change belongs in a new version's set, never in an old one.
+FROZEN = {'v1': contract.FIXTURES / 'results' / 'v1'}
+KIND_OF = {'nmap': 'nmap', 'naabu': 'naabu', 'nuclei_light': 'nuclei_light', 'testssl': 'testssl', 'nmap_udp': 'nmap_udp', 'wpscan': 'wpscan',
+           'discover': 'discover', 'openvas': 'openvas', 'waf': 'waf', 'error': 'nmap'}  # fixture name -> the kind it is a result of
+V1_SHA256 = {
+    'discover.json': '6f9825383a3efbf69724ee168a07935d965b7b57add1605a79660d269cf8f5a6',
+    'error.json': 'f38516e7aecb480a2f749c9ee7fff22d0926d2056c82665754059ae05815f340',
+    'naabu.json': '91d1b7acdaeecedb10b027daf27dccac6cb1f833cfa58455264df3e7e846593d',
+    'nmap.json': '13328030712a13a881e8dbb94ccd109e10a72cb62ae2d2081e3b0b107dc057fd',
+    'nmap_udp.json': '517342dcf5e5c585cbd69aefd6a3f4849b9a4a26a9c9861d1f0a4f8eea4f666d',
+    'nuclei_light.json': 'ecb620b0742ef52e5af077d16f545fcc93791fc7ec33c95ced0a8a6153b7c60c',
+    'openvas.json': '1f6166c56867cd631e6789455e5d83a2d47be7a5a3fdfb5b4e8988413862b224',
+    'testssl.json': '0c3e9354aa1432420761aece78877e727bfca1b760dd22e26dac1769c0ba5d80',
+    'wpscan.json': '548ae1d7ad40e9c5a81bf183a39fba3b3b7a270d92380da8602384db0d53b736',
+}
+
+
+class FrozenFixtureTests(unittest.TestCase):
+    def test_every_frozen_set_is_complete_for_its_version(self):
+        for v, folder in FROZEN.items():
+            have = {p.stem for p in folder.glob('*.json')}
+            want = {name for name, kind in KIND_OF.items() if contract.kind_since(kind) <= int(v[1:])}
+            self.assertEqual(have, want, v)
+
+    def test_the_oldest_supported_version_is_frozen(self):
+        self.assertIn(f'v{contract.min_supported()}', FROZEN)
+
+    def test_a_frozen_set_is_never_edited(self):
+        digests = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in FROZEN['v1'].glob('*.json')}
+        self.assertEqual(digests, V1_SHA256)
+
+    def test_every_frozen_fixture_is_still_in_contract(self):
+        for v, folder in FROZEN.items():
+            for path in sorted(folder.glob('*.json')):
+                with self.subTest(fixture=f'{v}/{path.name}'):
+                    sent = json.loads(path.read_text(encoding='utf-8'))
+                    self.assertEqual(list(validator(contract.result_schema(KIND_OF[path.stem])).iter_errors(sent)), [])
 
 
 if __name__ == '__main__':
