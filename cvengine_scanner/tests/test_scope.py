@@ -59,6 +59,17 @@ class CheckIpTests(unittest.TestCase):
         scope.use_internal_setting(lambda: False)
         self.assertRaises(ScopeError, scope.check_ip, '10.0.0.1')
 
+    def test_registered_private_ranges_open_only_those_networks(self):
+        import ipaddress
+        previous = scope._private_setting
+        self.addCleanup(scope.use_private_ranges, previous)
+        scope.use_private_ranges(lambda: [ipaddress.ip_network('100.64.0.0/10')])
+        self.assertEqual(scope.check_ip('100.64.0.9', False), '100.64.0.9')
+        self.assertRaises(ScopeError, scope.check_ip, '10.0.0.1', False)
+        self.assertRaises(ScopeError, scope.check_ip, '127.0.0.1', False)
+        scope.use_private_ranges(None)
+        self.assertRaises(ScopeError, scope.check_ip, '100.64.0.9', False)
+
     def test_this_containers_own_address_is_refused(self):
         self.assertRaises(ScopeError, scope.check_ip, '172.19.0.2', True)
 
