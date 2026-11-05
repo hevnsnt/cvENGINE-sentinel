@@ -191,6 +191,14 @@ RUN printf '{"config": {"modules": {"shodan_dns": {"api_key": "build-check"}}}}\
     ! grep -q 'Error parsing' /tmp/bbot-check.txt && \
     rm -f /tmp/keys.yml /tmp/bbot-check.txt && rm -rf /var/lib/apt/lists/* /root/.cache && \
     chown -R sentinel:sentinel /home/sentinel
+# bbot installs git as one of its core dependencies during the check above, and the image must not carry git. bbot records in its cache
+# (~/.bbot/cache) that its core dependencies were installed and does not look again, so git goes once that is written: then a dry run as the
+# run-time user must neither try to install anything nor fail.
+RUN apt-get purge -y git git-man && rm -rf /var/lib/apt/lists/* && \
+    ! command -v git && \
+    runuser -u sentinel -- env HOME=/home/sentinel bbot -t example.com -p subdomain-enum -rf safe --dry-run -y > /tmp/bbot-user.txt 2>&1; \
+    status=$?; cat /tmp/bbot-user.txt | tail -n 20; \
+    [ "$status" = 0 ] && ! grep -qi 'Installing core BBOT dependencies' /tmp/bbot-user.txt && rm -f /tmp/bbot-user.txt
 
 # The scanner library (pyproject.toml, cvengine_scanner/: flags, parsers, scope floor, result contract), installed from a build directory that is
 # removed again so nothing beside the client can shadow it. It has no dependencies. The build context carries no git tag, so its version is the
