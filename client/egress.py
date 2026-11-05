@@ -2,7 +2,7 @@
 scans (``cveFeed.egress_proxy.for_tool`` there), so moving a kind to the built-in scanner does not change where its traffic leaves from.
 
 Only the built-in scanner has a proxy (``config.vantage``, from the server's settings reply); every other Sentinel keeps its own egress. nuclei, WPScan,
-testssl.sh and wafw00f go through it; nmap, naabu and the UDP sweep use raw sockets and connect directly, as on the server. A destination that never goes
+testssl.sh, wafw00f and bbot (its web modules) go through it; nmap, naabu and the UDP sweep use raw sockets and connect directly, as on the server. A destination that never goes
 through a proxy (loopback, this stack's services, private and tailnet addresses unless ``proxy_private``, and the server's bypass list) leaves a run
 direct when every destination of the run is one. A proxy that suits no tool fails the task: there is no fallback to a direct connection, which would
 reveal the address the proxy is there to hide. A proxy URL can carry a login: never log it (``describe`` is what may be logged).
@@ -119,6 +119,8 @@ TOOLS = {
     'wpscan': (('http', 'https', 'socks5', 'socks5h'), _wpscan),
     'wafw00f': (('http', 'https', 'socks5'), lambda s: ['-p', s.url]),
     'testssl': (('http',), lambda s: ['--proxy', s.netloc]),  # testssl.sh speaks to a plain HTTP proxy only, and cannot give it a login
+    # bbot's own web.http_proxy setting: the URL alone, which client/bbot.py puts in its private preset file (a login never reaches a command line)
+    'bbot': (('http', 'https', 'socks5', 'socks5h'), lambda s: [s.url]),
 }
 
 
