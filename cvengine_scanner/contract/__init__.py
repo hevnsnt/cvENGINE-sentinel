@@ -37,3 +37,16 @@ def target_schema(kind):
     if kind not in doc['$defs']['targets']:
         raise KeyError(kind)
     return {'$schema': doc['$schema'], '$ref': f'#/$defs/targets/{kind}', '$defs': doc['$defs']}
+
+
+def streamed():
+    """The kinds that post partial results while they run (``$defs.partials``: ``bbot_discovery``, contract version 3) before the result that closes them."""
+    return tuple(load()['$defs'].get('partials', {}))
+
+
+def partial_schema(kind):
+    """A self-contained schema for one batch of partial results a streamed ``kind`` task posts while it runs."""
+    doc = load()
+    if kind not in doc['$defs'].get('partials', {}):
+        raise KeyError(kind)
+    return {'$schema': doc['$schema'], '$ref': f'#/$defs/partials/{kind}', '$defs': doc['$defs']}

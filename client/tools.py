@@ -33,7 +33,7 @@ from cvengine_scanner.flags import (DISCOVER_FLAGS, KERNEL_MARKERS, MAX_DISCOVER
 from cvengine_scanner.parsers import (MAX_FINDINGS, MAX_FINDINGS_BYTES, MAX_LIST_ITEMS, ToolOutputError, parse_discover_xml,  # noqa: F401
                                       parse_naabu_output, parse_nmap_xml, parse_nuclei_jsonl, parse_testssl_report, parse_waf_output)
 
-from . import config, openvas, scope
+from . import bbot, config, openvas, scope
 
 logger = logging.getLogger('sentinel.tools')
 
@@ -561,13 +561,15 @@ def run_waf(host, ip, port, scheme, timeout=WAFW00F_TIMEOUT, register=None):
 
 RUNNERS = {'nmap': run_nmap, 'naabu': run_naabu, 'nuclei_light': run_nuclei, 'nuclei_targeted': run_nuclei,
            'nuclei_deep': run_nuclei, 'testssl': run_testssl, 'nmap_udp': run_nmap_udp, 'wpscan': run_wpscan,
-           'openvas': openvas.run_openvas, 'discover': run_discover, 'waf': run_waf}
+           'openvas': openvas.run_openvas, 'discover': run_discover, 'waf': run_waf,
+           'bbot_discovery': bbot.run_bbot_discovery}  # streamed: the daemon passes it its client and task id (client/bbot.py)
 
 
 # --- version probing, for the capabilities a bootstrapping Sentinel declares ------------------------------------------
 
 VERSION_ARGS = {'nmap': [NMAP_BIN, '--version'], 'naabu': [NAABU_BIN, '-version'], 'nuclei': [NUCLEI_BIN, '-version'],
-                'testssl': [TESTSSL_BIN, '--version'], 'wpscan': [WPSCAN_BIN, '--version'], 'wafw00f': [WAFW00F_BIN, '--version']}
+                'testssl': [TESTSSL_BIN, '--version'], 'wpscan': [WPSCAN_BIN, '--version'], 'wafw00f': [WAFW00F_BIN, '--version'],
+                'bbot': [bbot.BBOT_BIN, '--version']}
 
 
 def gvm_available():

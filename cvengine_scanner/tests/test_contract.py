@@ -42,6 +42,25 @@ class ContractFixtureTests(unittest.TestCase):
                 errors = sorted(validator(contract.target_schema(path.stem)).iter_errors(fixture('targets', path.stem)), key=str)
                 self.assertEqual(errors, [])
 
+    def test_every_partial_fixture_validates_against_the_schema_for_its_kind(self):
+        files = sorted((contract.FIXTURES / 'partials').glob('*.json'))
+        self.assertEqual([p.stem for p in files], list(contract.streamed()))
+        for path in files:
+            with self.subTest(kind=path.stem):
+                errors = sorted(validator(contract.partial_schema(path.stem)).iter_errors(fixture('partials', path.stem)), key=str)
+                self.assertEqual(errors, [])
+        with self.assertRaises(KeyError):
+            contract.partial_schema('nmap')
+
+    def test_a_done_bbot_result_names_its_batches_and_mode(self):
+        check = validator(contract.result_schema('bbot_discovery'))
+        good = fixture('results', 'bbot_discovery')
+        self.assertTrue(check.is_valid(good))
+        for missing in ('partials', 'mode'):
+            with self.subTest(missing=missing):
+                self.assertFalse(check.is_valid({k: v for k, v in good.items() if k != missing}))
+        self.assertTrue(check.is_valid({'outcome': 'error', 'error': 'bbot exited 1'}))
+
     def test_the_waf_result_has_no_version_or_confidence_and_is_bounded(self):
         check = validator(contract.result_schema('waf'))
         good = {'outcome': 'done', 'products': [{'name': 'x' * 100, 'manufacturer': 'y' * 100}] * 20, 'generic': False}
