@@ -460,6 +460,7 @@ class Daemon:
             return None
         if current[2] != self._registered[2]:
             logger.info('capabilities changed: now %s', ', '.join(current[2]))
+        self.heartbeat_ok_at = time.time()  # the server answered: as good as a heartbeat for the health check and the updater's readiness question
         self._register_pending = False
         self._registered = current
         self._note_contract(reply)
