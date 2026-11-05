@@ -13,7 +13,8 @@ import re
 import time
 from urllib.parse import urljoin, urlsplit
 
-from . import cms, fingerprint, http, js_libraries, versions
+from .. import cms, versions
+from . import fingerprint, http, js_libraries
 
 logger = logging.getLogger(__name__)
 

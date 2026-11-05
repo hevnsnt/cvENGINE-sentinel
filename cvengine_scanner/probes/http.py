@@ -7,7 +7,8 @@ import re
 import socket
 import threading
 
-from . import transport, versions
+from .. import versions
+from . import transport
 
 CONNECT_TIMEOUT, READ_TIMEOUT = 3, 6
 PROBE_TOTAL_SECONDS = 20  # wall-clock budget for one probe: the per-read timeouts alone let a host that trickles bytes hold a worker thread for good

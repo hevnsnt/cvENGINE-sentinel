@@ -1,6 +1,7 @@
 """Ported from cvENGINE's web/tests/test_cms_products.py (its tests that need no database), run against the library copy."""
 from unittest import TestCase as SimpleTestCase
-from cvengine_scanner.probes import cms, fingerprint, version_probes as probes
+from cvengine_scanner import cms
+from cvengine_scanner.probes import fingerprint, version_probes as probes
 from cvengine_scanner.tests.probes.test_probes import answers, page
 DRUPAL_PAGE = ('<html><head><meta name="Generator" content="Drupal 10 (https://www.drupal.org)">'
                '<script src="/core/assets/vendor/jquery/jquery.min.js?v=3.7.1"></script>'

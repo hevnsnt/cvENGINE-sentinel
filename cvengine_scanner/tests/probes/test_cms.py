@@ -1,6 +1,7 @@
 """Ported from cvENGINE's web/tests/test_cms.py (its tests that need no database), run against the library copy."""
 from unittest import TestCase as SimpleTestCase
-from cvengine_scanner.probes import cms, version_probes as probes
+from cvengine_scanner import cms
+from cvengine_scanner.probes import version_probes as probes
 from cvengine_scanner.tests.probes.test_probes import answers, page
 HEAD = (
     "<link rel='stylesheet' href='https://rt.test/wp-content/themes/t/main.css?ver=1790752965' />\n"
