@@ -22,6 +22,11 @@ def min_supported():
     return load()['min_supported_contract_version']
 
 
+def kind_since(kind):
+    """The contract version that introduced ``kind``: a Sentinel declaring an older one cannot run it. ``KeyError`` for an unknown kind."""
+    return load()['kind_since'][kind]
+
+
 def result_schema(kind):
     """A self-contained schema for the result of a ``kind`` task (``$defs`` included, so a validator needs nothing else). ``KeyError`` for a
     kind the contract does not describe."""

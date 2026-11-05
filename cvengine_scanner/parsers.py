@@ -208,18 +208,25 @@ def parse_waf_output(text, strict=False):
     rows = [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
     if strict and not rows:
         raise ToolOutputError('wafw00f wrote no readable result (the site may not have answered)')
+    products = waf_products((row.get('firewall'), row.get('manufacturer')) for row in rows if row.get('detected'))
+    return {'products': products, 'generic': any(row.get('detected') for row in rows) and not products}
+
+
+def waf_products(pairs):
+    """``[{'name', 'manufacturer'?}]`` from ``(name, manufacturer)`` pairs: the one rule for a product, whether wafw00f's own report or a Sentinel's
+    ``waf`` result names it. Names are stripped and cut, a generic or empty name and a repeat (any case) are dropped, an empty manufacturer is left
+    out, and at most ``MAX_WAF_PRODUCTS`` are kept."""
     products, seen = [], set()
-    for row in rows:
-        if not row.get('detected'):
-            continue
-        name = str(row.get('firewall') or '').strip()[:WAF_NAME_LEN]
+    for name, manufacturer in pairs:
+        name = str(name or '').strip()[:WAF_NAME_LEN]
         if name.lower() in GENERIC_WAF_NAMES or name.lower() in seen:
             continue
         seen.add(name.lower())
         product = {'name': name}
-        manufacturer = str(row.get('manufacturer') or '').strip()[:WAF_NAME_LEN]
+        manufacturer = str(manufacturer or '').strip()[:WAF_NAME_LEN]
         if manufacturer:
             product['manufacturer'] = manufacturer
         products.append(product)
-    products = products[:MAX_WAF_PRODUCTS]
-    return {'products': products, 'generic': any(row.get('detected') for row in rows) and not products}
+        if len(products) >= MAX_WAF_PRODUCTS:
+            break
+    return products
