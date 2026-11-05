@@ -913,12 +913,22 @@ def run_nuclei_validate(mode, template, targets=None, register=None):
     raise TargetError(f'not a nuclei_validate mode: {str(mode)[:20]!r}')
 
 
+def run_alive_check(target, register=None):
+    """The ``alive_check`` kind: whether a retired name's last known addresses still answer (``cvengine_scanner.probes.alive``)."""
+    from cvengine_scanner.probes import alive
+    try:
+        return alive.run_batch(target)
+    except ValueError as exc:
+        raise TargetError(f'not a usable alive_check task ({exc})') from None
+
+
 RUNNERS = {'nmap': run_nmap, 'naabu': run_naabu, 'nuclei_light': run_nuclei, 'nuclei_targeted': run_nuclei,
            'nuclei_deep': run_nuclei, 'testssl': run_testssl, 'nmap_udp': run_nmap_udp, 'wpscan': run_wpscan,
            'openvas': openvas.run_openvas, 'discover': run_discover, 'waf': run_waf, 'http_probe': run_http_probe, 'dns_resolve': run_dns_resolve,
            'bbot_discovery': bbot.run_bbot_discovery,  # streamed: the daemon passes it its client and task id (client/bbot.py)
            'nmap_full': run_nmap_full, 'nmap_verify': run_nmap_verify, 'node2shell': run_node2shell, 'rdp_shot': run_rdp_shot,
-           'db_probe': run_db_probe, 'path_probe': run_path_probe, 'nuclei_validate': run_nuclei_validate}
+           'db_probe': run_db_probe, 'path_probe': run_path_probe, 'nuclei_validate': run_nuclei_validate,
+           'alive_check': run_alive_check}
 
 
 def run_secrets_scan(target, register=None, rules=None):
