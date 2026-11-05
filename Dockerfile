@@ -135,12 +135,26 @@ RUN curl -fsSLo /tmp/nuclei-templates.tgz "https://github.com/projectdiscovery/n
     && rm /tmp/nuclei-templates.tgz \
     && chown -R sentinel:sentinel /home/sentinel
 
-# WPScan (GPLv3, run as a separate program, never linked): mirrors cveFeed/wpscan_scan.py's own invocation.
+# WPScan (GPLv3, run as a separate program, never linked): mirrors cveFeed/wpscan_scan.py's own invocation. Reproducible: WPScan and every gem it
+# needs are installed at the exact versions of docker/wpscan/Gemfile.lock, each downloaded .gem checked against the lock's sha256 before anything is
+# installed (nothing is resolved at build time, so two builds of one commit get the same gems). Its vulnerability database is NOT fetched here: it
+# changes daily, so a build that fetched it could never be repeated. WPScan downloads it itself on the first run that needs it (a missing database
+# is always fetched; `--no-update` is never passed) and keeps it in the run-time user's home.
+COPY docker/wpscan/Gemfile docker/wpscan/Gemfile.lock /tmp/wpscan/
 RUN apt-get update -y && \
-    apt-get install -y --no-install-recommends ruby ruby-dev libcurl4-openssl-dev libxml2-dev libxslt1-dev libffi-dev zlib1g-dev && \
-    gem install wpscan -v ${WPSCAN_VERSION} --no-document && \
-    (runuser -u sentinel -- wpscan --update --no-banner || echo "WPScan database not fetched at build time; it updates on first use") && \
-    rm -rf /var/lib/apt/lists/* /root/.gem/cache
+    apt-get install -y --no-install-recommends ruby ruby-dev libcurl4-openssl-dev libxml2-dev libxslt1-dev libffi-dev zlib1g-dev pkg-config && \
+    mkdir -p /tmp/wpscan/gems && cd /tmp/wpscan/gems && \
+    awk '/^CHECKSUMS/ {on = 1; next} on && NF == 0 {on = 0} on && $1 != "bundler" {gsub(/[()]/, "", $2); sub(/^sha256=/, "", $3); print $1, $2, $3}' \
+        /tmp/wpscan/Gemfile.lock > pins && \
+    grep -qx "wpscan ${WPSCAN_VERSION} [0-9a-f]\{64\}" pins && \
+    while read -r gem version sum; do \
+        gem fetch "$gem" --version "$version" --platform ruby >/dev/null && \
+        echo "${sum}  ${gem}-${version}.gem" | sha256sum -c - || exit 1; \
+    done < pins && \
+    test "$(ls ./*.gem | wc -l)" = "$(wc -l < pins)" && \
+    NOKOGIRI_USE_SYSTEM_LIBRARIES=1 gem install --local --ignore-dependencies --no-document ./*.gem && \
+    wpscan --version | grep -F "${WPSCAN_VERSION}" && \
+    cd / && rm -rf /tmp/wpscan /var/lib/apt/lists/* /root/.gem /root/.local/share/gem
 
 # testssl.sh: needs dig (--nodns none still checks for it), hexdump and ps; the x86_64 tarball bundles an openssl
 # that still speaks SSLv2/SSLv3 and export ciphers (arm64 uses the system openssl).
@@ -195,6 +209,14 @@ RUN printf '{"config": {"modules": {"shodan_dns": {"api_key": "build-check"}}}}\
     ! grep -q 'Error parsing' /tmp/bbot-check.txt && \
     rm -f /tmp/keys.yml /tmp/bbot-check.txt && rm -rf /var/lib/apt/lists/* /root/.cache && \
     chown -R sentinel:sentinel /home/sentinel
+# bbot installs git as one of its core dependencies during the check above, and the image must not carry git. bbot records in its cache
+# (~/.bbot/cache) that its core dependencies were installed and does not look again, so git goes once that is written: then a dry run as the
+# run-time user must neither try to install anything nor fail.
+RUN apt-get purge -y git git-man && rm -rf /var/lib/apt/lists/* && \
+    ! command -v git && \
+    runuser -u sentinel -- env HOME=/home/sentinel bbot -t example.com -p subdomain-enum -rf safe --dry-run -y > /tmp/bbot-user.txt 2>&1; \
+    status=$?; cat /tmp/bbot-user.txt | tail -n 20; \
+    [ "$status" = 0 ] && ! grep -qi 'Installing core BBOT dependencies' /tmp/bbot-user.txt && rm -f /tmp/bbot-user.txt
 
 # The scanner library (pyproject.toml, cvengine_scanner/: flags, parsers, scope floor, result contract), installed from a build directory that is
 # removed again so nothing beside the client can shadow it. It has no dependencies. The build context carries no git tag, so its version is the
@@ -237,6 +259,10 @@ LABEL \
     description="Downloadable scan-stage agent for CVEngine: runs nmap, naabu, nuclei, testssl.sh, WPScan, wafw00f, Kingfisher and OpenVAS work on your own network and reports typed results back." \
     org.opencontainers.image.source="https://github.com/hevnsnt/cvENGINE-sentinel" \
     org.opencontainers.image.licenses="GPL-3.0-only"
+
+# Healthy while the daemon is running and (for the built-in scanner) its heartbeats reach the server: client/control.py health. The compose files
+# repeat it with their own timings; this one is for a container started without them.
+HEALTHCHECK --interval=60s --timeout=10s --start-period=10m --retries=3 CMD ["python3", "-m", "client.control", "health"]
 
 USER sentinel
 ENTRYPOINT ["/opt/sentinel/docker-entrypoint.sh"]

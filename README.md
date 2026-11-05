@@ -634,6 +634,22 @@ The image stamps the commit it was built from (the first 12 characters of HEAD) 
 the Sentinels page shows. An image built from a download with no `.git` reports no version unless
 `CVENGINE_SENTINEL_VERSION` is set in the container's environment.
 
+### The published image
+
+Every push to `main` and every `v*` tag builds the image for amd64 and arm64 and pushes it to `ghcr.io/hevnsnt/cvengine-sentinel`
+(`.github/workflows/publish.yml`), with an SBOM and build provenance attached to each platform. It is tagged `sha-<version>` (the
+12-character commit the client reports), `main` for the newest build of `main`, and `X.Y.Z` and `X.Y` for a tag `vX.Y.Z`; the run's summary
+prints the digest. cvENGINE's built-in scanner pins this image by digest (`scanner.lock.json` in the cvENGINE repository), so a tag moving
+never changes what an install runs. A tag cut by the *Tag a release* workflow does not start this one (GitHub never starts a workflow for
+an event its own token made), so publish such a tag with Actions, Publish, Run workflow on the tag. A Sentinel set up with `setup.sh` still
+builds its own image from this checkout.
+
+The build is reproducible from the commit: the base image is pinned by digest, every tool by version and checksum, and WPScan with every gem it
+needs at the versions and checksums in `docker/wpscan/Gemfile.lock` (regenerate it with `BUNDLE_FORCE_RUBY_PLATFORM=true bundle lock` in
+`docker/wpscan` when `WPSCAN_VERSION` changes). Nothing is updated at build time: WPScan fetches its vulnerability database on the first run that
+needs it, and the nuclei templates are the pinned release. The image has no git, no Go toolchain, no GVM stack and no docker socket; the image
+workflow checks that on every pull request and the publish workflow on what it pushed.
+
 ## The built-in scanner
 
 cvENGINE runs this image next to the server as its built-in scanner, shown as **CVEngine Scanner** (the `scanner` service of cvENGINE's own

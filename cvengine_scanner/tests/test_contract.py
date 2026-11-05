@@ -81,7 +81,7 @@ class ContractFixtureTests(unittest.TestCase):
 # ``fixtures/results/v<N>/`` and adds it to FROZEN; a fixture that needs to change belongs in a new version's set, never in an old one.
 FROZEN = {'v1': contract.FIXTURES / 'results' / 'v1', 'v2': contract.FIXTURES / 'results' / 'v2'}
 KIND_OF = {'nmap': 'nmap', 'naabu': 'naabu', 'nuclei_light': 'nuclei_light', 'testssl': 'testssl', 'nmap_udp': 'nmap_udp', 'wpscan': 'wpscan',
-           'discover': 'discover', 'openvas': 'openvas', 'waf': 'waf', 'bbot_discovery': 'bbot_discovery', 'secrets_scan': 'secrets_scan', 'error': 'nmap'}  # fixture name -> the kind it is a result of
+           'discover': 'discover', 'openvas': 'openvas', 'waf': 'waf', 'bbot_discovery': 'bbot_discovery', 'http_probe': 'http_probe', 'dns_resolve': 'dns_resolve', 'secrets_scan': 'secrets_scan', 'error': 'nmap'}  # fixture name -> the kind it is a result of
 V1_SHA256 = {
     'discover.json': '6f9825383a3efbf69724ee168a07935d965b7b57add1605a79660d269cf8f5a6',
     'error.json': 'f38516e7aecb480a2f749c9ee7fff22d0926d2056c82665754059ae05815f340',
