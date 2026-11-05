@@ -12,7 +12,9 @@ Two rules:
   NAT64) is unwrapped and judged as the IPv4 it is.
 * Not on an external Sentinel: private space (RFC 1918, CGNAT, unique local IPv6). An internal Sentinel (CVENGINE_SENTINEL_NETWORK=internal set on
   this machine) may scan it. The decision uses this machine's own setting, never a value the server sent, so the server cannot unlock private
-  space by declaring the Sentinel internal.
+  space by declaring the Sentinel internal. The one exception is cvENGINE's built-in scanner (CVENGINE_SENTINEL_BUILTIN=1 on this machine), which
+  runs next to its server and scans from the server's vantage point: it may scan the private networks the server's own scans may (the tailnet,
+  or private space where the server allows private targets), as its vantage setting names them (``use_private_ranges``).
 
 A name is checked twice: as written (no ranges, no numeric forms, no well-known local names) and, when it resolves, by every address it resolves
 to. A tool resolves the name again when it runs, so a name that changes its answer in between is not covered; callers that can pass the resolved
@@ -110,6 +112,25 @@ def use_internal_setting(check):
     _internal_setting = check
 
 
+_private_setting = None  # where the private networks a non-internal Sentinel may still scan come from; see ``use_private_ranges``
+
+
+def use_private_ranges(ranges):
+    """Say where the private networks come from that this Sentinel may scan although it is not internal: ``ranges()`` returns a list of
+    ``ipaddress`` networks. The Sentinel client registers the built-in scanner's vantage setting here (the tailnet when cvENGINE's Tailscale sidecar
+    is on, private space when cvENGINE allows private targets), which an external Sentinel never has. Until something does, there are none."""
+    global _private_setting
+    _private_setting = ranges
+
+
+def _allowed_private(ip):
+    try:
+        ranges = _private_setting() if _private_setting is not None else ()
+    except Exception:  # noqa: BLE001 - a setting that cannot be read allows nothing
+        return False
+    return any(ip.version == net.version and ip in net for net in ranges)
+
+
 def internal_allowed():
     """Whether this Sentinel may scan private space: this machine's own configuration says it sits inside a private network, and the server has
     not pulled it back to external. The server can never grant it (``config.is_internal`` is a ceiling, and is what the client registers)."""
@@ -134,7 +155,7 @@ def _judge(ip, internal):
         raise ScopeError('that address is never scanned (loopback, link-local, metadata, multicast, reserved or documentation space)')
     if str(ip) in own_addresses():
         raise ScopeError('that is this Sentinel\'s own address')
-    if not internal and any(ip in net for net in PRIVATE if net.version == ip.version):
+    if not internal and any(ip in net for net in PRIVATE if net.version == ip.version) and not _allowed_private(ip):
         raise ScopeError('private addresses are only scanned by a Sentinel configured as internal')
     return ip
 
