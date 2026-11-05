@@ -29,7 +29,7 @@ import time
 
 from cvengine_scanner.flags import (DISCOVER_FLAGS, KERNEL_MARKERS, MAX_DISCOVER_ADDRESSES, MAX_DISCOVER_HOSTS, MAX_OPEN_PER_IP, MAX_TARGETS,  # noqa: F401
                                     NAABU_FLAGS, NMAP_FLAGS, NUCLEI_FLAGS, TESTSSL_FLAGS, UDP_NSE_SCRIPTS, UDP_PORTS, WAFW00F_TIMEOUT, WPSCAN_ARGS, host_of,
-                                    wafw00f_flags)
+                                    udp_nmap_flags, wafw00f_flags)
 from cvengine_scanner.parsers import (MAX_FINDINGS, MAX_FINDINGS_BYTES, MAX_LIST_ITEMS, ToolOutputError, parse_discover_xml,  # noqa: F401
                                       parse_naabu_output, parse_nmap_xml, parse_nuclei_jsonl, parse_testssl_report, parse_waf_output)
 
@@ -467,21 +467,17 @@ def run_testssl(host, ip, port, starttls=None, timeout=900, register=None):
                        'finding': str(i.get('finding') or ''), 'cve': str(i.get('cve') or '')} for i in items]}
 
 
-# --- nmap -sU: raw XML returned as-is; cveFeed.nmap_scan.parse_xml reads UDP's own state vocabulary --------------------
+# --- nmap -sU: raw XML returned as-is; the server reads it with cvengine_scanner.nmap.parse_xml -------------------------
 
 
 def run_nmap_udp(address, timeout=1500, register=None):
-    """Run ``nmap -sU`` against one address with the same curated port list and low-rate options
-    ``cveFeed.udp_scan.nmap_flags`` uses, and return its raw XML report text (never parsed here: UDP's
-    ``open|filtered`` vocabulary and NSE script output are only read correctly by the server's own
-    ``cveFeed.nmap_scan.parse_xml``, so the Sentinel never duplicates that logic). A host name stays a name, because
-    the raw report carries it; it was judged by scope with every address it resolved to just before nmap resolves it
+    """Run ``nmap -sU`` against one address with the curated port list and low-rate options of ``cvengine_scanner.flags.udp_nmap_flags`` (the
+    server's local sweep builds its flags with the same function), and return its raw XML report text. The contract carries the raw report for
+    this kind: the server reads UDP's ``open|filtered`` vocabulary and the NSE script output with ``cvengine_scanner.nmap.parse_xml``. A host
+    name stays a name, because the raw report carries it; it was judged by scope with every address it resolved to just before nmap resolves it
     again, so a DNS answer that changes in between is the one gap."""
     address = validate_targets([address], limit=1)[0]
-    ports = ','.join(str(p) for p in UDP_PORTS)
-    scripts = ','.join(('nbstat', *UDP_NSE_SCRIPTS))
-    argv = [NMAP_BIN, *(['-6'] if _is_ipv6(address) else []), '-sU', '-sV', '--version-intensity', '3', '-Pn', '-n', '--max-retries', '1',
-            '--max-rate', '20', '--script', scripts, '--script-timeout', '30s', '-p', f'U:{ports}', '-oX', '-', address]
+    argv = [NMAP_BIN, *(['-6'] if _is_ipv6(address) else []), *udp_nmap_flags(), '-oX', '-', address]
     return {'xml': _run(argv, timeout, register)}
 
 
