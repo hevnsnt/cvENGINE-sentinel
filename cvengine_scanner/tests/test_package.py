@@ -42,3 +42,13 @@ class PackageTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+    def test_every_library_package_is_installed(self):
+        """``pyproject.toml`` lists its packages by name: a new one (``cvengine_scanner.probes``) left out would be missing from the image."""
+        root = Path(cvengine_scanner.__file__).resolve().parent
+        on_disk = {'cvengine_scanner'} | {'cvengine_scanner.' + p.parent.relative_to(root).as_posix().replace('/', '.')
+                                          for p in root.glob('*/__init__.py') if p.parent.name != 'tests'}
+        listed = (root.parent / 'pyproject.toml').read_text(encoding='utf-8')
+        for name in sorted(on_disk):
+            with self.subTest(package=name):
+                self.assertIn(f'"{name}"', listed)

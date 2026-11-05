@@ -50,6 +50,8 @@ jobs:
           print('cvengine-scanner', cvengine_scanner.__version__, 'contract', contract.version())
           for half in ('results', 'targets'):
               assert sorted((contract.FIXTURES / half).glob('*.json')), half
+          from cvengine_scanner.probes import dns, policy, version_probes  # the probes, with no dependency of their own
+          assert 'site-packages' in version_probes.__file__, version_probes.__file__
           PY
 
   contract:

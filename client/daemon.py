@@ -673,6 +673,8 @@ class Daemon:
             out = runner(target.get('cidr') or '', register=register)
         elif kind == 'waf':
             out = runner(target.get('host') or '', target.get('ip') or '', target.get('port'), target.get('scheme') or '', register=register)
+        elif kind in ('http_probe', 'dns_resolve'):  # in-process probes: the whole target, scope policy included
+            out = runner(target, register=register)
         else:  # openvas, the only other kind with a runner
             out = runner(target.get('hosts') or {}, target.get('excluded_families') or [], target.get('max_hours'), register=register,
                          preferences=target.get('preferences'))
