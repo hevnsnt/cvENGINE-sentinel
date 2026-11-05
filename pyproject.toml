@@ -24,7 +24,7 @@ Source = "https://github.com/hevnsnt/cvENGINE-sentinel"
 packages = ["cvengine_scanner", "cvengine_scanner.contract"]
 
 [tool.setuptools.package-data]
-cvengine_scanner = ["contract/*.json", "fixtures/results/*.json", "fixtures/results/v*/*.json", "fixtures/targets/*.json"]
+cvengine_scanner = ["contract/*.json", "fixtures/results/*.json", "fixtures/results/v*/*.json", "fixtures/targets/*.json", "fixtures/partials/*.json"]
 
 # The version is the git tag (v1.2.3 or 1.2.3); a checkout without tags or without git (the Docker build context has none) gets the fallback.
 [tool.setuptools_scm]

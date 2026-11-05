@@ -5,7 +5,9 @@ the Sentinel container (``docker compose exec sentinel python3 -m client.control
 waits until none are running (``wait-idle``), recreates the stack, and records how it went (``report``), which the daemon sends to cvENGINE with its
 heartbeat. A drain flag expires on its own after ``DRAIN_TTL`` and is cleared at every daemon start, so an updater that died half way never leaves a
 Sentinel drained for good. Nothing here is a command from the server: ``wanted`` only reads the update mode the server last reported, under this
-machine's own ceiling (``config.capped_self_update``). ``health`` is the container's health check: the daemon wrote its status recently.
+machine's own ceiling (``config.capped_self_update``). ``health`` is the container's health check: the daemon wrote its status recently, and for the
+built-in scanner a heartbeat reached the server within ``HEARTBEAT_MAX_AGE`` (or it is still waiting for its first enrollment). ``heartbeat`` answers
+only the second half: cvENGINE's updater asks it before it keeps a new built-in scanner image, and rolls back to the previous one otherwise.
 """
 import json
 import os
@@ -17,6 +19,7 @@ from . import config
 
 DRAIN_TTL = 2 * 3600
 STATUS_MAX_AGE = 180  # the daemon rewrites its status at every heartbeat; one older than this means it is not running
+HEARTBEAT_MAX_AGE = 180  # the built-in scanner is unhealthy when no heartbeat reached the server for this long (and restarts itself: daemon.WEDGED)
 UPDATE_STATUSES = ('waiting', 'draining', 'updating', 'done', 'failed')
 UPDATER_ENV = 'CVENGINE_SENTINEL_UPDATER'  # ``installed``: written into .env by the installer, which runs before the stack is up to be told directly
 
@@ -79,15 +82,24 @@ def is_draining(now=None):
 
 # --- the daemon's status, for the updater to read -----------------------------------------------------------------------------------------
 
-def write_status(version, in_flight, update_reply, now=None, kinds=None):
+def write_status(version, in_flight, update_reply, now=None, kinds=None, heartbeat_at=None, started_at=None):
     """Written by the daemon. ``setting`` is the daemon's effective self-update value: what cvENGINE said in the heartbeat (else the server's settings
     override), capped by this machine's own. The CLI runs in another process, which never sees the daemon's overrides, so it decides on this value.
-    ``kinds`` are the kinds of the tasks running now: the updater does not drain for an OpenVAS scan that runs for hours."""
+    ``kinds`` are the kinds of the tasks running now: the updater does not drain for an OpenVAS scan that runs for hours. ``heartbeat_at`` is when a
+    heartbeat last reached the server and ``started_at`` when the daemon started (seconds since the epoch), for ``health`` and ``heartbeat``."""
     update_reply = update_reply if isinstance(update_reply, dict) else {}
     server = update_reply.get('setting') if update_reply.get('setting') in config.SELF_UPDATE else config.overrides().get('self_update')
     setting = config.capped_self_update(server)
     _write_json('control.json', {'version': version, 'in_flight': in_flight, 'draining': is_draining(), 'mode': update_reply.get('mode'),
                                  'setting': setting, 'requested': bool(update_reply.get('requested')), 'in_flight_kinds': sorted({k for k in (kinds or []) if isinstance(k, str)}),
+                                 'at': int(now or time.time()), 'phase': 'running', 'builtin': config.builtin(),
+                                 'heartbeat_at': int(heartbeat_at) if heartbeat_at else None, 'started_at': int(started_at or now or time.time())})
+
+
+def write_enrolling(now=None):
+    """Written by the entry point while a built-in scanner with no token waits for the server's enrollment (``CVENGINE_SENTINEL_BLOB_FILE``): it is
+    alive and has nothing to heartbeat with yet, which is healthy (the server is the one that has not written a blob: its status says why)."""
+    _write_json('control.json', {'version': config.version(), 'in_flight': 0, 'draining': False, 'phase': 'enrolling', 'builtin': config.builtin(),
                                  'at': int(now or time.time())})
 
 
@@ -102,16 +114,45 @@ def idle(now=None):
 
 
 def health(now=None):
-    """``(ok, reason)``: ok when the daemon wrote its status within ``STATUS_MAX_AGE`` (the same freshness rule ``idle`` uses)."""
+    """``(ok, reason)``: ok when the daemon wrote its status within ``STATUS_MAX_AGE`` (the same freshness rule ``idle`` uses), and, for the built-in
+    scanner once it runs, a heartbeat reached the server within ``HEARTBEAT_MAX_AGE`` (since it started, when it has not heartbeated yet)."""
     status = read_status()
     if not status:
         return False, f'no daemon status at {_path("control.json")}'
     at = status.get('at')
     if not isinstance(at, int) or isinstance(at, bool):
         return False, 'the daemon status has no timestamp'
-    age = int((now or time.time()) - at)
+    now = now or time.time()
+    age = int(now - at)
     if age > STATUS_MAX_AGE:
         return False, f'the daemon status is {age}s old (more than {STATUS_MAX_AGE}s): the daemon is not running or is stuck'
+    if status.get('builtin') and status.get('phase') == 'running':
+        quiet = _quiet_for(status, now)
+        if quiet is None or quiet > HEARTBEAT_MAX_AGE:
+            return False, (f'no heartbeat has reached the server for {quiet}s (more than {HEARTBEAT_MAX_AGE}s)' if quiet is not None
+                           else 'the daemon status has no heartbeat time')
+    return True, ''
+
+
+def _quiet_for(status, now):
+    """Seconds since a heartbeat last reached the server, or since the daemon started when none has yet (it is given that long); ``None`` unknown."""
+    stamps = [v for v in (status.get('heartbeat_at'), status.get('started_at')) if isinstance(v, int) and not isinstance(v, bool)]
+    return int(now - max(stamps)) if stamps else None
+
+
+def heartbeat(status=None, now=None):
+    """``(ok, reason)``: ok when the daemon runs and a heartbeat reached the server within ``HEARTBEAT_MAX_AGE``: what the updater waits for before it
+    keeps a new built-in scanner image."""
+    status = status if status is not None else read_status()
+    now = now or time.time()
+    if status.get('phase') != 'running':
+        return False, 'the daemon is not running (still waiting for its enrollment, or no status)'
+    at = status.get('heartbeat_at')
+    if not isinstance(at, int) or isinstance(at, bool):
+        return False, 'no heartbeat has reached the server yet'
+    age = int(now - at)
+    if age > HEARTBEAT_MAX_AGE:
+        return False, f'no heartbeat has reached the server for {age}s (more than {HEARTBEAT_MAX_AGE}s)'
     return True, ''
 
 
@@ -205,7 +246,7 @@ def read_update():
 # --- command line ------------------------------------------------------------------------------------------------------------------------
 
 USAGE = ('usage: python3 -m client.control COMMAND\n'
-         'commands: status, health, wanted, setting, drain, undrain, wait-idle [--timeout S], '
+         'commands: status, health, heartbeat, wanted, setting, drain, undrain, wait-idle [--timeout S], '
          'report STATUS [--phase P] [--detail D] [--from V] [--to V], updater-run RESULT [--detail D] [--interval S], '
          'updater-installed [--interval S], updater-removed')
 
@@ -240,7 +281,7 @@ def _status_json():
 
 
 def _run(command, rest):
-    if command in ('status', 'health', 'wanted', 'setting', 'drain', 'undrain', 'updater-removed') and rest:
+    if command in ('status', 'health', 'heartbeat', 'wanted', 'setting', 'drain', 'undrain', 'updater-removed') and rest:
         raise UsageError(f'{command} takes no arguments')
     if command == 'status':
         print(_status_json())
@@ -248,6 +289,11 @@ def _run(command, rest):
         ok, why = health()
         if not ok:
             print(f'unhealthy: {why}', file=sys.stderr)
+            return 1
+    elif command == 'heartbeat':
+        ok, why = heartbeat()
+        if not ok:
+            print(f'no heartbeat: {why}', file=sys.stderr)
             return 1
     elif command == 'wanted':
         print('yes' if wanted() else 'no')

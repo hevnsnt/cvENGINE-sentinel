@@ -25,11 +25,13 @@ import time
 
 import requests
 
+from . import bbot
 from . import blob as blob_mod
 from . import config
 from . import control
 from . import httpclient
 from . import openvas
+from . import signed_in
 from . import templates
 from . import tools
 
@@ -45,6 +47,14 @@ def _describe_target(target):
     if isinstance(target.get('hosts'), (list, dict)):
         return f'{len(target["hosts"])} host(s)'
     return 'one target'
+
+
+def _shown(key, value):
+    """A setting as it may appear in the log: the vantage settings can carry a proxy login, so only their shape is shown."""
+    if key != 'vantage' or not isinstance(value, dict):
+        return value
+    return (f"{len(value.get('proxies', []))} proxy(ies), {len(value.get('private_ranges', []))} private range(s)"
+            + (' (built-in scanner only)' if not config.builtin() else ''))
 
 
 def _clip(value, limit=40):
@@ -65,6 +75,9 @@ REPORT_RETRY_SECONDS = 120.0  # and never for longer than this in all, so a dead
 MAX_RESULT_BYTES = 23 * 1024 * 1024  # the server's result route refuses a body over 24 MB with a 400 that would end the task
 RELEASE_WAIT_SECONDS = 10.0  # after the grace period, how long shutdown waits for a task thread that is still delivering its result
 AUTH_STATUSES = (401, 403)  # the server no longer accepts this Sentinel's token
+REENROLL = 75  # exit code of a built-in scanner whose token the server no longer accepts: the entry point re-enrols it from the blob file
+WEDGED = 3  # exit code of a built-in scanner whose heartbeats have not reached the server for ``control.HEARTBEAT_MAX_AGE``: compose restarts it
+WATCHDOG_EVERY = 30  # seconds between the built-in scanner's checks on its own heartbeats
 HELD_STATUSES = ('pending', 'suspended')  # cvENGINE holds the Sentinel (approval, or an administrator's decision): its poll answers 403, its token still works
 _TASK_ID = re.compile(r'[A-Za-z0-9_-]{1,64}')  # an id goes into URL paths, thread names and log lines
 
@@ -142,12 +155,15 @@ def runnable_kinds():
     """The scan kinds this Sentinel runs right now: what it polls for, declares, and accepts. ``openvas`` only while this Sentinel's own GVM
     stack answers, never a kind the operator disabled, and the internal-only kinds (``discover``) only when this machine's own configuration
     says it sits inside a private network, whatever the server's ``network`` setting says. A kind the server's contract does not have
-    (``waf`` on cvENGINE 1.3) is left out too: such a server refuses the whole poll with a 400 for it."""
+    (``waf`` on cvENGINE 1.3) is left out too: such a server refuses the whole poll with a 400 for it, and so is ``bbot_discovery`` when bbot is
+    not installed here."""
     off = config.disabled_kinds()
     kinds = [k for k in config.poll_kinds()
              if k not in off and config.server_knows(k) and (k not in config.INTERNAL_KINDS or config._local_internal())]
     if 'openvas' in kinds and not tools.gvm_ready():
         kinds.remove('openvas')
+    if 'bbot_discovery' in kinds and 'bbot' not in detected_tools():  # an image built without bbot (or a source checkout) never takes discovery work
+        kinds.remove('bbot_discovery')
     if 'secrets_scan' in kinds and not tools.kingfisher_ready():  # the binary is in the image; a source checkout may have none
         kinds.remove('secrets_scan')
     return kinds
@@ -201,6 +217,9 @@ def info():
     """What this Sentinel reports about itself: the result contract version it speaks, its client version (when known) and its host-side
     updater's last state."""
     out = {'contract_version': config.CONTRACT_VERSION}
+    if config.builtin():  # the server decides from the enrollment whether this is its built-in scanner; this only tells it the image knows it is
+        out['builtin'] = True
+        out['features'] = list(config.BUILTIN_FEATURES)
     if config.version():
         out['version'] = config.version()
     update = control.read_update()
@@ -247,6 +266,9 @@ class Daemon:
         self._polling = False  # a long poll is outstanding: it may return a task, so the updater must not see this Sentinel idle
         self._backoff = MIN_BACKOFF
         self._held_logged = None  # (status, note) of the hold last logged, so a held Sentinel says why once, not at every poll
+        self.started_at = time.time()
+        self.heartbeat_ok_at = None  # when a heartbeat last reached the server and was answered (wall clock: control.json is read by another process)
+        self.watchdog = config.builtin()  # the built-in scanner restarts itself when its heartbeats stop reaching the server
 
     # --- lifecycle --------------------------------------------------------------------------------------------
 
@@ -255,6 +277,8 @@ class Daemon:
         self._write_control()
         hb = threading.Thread(target=self._heartbeat_loop, name='sentinel-heartbeat', daemon=True)
         hb.start()
+        if self.watchdog:
+            threading.Thread(target=self._watchdog_loop, name='sentinel-watchdog', daemon=True).start()
         try:
             while not self.stop_event.is_set():
                 try:
@@ -286,9 +310,17 @@ class Daemon:
             return len(self._in_flight)
 
     def _auth_failed(self, exc):
-        """Stop for good when the server says this Sentinel's token is no longer valid: backing off and polling forever would hide it."""
+        """Stop for good when the server says this Sentinel's token is no longer valid: backing off and polling forever would hide it. The built-in
+        scanner stops with ``REENROLL`` instead, and its entry point enrols it again with the next blob the server writes (no person is involved)."""
         if getattr(exc, 'status', None) not in AUTH_STATUSES:
             return False
+        if config.builtin():
+            if not self.exit_code:
+                logger.error("the server no longer accepts the built-in scanner's token (expired or revoked); enrolling again with the next "
+                             'enrollment the server writes')
+            self.exit_code = REENROLL
+            self.stop_event.set()
+            return True
         if not self.exit_code:
             logger.error("this Sentinel's token is expired, revoked or invalid: re-enroll it (generate a new enrollment blob in cvENGINE and run "
                          "./setup.sh with it); a Sentinel switched off for more than 90 days must be re-enrolled. Stopping")
@@ -318,6 +350,7 @@ class Daemon:
                     logger.warning('heartbeat failed: %s', exc)
                 return
             out = out if isinstance(out, dict) else {}
+            self.heartbeat_ok_at = time.time()
             update_reply = out.get('update')
             self._note_contract(out)
             self._reconcile(out.get('leases'), asked_at)
@@ -328,6 +361,23 @@ class Daemon:
             logger.exception('heartbeat failed')
         finally:
             self._write_control(update_reply)
+
+    def _watchdog_loop(self):
+        """The built-in scanner's own watchdog: when no heartbeat has reached the server for ``control.HEARTBEAT_MAX_AGE`` seconds (a wedged daemon, a
+        dead connection), stop with ``WEDGED`` so compose (``restart: unless-stopped``) starts a fresh process; Docker never restarts a container only
+        because its health check fails. If the stop itself does not end the process in time, it is ended at once."""
+        while not self.stop_event.wait(WATCHDOG_EVERY):
+            if self.heartbeat_stale():
+                logger.error('no heartbeat has reached the server for more than %ss; restarting the built-in scanner', control.HEARTBEAT_MAX_AGE)
+                self.exit_code = self.exit_code or WEDGED
+                self.stop_event.set()
+                if not self._halted.wait(config.SHUTDOWN_GRACE_SECONDS + RELEASE_WAIT_SECONDS + 15):
+                    os._exit(WEDGED)
+                return
+
+    def heartbeat_stale(self, now=None):
+        last = max(self.heartbeat_ok_at or 0, self.started_at)
+        return (now or time.time()) - last > control.HEARTBEAT_MAX_AGE
 
     def _note_contract(self, reply):
         """A registration or heartbeat answer names the result contract the server speaks (``contract: {version, min_supported}``). A Sentinel whose
@@ -390,7 +440,7 @@ class Daemon:
             logger.warning('cvENGINE grants this Sentinel the internal network, but this machine is configured as external, so internal-range work '
                            'is refused here; set CVENGINE_SENTINEL_NETWORK=internal (./setup.sh with the internal flag) if it really sits inside the network')
         if before != after:
-            logger.info('settings from the server: %s', ', '.join(f'{k}={v}' for k, v in sorted(after.items())) or 'none (this machine\'s own)')
+            logger.info('settings from the server: %s', ', '.join(f'{k}={_shown(k, v)}' for k, v in sorted(after.items())) or 'none (this machine\'s own)')
         self._refresh_registration()
 
     def _registration(self):
@@ -416,6 +466,7 @@ class Daemon:
             return None
         if current[2] != self._registered[2]:
             logger.info('capabilities changed: now %s', ', '.join(current[2]))
+        self.heartbeat_ok_at = time.time()  # the server answered: as good as a heartbeat for the health check and the updater's readiness question
         self._register_pending = False
         self._registered = current
         self._note_contract(reply)
@@ -467,7 +518,8 @@ class Daemon:
         try:
             with self._lock:
                 kinds = [state.get('kind') for state in self._in_flight.values()]
-            control.write_status(config.version(), self._active_count() + (1 if self._polling else 0), self._update_reply, kinds=kinds)
+            control.write_status(config.version(), self._active_count() + (1 if self._polling else 0), self._update_reply, kinds=kinds,
+                                 heartbeat_at=self.heartbeat_ok_at, started_at=self.started_at)
         except Exception as exc:  # noqa: BLE001 - the updater's status is a side channel; it must never stop a heartbeat or a task
             logger.warning('could not write the updater status: %s', exc)
 
@@ -629,7 +681,10 @@ class Daemon:
             result = self._execute(task, self._register_proc(state))
             outcome = result.get('outcome', 'done')
             self._report_unless_dropped(task_id, state, result)
-        except tools.TargetError as exc:
+        except bbot.Stopped as exc:  # the server ended a streamed task (cancelled, expired, its scan stopped): nothing more is sent
+            outcome = 'stopped by the server'
+            logger.info('task %s was ended by the server: %s', task_id, _clip(str(exc), 200))
+        except (tools.TargetError, bbot.RunError) as exc:
             self._report_unless_dropped(task_id, state, {'outcome': 'error', 'error': str(exc)[:280]})
         except Exception as exc:  # noqa: BLE001 - one bad task must never take the daemon down
             if not state.get('dropped'):
@@ -665,8 +720,21 @@ class Daemon:
         if kind in ('nmap', 'naabu'):
             out = runner(target.get('addresses') or [], register=register)
         elif kind in ('nuclei_light', 'nuclei_targeted', 'nuclei_deep'):
-            out = runner(target.get('targets') or [], tags=target.get('tags'), severities=target.get('severities'), register=register,
-                         templates=self._approved_templates(target))
+            targets = target.get('targets') or []
+
+            def nuclei(secret_file=None):
+                return runner(targets, tags=target.get('tags'), severities=target.get('severities'), register=register,
+                              templates=self._approved_templates(target), secret_file=secret_file)
+            if task.get('signed_in'):
+                # a signed-in pass names a stored sign-in: only the built-in scanner reads it (signed_in.py), and nothing ever runs it signed out
+                if not config.builtin():
+                    raise tools.TargetError('signed-in work runs only on the built-in scanner; this Sentinel does not take it')
+                try:
+                    out = signed_in.run(self.client, task['id'], targets, lambda path: nuclei(secret_file=path))
+                except signed_in.SignedInError as exc:
+                    raise tools.TargetError(str(exc)) from None
+            else:
+                out = nuclei()
         elif kind == 'testssl':
             out = runner(target.get('host') or '', target.get('ip') or '', target.get('port'), target.get('starttls') or '', register=register)
         elif kind == 'nmap_udp':
@@ -677,6 +745,8 @@ class Daemon:
             out = runner(target.get('cidr') or '', register=register)
         elif kind == 'waf':
             out = runner(target.get('host') or '', target.get('ip') or '', target.get('port'), target.get('scheme') or '', register=register)
+        elif kind == 'bbot_discovery':  # streamed: it posts its batches itself and returns the result that closes the run
+            return runner(target, self.client, task['id'], register=register, internal=config.is_internal(), halted=self._halted)
         elif kind == 'secrets_scan':
             out = runner(target, register=register, rules=self._secret_rules(target))
         else:  # openvas, the only other kind with a runner

@@ -145,16 +145,26 @@ class RegisterTests(unittest.TestCase):
         fc = FakeClient()
         fresh_tool_probe(self)
         server_speaks(self, config.CONTRACT_VERSION)
-        with mock.patch('client.tools.detect_tools', return_value=['nmap', 'naabu']), mock.patch('client.tools.gvm_ready', return_value=True), \
+        with mock.patch('client.tools.detect_tools', return_value=['nmap', 'naabu', 'bbot']), mock.patch('client.tools.gvm_ready', return_value=True), \
                 mock.patch('client.tools.kingfisher_ready', return_value=True):
             daemon.register(fc, 'my-sentinel', 5)
         self.assertEqual(fc.paths(), [('PUT', 'sentinel')])
         body = fc.body_for('sentinel')
         self.assertEqual(body['name'], 'my-sentinel')
         self.assertEqual(body['max_concurrent'], 5)
-        self.assertEqual(body['tools'], ['nmap', 'naabu'])
+        self.assertEqual(body['tools'], ['nmap', 'naabu', 'bbot'])
         self.assertEqual(sorted(body['capabilities']), sorted(config.CAPABILITIES))
         self.assertNotIn('scope', body)
+
+    def test_bbot_discovery_is_declared_only_with_bbot_installed_and_a_server_that_knows_it(self):
+        for found, speaks, expected in ((['nmap'], config.CONTRACT_VERSION, False), (['nmap', 'bbot'], config.CONTRACT_VERSION, True),
+                                        (['nmap', 'bbot'], 2, False)):
+            fc = FakeClient()
+            fresh_tool_probe(self)
+            server_speaks(self, speaks)
+            with mock.patch('client.tools.detect_tools', return_value=found), mock.patch('client.tools.gvm_ready', return_value=True):
+                daemon.register(fc, 'my-sentinel', 1)
+            self.assertEqual('bbot_discovery' in fc.body_for('sentinel')['capabilities'], expected, (found, speaks))
 
     def test_openvas_is_declared_only_while_the_gvm_stack_answers(self):
         for gvm, expected in ((True, True), (False, False)):

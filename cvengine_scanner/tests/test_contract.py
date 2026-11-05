@@ -43,6 +43,25 @@ class ContractFixtureTests(unittest.TestCase):
                 errors = sorted(validator(contract.target_schema(path.stem)).iter_errors(fixture('targets', path.stem)), key=str)
                 self.assertEqual(errors, [])
 
+    def test_every_partial_fixture_validates_against_the_schema_for_its_kind(self):
+        files = sorted((contract.FIXTURES / 'partials').glob('*.json'))
+        self.assertEqual([p.stem for p in files], list(contract.streamed()))
+        for path in files:
+            with self.subTest(kind=path.stem):
+                errors = sorted(validator(contract.partial_schema(path.stem)).iter_errors(fixture('partials', path.stem)), key=str)
+                self.assertEqual(errors, [])
+        with self.assertRaises(KeyError):
+            contract.partial_schema('nmap')
+
+    def test_a_done_bbot_result_names_its_batches_and_mode(self):
+        check = validator(contract.result_schema('bbot_discovery'))
+        good = fixture('results', 'bbot_discovery')
+        self.assertTrue(check.is_valid(good))
+        for missing in ('partials', 'mode'):
+            with self.subTest(missing=missing):
+                self.assertFalse(check.is_valid({k: v for k, v in good.items() if k != missing}))
+        self.assertTrue(check.is_valid({'outcome': 'error', 'error': 'bbot exited 1'}))
+
     def test_the_waf_result_has_no_version_or_confidence_and_is_bounded(self):
         check = validator(contract.result_schema('waf'))
         good = {'outcome': 'done', 'products': [{'name': 'x' * 100, 'manufacturer': 'y' * 100}] * 20, 'generic': False}
@@ -62,7 +81,7 @@ class ContractFixtureTests(unittest.TestCase):
 # ``fixtures/results/v<N>/`` and adds it to FROZEN; a fixture that needs to change belongs in a new version's set, never in an old one.
 FROZEN = {'v1': contract.FIXTURES / 'results' / 'v1', 'v2': contract.FIXTURES / 'results' / 'v2'}
 KIND_OF = {'nmap': 'nmap', 'naabu': 'naabu', 'nuclei_light': 'nuclei_light', 'testssl': 'testssl', 'nmap_udp': 'nmap_udp', 'wpscan': 'wpscan',
-           'discover': 'discover', 'openvas': 'openvas', 'waf': 'waf', 'secrets_scan': 'secrets_scan', 'error': 'nmap'}  # fixture name -> its kind
+           'discover': 'discover', 'openvas': 'openvas', 'waf': 'waf', 'bbot_discovery': 'bbot_discovery', 'secrets_scan': 'secrets_scan', 'error': 'nmap'}  # fixture name -> the kind it is a result of
 V1_SHA256 = {
     'discover.json': '6f9825383a3efbf69724ee168a07935d965b7b57add1605a79660d269cf8f5a6',
     'error.json': 'f38516e7aecb480a2f749c9ee7fff22d0926d2056c82665754059ae05815f340',
@@ -74,8 +93,7 @@ V1_SHA256 = {
     'testssl.json': '0c3e9354aa1432420761aece78877e727bfca1b760dd22e26dac1769c0ba5d80',
     'wpscan.json': '548ae1d7ad40e9c5a81bf183a39fba3b3b7a270d92380da8602384db0d53b736',
 }
-
-V2_SHA256 = {**V1_SHA256, 'waf.json': '109fd92d329180c9ee7ba2e64337de0bd677023c6a85532e3154dd60aa69bcec'}  # copied when version 3 brought secrets_scan
+V2_SHA256 = {**V1_SHA256, 'waf.json': '109fd92d329180c9ee7ba2e64337de0bd677023c6a85532e3154dd60aa69bcec'}  # copied when version 3 added bbot_discovery
 
 
 class FrozenFixtureTests(unittest.TestCase):

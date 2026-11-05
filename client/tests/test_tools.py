@@ -569,7 +569,7 @@ class DetectToolsTests(unittest.TestCase):
     def test_an_installed_binary_is_reported(self):
         with mock.patch('client.tools.subprocess.run', return_value=mock.Mock(returncode=0)), \
                 mock.patch('client.tools.gvm_available', return_value=False):
-            self.assertEqual(sorted(tools.detect_tools()), ['kingfisher', 'naabu', 'nmap', 'nuclei', 'testssl', 'wafw00f', 'wpscan'])
+            self.assertEqual(sorted(tools.detect_tools()), ['bbot', 'kingfisher', 'naabu', 'nmap', 'nuclei', 'testssl', 'wafw00f', 'wpscan'])
 
     def test_gvm_is_reported_once_the_sentinels_own_gvmd_is_reachable(self):
         with mock.patch('client.tools.subprocess.run', side_effect=FileNotFoundError), \
