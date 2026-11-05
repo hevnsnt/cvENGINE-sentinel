@@ -80,11 +80,14 @@ jobs:
           docker run --rm --entrypoint wpscan cvengine-sentinel-local:ci --version | grep -F "$(grep -m1 '^ARG WPSCAN_VERSION=' Dockerfile | cut -d= -f2)"
           docker run --rm --entrypoint sh cvengine-sentinel-local:ci -c '! ls /home/sentinel/.wpscan/db/*.json >/dev/null 2>&1' \
             || { echo "::error::the image carries a WPScan database fetched at build time"; exit 1; }
-      - name: The image carries no git, Go, GVM stack or docker socket
+      - name: The image carries no Go, GVM stack, docker socket or git checkout (git only as bbot's dependency)
         run: |
           docker run --rm --entrypoint sh cvengine-sentinel-local:ci -c '
             bad=""
-            for tool in git go gvmd openvas ospd-openvas docker; do command -v "$tool" >/dev/null 2>&1 && bad="$bad $tool"; done
+            for tool in go gvmd openvas ospd-openvas docker; do command -v "$tool" >/dev/null 2>&1 && bad="$bad $tool"; done
+            # git only as one of bbot'"'"'s core dependencies (bbot installs it when it is missing); never a checkout, never without bbot
+            command -v git >/dev/null 2>&1 && ! command -v bbot >/dev/null 2>&1 && bad="$bad git"
+            find / -xdev -name .git -type d 2>/dev/null | grep -q . && bad="$bad a-git-checkout"
             [ -e /usr/local/go ] && bad="$bad /usr/local/go"
             [ -e /root/go ] && bad="$bad /root/go"
             [ -S /var/run/docker.sock ] && bad="$bad docker.sock"

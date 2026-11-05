@@ -646,7 +646,8 @@ builds its own image from this checkout.
 The build is reproducible from the commit: the base image is pinned by digest, every tool by version and checksum, and WPScan with every gem it
 needs at the versions and checksums in `docker/wpscan/Gemfile.lock` (regenerate it with `BUNDLE_FORCE_RUBY_PLATFORM=true bundle lock` in
 `docker/wpscan` when `WPSCAN_VERSION` changes). Nothing is updated at build time: WPScan fetches its vulnerability database on the first run that
-needs it, and the nuclei templates are the pinned release. The image has no git, no Go toolchain, no GVM stack and no docker socket; the image
+needs it, and the nuclei templates are the pinned release. The image has no Go toolchain, no GVM stack, no docker socket and no git checkout. It does carry the `git` program, because bbot lists
+it among its core dependencies and would otherwise try to install it at run time; the checks allow it only next to bbot. The image
 workflow checks that on every pull request and the publish workflow on what it pushed.
 
 ## The built-in scanner
