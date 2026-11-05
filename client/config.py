@@ -1,8 +1,10 @@
 """Everything the daemon reads from its environment, in one place, each with a sane default."""
+import ipaddress
 import logging
 import os
 import platform
 import socket
+from urllib.parse import urlsplit
 
 from cvengine_scanner import contract
 
@@ -20,6 +22,11 @@ DEFAULT_TOKEN_PATH = '/var/lib/cvengine-sentinel/token.json'
 KNOWN_KINDS = CAPABILITIES + INTERNAL_KINDS
 DEFAULT_POLL_WAIT = 15  # seconds the long poll (sentinel/tasks/next) may block per call
 SHUTDOWN_GRACE_SECONDS = 20  # how long a SIGTERM waits for in-flight tasks to finish before releasing them
+BUILTIN_NAME = 'CVEngine Scanner'  # what the install's own scanner is called; the server forces the same name at its enrollment
+# What the built-in scanner can do beyond the kinds, reported in ``info.features``: ``secret_read`` (signed-in nuclei through the server's single-use read
+# of a stored credential, client/signed_in.py) and ``vantage`` (it applies the server's egress proxy and private-target settings, ``vantage()``). The
+# server offers that work, and stops warning about the vantage point, only to a built-in scanner that says so.
+BUILTIN_FEATURES = ('secret_read', 'vantage')
 
 logger = logging.getLogger('sentinel.config')
 
@@ -85,7 +92,81 @@ def clean_settings(raw):
         out['max_concurrent'] = value
     if raw.get('self_update') in SELF_UPDATE:
         out['self_update'] = raw['self_update']
+    vantage = clean_vantage(raw.get('vantage'))
+    if vantage:
+        out['vantage'] = vantage
     return out
+
+
+PROXY_SCHEMES = ('http', 'https', 'socks5', 'socks5h')  # what Settings > Proxy accepts on the server (cveFeed.egress_proxy.SCHEMES)
+MAX_PROXIES = 20
+# The private space a built-in scanner may be told to scan, as the server's own scans may: the tailnet when the Tailscale sidecar is on, or every private
+# range with CVENGINE_ALLOW_PRIVATE_TARGETS. Nothing outside these is ever accepted (loopback, link-local and the rest stay refused by the scope floor).
+PRIVATE_SPACE = tuple(ipaddress.ip_network(n) for n in ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '100.64.0.0/10', 'fc00::/7'))
+
+
+def _proxy_url(value):
+    """A proxy URL from Settings > Proxy as the server sent it, or None. The URL may carry a login: it is kept as is and never logged."""
+    if not isinstance(value, str) or not value or len(value) > 400 or any(not c.isprintable() or c.isspace() for c in value):
+        return None
+    try:
+        parts = urlsplit(value)
+        port = parts.port
+    except ValueError:
+        return None
+    if parts.scheme not in PROXY_SCHEMES or not parts.hostname or parts.path not in ('', '/') or parts.query or parts.fragment or port == 0:
+        return None
+    return value
+
+
+def _private_range(value):
+    try:
+        net = ipaddress.ip_network(str(value), strict=True)
+    except ValueError:
+        return None
+    return str(net) if any(net.version == p.version and net.subnet_of(p) for p in PRIVATE_SPACE) else None
+
+
+def clean_vantage(raw):
+    """Where the server's own scans leave from, as it tells its built-in scanner (``vantage`` in the settings reply): ``proxies`` (Settings > Proxy, in
+    use), ``bypass`` (destinations that never go through a proxy: host names, ``.suffix`` domains, addresses and networks), ``proxy_private`` (private
+    addresses go through the proxy too) and ``private_ranges`` (private networks it may scan). Dropped when malformed; honoured only by a built-in scanner."""
+    if not isinstance(raw, dict):
+        return {}
+    out = {}
+    listed = raw.get('proxies') if isinstance(raw.get('proxies'), list) else []
+    proxies = [url for url in (_proxy_url(v) for v in listed[:MAX_PROXIES]) if url]
+    if proxies:
+        out['proxies'] = proxies
+        bypass = raw.get('bypass')
+        if isinstance(bypass, list):
+            out['bypass'] = [b.strip().lower() for b in bypass[:200] if isinstance(b, str) and b.strip() and len(b) <= 260 and b.isprintable()]
+        out['proxy_private'] = raw.get('proxy_private') is True
+    ranges = raw.get('private_ranges')
+    if isinstance(ranges, list):
+        clean = [r for r in (_private_range(v) for v in ranges[:20]) if r]
+        if clean:
+            out['private_ranges'] = clean
+    return out
+
+
+def builtin():
+    """CVENGINE_SENTINEL_BUILTIN=1: this is cvENGINE's own built-in scanner, the compose service next to the server. It is named ``BUILTIN_NAME``,
+    never updates itself (the server's updater swaps its image), runs no OpenVAS, reports ``info.builtin``, re-enrols by itself from
+    ``CVENGINE_SENTINEL_BLOB_FILE`` when the server stops accepting its token, and applies the server's vantage settings. Never set on any other Sentinel:
+    those settings would then reach a machine the server does not run on."""
+    return (_env('CVENGINE_SENTINEL_BUILTIN') or '').strip().lower() in ('1', 'true', 'yes', 'on')
+
+
+def vantage():
+    """The vantage settings the server sent (``clean_vantage``), or ``{}``: only a built-in scanner applies them. An external Sentinel scans from
+    its own network, with its own floor, and a server can neither send it through a proxy nor unlock private space for it."""
+    return dict(_overrides.get('vantage') or {}) if builtin() else {}
+
+
+def private_ranges():
+    """The private networks this Sentinel may scan although it is not internal: those the server's vantage settings name (a built-in scanner only)."""
+    return [ipaddress.ip_network(r) for r in vantage().get('private_ranges', [])]
 
 
 def set_overrides(values):
@@ -100,10 +181,14 @@ def overrides():
 
 
 def _local_name():
+    if builtin():
+        return BUILTIN_NAME
     return _env('CVENGINE_SENTINEL_NAME') or socket.gethostname() or 'sentinel'
 
 
 def sentinel_name():
+    if builtin():
+        return BUILTIN_NAME  # the install's own scanner keeps its one name, whatever a setting says
     return _overrides.get('name') or _local_name()
 
 
@@ -115,7 +200,7 @@ def local_settings():
     # a disabled kind the server does not know is left out: cvENGINE 1.3 refuses the whole registration (400) for a disabled_kinds entry it has no such kind for
     out = {'network': 'internal' if _local_internal() else 'external', 'disabled_kinds': sorted(k for k in _local_disabled() if server_knows(k)),
            'max_concurrent': _local_max_concurrent()}
-    if _env('CVENGINE_SENTINEL_NAME'):
+    if _env('CVENGINE_SENTINEL_NAME') or builtin():
         out['name'] = _local_name()
     profile = (_env('CVENGINE_SENTINEL_PROFILE') or '').strip().lower()
     if profile in ('full', 'light'):
@@ -126,7 +211,10 @@ def local_settings():
 
 
 def _local_self_update():
-    """CVENGINE_SENTINEL_UPDATE: ``off``, ``manual`` or ``automatic`` for this machine, or ``None`` (unset or not one of those)."""
+    """CVENGINE_SENTINEL_UPDATE: ``off``, ``manual`` or ``automatic`` for this machine, or ``None`` (unset or not one of those). Always ``off`` for the
+    built-in scanner: cvENGINE's updater swaps its pinned image, and an image never rebuilds itself."""
+    if builtin():
+        return 'off'
     value = (_env('CVENGINE_SENTINEL_UPDATE') or '').strip().lower()
     return value if value in SELF_UPDATE else None
 
@@ -179,7 +267,7 @@ def disabled_kinds():
     current = _overrides
     kinds = _local_disabled() | set(current.get('disabled_kinds') or ())
     profile = current.get('profile') or (_env('CVENGINE_SENTINEL_PROFILE') or '').strip().lower()
-    return kinds | {'openvas'} if profile == 'light' else kinds
+    return kinds | {'openvas'} if profile == 'light' or builtin() else kinds  # the built-in scanner has no GVM stack
 
 
 def registered_capabilities(kinds=None):
@@ -291,8 +379,31 @@ def token_path():
     return _env('CVENGINE_SENTINEL_TOKEN_FILE', DEFAULT_TOKEN_PATH)
 
 
+def blob_file():
+    """CVENGINE_SENTINEL_BLOB_FILE: a file holding the provisioning blob, in the same format as CVENGINE_SENTINEL_BLOB (the built-in scanner's, which
+    the server writes into a volume the two share)."""
+    return _env('CVENGINE_SENTINEL_BLOB_FILE')
+
+
+MAX_BLOB_BYTES = 16384
+
+
 def blob():
-    return _env('CVENGINE_SENTINEL_BLOB')
+    """The provisioning blob: CVENGINE_SENTINEL_BLOB, else the content of CVENGINE_SENTINEL_BLOB_FILE (read afresh at every call, so a blob the server
+    replaced is seen), else ``None``. Never logged: it is a live enrollment secret."""
+    value = _env('CVENGINE_SENTINEL_BLOB')
+    if value:
+        return value
+    path = blob_file()
+    if not path:
+        return None
+    try:
+        with open(path, encoding='utf-8') as handle:
+            text = handle.read(MAX_BLOB_BYTES + 1)
+    except (OSError, UnicodeDecodeError):
+        return None
+    text = text.strip()
+    return text if text and len(text) <= MAX_BLOB_BYTES else None
 
 
 def allow_insecure():

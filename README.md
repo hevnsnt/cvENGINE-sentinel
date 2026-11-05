@@ -32,6 +32,7 @@ takes only the provisioning blob from the server.
 - [OpenVAS](#openvas)
 - [Updates](#updates)
 - [Runtime behaviour](#runtime-behaviour)
+- [The built-in scanner](#the-built-in-scanner)
 - [Testing](#testing)
 - [Security model](#security-model)
 
@@ -212,6 +213,8 @@ container. "Not passed by compose" below means a value in `.env` has no effect; 
 | Variable                                                                                                        | Required         | Default                                               | Meaning                                                                                                                                                                                           | Read by                                                                   |
 | --------------------------------------------------------------------------------------------------------------- | ---------------- | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
 | `CVENGINE_SENTINEL_BLOB`                                                                                        | First start only | none                                                  | The one-time provisioning blob. Ignored once a token is saved.                                                                                                                                    | daemon (`client/config.py`); `setup.sh` takes it from the environment too |
+| `CVENGINE_SENTINEL_BLOB_FILE` | No | none | A file that holds the provisioning blob, in the same format, read when there is no saved token and `CVENGINE_SENTINEL_BLOB` is not set. Never logged. The built-in scanner reads its enrollment this way (see [The built-in scanner](#the-built-in-scanner)). | daemon (`client/config.py`) |
+| `CVENGINE_SENTINEL_BUILTIN` | No | unset | `1` only on cvENGINE's own built-in scanner, which cvENGINE's compose file runs. Never set it on another Sentinel. See [The built-in scanner](#the-built-in-scanner). | daemon (`client/config.py`) |
 | `CVENGINE_SENTINEL_NAME`                                                                                        | No               | the container's host name                             | The name on the Sentinels page. Reported to cvENGINE only when set, so a rename made in cvENGINE sticks across container recreates unless this is set.                                            | daemon                                                                    |
 | `COMPOSE_PROFILES`                                                                                              | No               | unset: light (no OpenVAS containers)                  | `openvas` starts the OpenVAS/GVM stack (full). `setup.sh` and `.env.example` set it to `openvas`.                                                                                                 | Docker Compose                                                            |
 | `CVENGINE_SENTINEL_PROFILE`                                                                                     | No               | unset                                                 | `full` or `light`. `light` never runs OpenVAS. Keep it in step with `COMPOSE_PROFILES`; `setup.sh` writes both.                                                                                   | daemon                                                                    |
@@ -602,7 +605,11 @@ Re-running `install-updater.sh` rewrites that file (a `systemctl edit` drop-in s
 `python3 -m client.control health` exits 0 when the daemon wrote its status within the last 180 seconds, else exits 1
 and prints `unhealthy: <reason>`. A busy Sentinel is healthy. The daemon rewrites its status at every heartbeat and
 whenever a task starts or ends. Docker shows the result in `docker compose ps`; it does not restart an unhealthy
-container on its own.
+container on its own. The image declares the same check (`HEALTHCHECK`), so a container started without the compose file has it too.
+
+For the built-in scanner the check is stricter: it also fails when no heartbeat has reached the server for 180 seconds (counted from the start
+while there has been none yet). It passes while the scanner waits for its first enrollment. `python3 -m client.control heartbeat` answers only
+"has a heartbeat reached the server in the last 180 seconds": cvENGINE's updater asks it before it keeps a new scanner image.
 
 ### Status files
 
@@ -617,6 +624,7 @@ The `sentinel-state` volume (`/var/lib/cvengine-sentinel` in the container) hold
 | `update.json`                                                    | The progress of the current or last update.                                                                 |
 | `updater.json`                                                   | When the updater last ran and how it went.                                                                  |
 | `drain`                                                          | Present while the updater has asked the Sentinel to take no new tasks (expires after 2 hours).              |
+| `blob.spent` | The built-in scanner only: the sha256 of the last enrollment blob it redeemed or the server refused, so it never tries one twice. |
 
 ### Files the checkout keeps out of git
 
@@ -630,6 +638,33 @@ so the image can stamp its commit.
 The image stamps the commit it was built from (the first 12 characters of HEAD) into itself, and that is the version
 the Sentinels page shows. An image built from a download with no `.git` reports no version unless
 `CVENGINE_SENTINEL_VERSION` is set in the container's environment.
+
+## The built-in scanner
+
+cvENGINE runs this image next to the server as its built-in scanner, shown as **CVEngine Scanner** (the `scanner` service of cvENGINE's own
+`docker-compose.yml`, pinned there by digest). It is a Sentinel like any other, with `CVENGINE_SENTINEL_BUILTIN=1`, which changes these things:
+
+- **Name and updates.** It is always called CVEngine Scanner, and its self-update setting is always `off`: cvENGINE's updater replaces its image,
+  and rolls back to the previous image if the new one does not heartbeat.
+- **No OpenVAS.** It never declares the `openvas` kind (cvENGINE runs OpenVAS itself, when that is turned on).
+- **Enrollment with no person.** With no saved token it reads the blob from `CVENGINE_SENTINEL_BLOB_FILE`, which the server writes into a volume
+  only the two share, and waits for it (healthy meanwhile). When the server stops accepting its token (expired or revoked) it forgets the token
+  and enrols again with the next blob the server writes. A blob it redeemed, or one the server refused, is never tried twice; it waits for the
+  file to change. The blob is never logged.
+- **It restarts itself when its heartbeats stop.** When none has reached the server for 180 seconds it stops with exit code 3, and compose
+  (`restart: unless-stopped`) starts a fresh process. Docker never restarts a container only because its health check fails.
+- **What it reports.** `info.builtin = true` and `info.features` (`secret_read`, `vantage`). The server decides from the enrollment whether a
+  Sentinel is its built-in scanner, never from this; the features tell it this image can do the two things below.
+- **Signed-in nuclei.** A nuclei task marked `signed_in` names a stored sign-in. Only the built-in scanner runs it: it reads the credential once with
+  `POST /api/v1/sentinel/tasks/<id>/secret`, writes it as a nuclei secrets file (mode 600, in a private directory on `/dev/shm`), runs nuclei with
+  `-sf` and `-dr` (no redirects), then overwrites and removes the file. Any value of it that a finding echoes is replaced by `***`. Every other
+  Sentinel refuses such a task, so it is never run signed out (`client/signed_in.py`).
+- **The server's vantage point.** cvENGINE sends it, in its settings, the egress proxy of Settings > Proxy and the private networks the server's own
+  scans may reach (the tailnet when cvENGINE's Tailscale sidecar is on, private space when `CVENGINE_ALLOW_PRIVATE_TARGETS` is set). It sends
+  nuclei, WPScan, testssl.sh and wafw00f through that proxy, as the server does (nmap, naabu and the UDP sweep use raw sockets and go direct), and
+  never directly when no proxy suits a tool. Its scope floor lets it scan those private networks and nothing else of private space. Only the built-in
+  scanner applies these settings; on any other Sentinel they are ignored, so a server can never send it through a proxy or unlock private space for it.
+  The proxy URLs can carry a login and are never logged (`client/egress.py`).
 
 ## Testing
 
