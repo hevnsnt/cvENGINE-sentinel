@@ -2,3 +2,12 @@
 requests==2.34.2
 python-gvm==27.10.1
 xmltodict==1.0.4  # the scanner library reads nmap XML with it (pyproject.toml); installed here so the image pins it
+# The contract 3 kinds, pinned like the server's web/requirements.txt: h11 for the vendored node2shell detector (client/vendor), aardwolf and Pillow for
+# the RDP pre-authentication screenshot (client/rdp.py), and the database clients the one credential-less attempt of db_probe uses (client/dbprobe.py;
+# PostgreSQL is spoken directly, so no libpq).
+h11==0.16.0
+aardwolf==0.2.16
+Pillow>=13.0.0,<14
+redis==8.1.0
+PyMySQL==1.2.3
+pymongo==4.19.0
