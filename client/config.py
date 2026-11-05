@@ -9,7 +9,10 @@ from urllib.parse import urlsplit
 from cvengine_scanner import contract
 
 CAPABILITIES = ['nmap', 'naabu', 'nuclei_light', 'nuclei_targeted', 'nuclei_deep', 'testssl', 'nmap_udp', 'wpscan', 'openvas', 'waf', 'bbot_discovery',
-                'http_probe', 'dns_resolve']
+                'http_probe', 'dns_resolve',
+                # contract 3: asked for only from a server whose contract has them (server_knows). path_probe and nuclei_validate are offered
+                # only to the install's built-in scanner; an external Sentinel declares them and is never handed one.
+                'nmap_full', 'nmap_verify', 'node2shell', 'rdp_shot', 'db_probe', 'path_probe', 'nuclei_validate']
 CONTRACT_VERSION = contract.version()  # the result contract this Sentinel speaks: the packaged sentinel_contract.json's, declared at registration and every heartbeat
 KIND_SINCE = contract.load()['kind_since']  # the contract version that introduced each kind (waf: 2, bbot_discovery, http_probe and dns_resolve: 3)
 PRE_CONTRACT_SERVER = 1  # what a server speaks when its replies name no contract: cvENGINE 1.3 and older, whose kinds are the version 1 kinds

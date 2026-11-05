@@ -210,3 +210,26 @@ GENERIC_WAF_NAMES = frozenset({'generic', 'unknown', 'none', ''})  # something b
 def wafw00f_flags(timeout):
     """The flags of one wafw00f run that may take ``timeout`` seconds, ``-T`` (a request's timeout) never longer than that."""
     return ['-a', '-r', '-T', str(min(timeout, WAFW00F_REQUEST_TIMEOUT)), '--no-colors', '-f', 'json']
+
+
+# nmap_full: every TCP port of one address, open ports only (cveFeed.nmap_scan.FULL_PORT_FLAGS and HOST_TIMEOUT_FULL). -n: the target is an address.
+NMAP_FULL_FLAGS = [*NMAP_FULL_PORT_FLAGS, '-n', '--host-timeout', '10m']
+# nmap_verify: service detection on the named ports of one address; the intensity and the NSE scripts come from the task, each checked here.
+NMAP_VERIFY_FLAGS = ['-sV', '-Pn', '-n']
+# The NSE scripts an nmap_verify task may name are NSE_SCRIPTS above, the server's reviewed list: a name not on it is refused, whatever the server
+# sent, so a task can never run an intrusive or a brute-force script.
+NSE_SCRIPT_TIMEOUT = '20s'
+MAX_VERIFY_PORTS = 64
+
+# path_probe: whether the path a scan leaves from answers a malformed segment (cveFeed.path_probe). nmap sends both segments, since only nmap holds
+# the raw-socket capability in the Sentinel image: a plain SYN (-sS) and nmap's T7 probe, FIN+PSH+URG (-sF --scanflags FINPSHURG). --reason says
+# whether a reset came back. One closed port per address, no retries.
+PATH_PROBE_PLAIN = ['-sS', '-Pn', '-n', '--reason', '--max-retries', '0', '--host-timeout', '15s']
+PATH_PROBE_ODD = ['-sF', '--scanflags', 'FINPSHURG', '-Pn', '-n', '--reason', '--max-retries', '0', '--host-timeout', '15s']
+MAX_PATH_TARGETS = 8  # cveFeed.path_probe.MAX_TARGETS
+
+# nuclei_validate: an AI-written or approved template, checked or run exactly as cveFeed.templategen does on the server.
+NUCLEI_VALIDATE_FLAGS = ['-validate', '-duc', '-silent']
+NUCLEI_FIXTURE_FLAGS = ['-jsonl', '-silent', '-duc', '-ni', '-rl', '2', '-timeout', '2', '-retries', '0']
+NUCLEI_TEMPLATE_FLAGS = ['-jsonl', '-silent', '-duc', '-ni', '-rl', '10', '-timeout', '10', '-retries', '0']
+MAX_TEMPLATE_BYTES = 200_000  # cveFeed.validation.MAX_INSTALLED_TEMPLATE_BYTES: the contract's bound on the template text
