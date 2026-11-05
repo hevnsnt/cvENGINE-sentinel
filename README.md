@@ -634,17 +634,51 @@ python -m unittest discover -s client/tests -t .
 python -m unittest discover -s cvengine_scanner/tests -t .
 ```
 
-The second command runs the scanner library's tests. `cvengine_scanner/` (see `pyproject.toml`) holds the code the
-cvENGINE server shares with the client: the scan flags, the output parsers, the scope floor, and the result contract
-(`contract/sentinel_contract.json`, a byte-identical copy of the server's `web/agentapi/sentinel_contract.json`) with its
-fixtures. It needs Python 3.12 or newer and has no dependencies. The image installs it with `pip install`; `client/tools.py` and `client/scope.py` keep their old names for it.
+The second command runs the scanner library's tests (see "The scanner library" below).
 
 The tests never touch the host's gvmd, credentials or tool binaries. CI (`.github/workflows/`) runs them on every
 pull request and push to `main` (the client on Python 3.13 and 3.14, the `cvengine_scanner` library on 3.12, 3.13 and 3.14: the
 library's floor is 3.12 because the cvENGINE server imports it), checks that the vendored contract equals the server's (it
-retries the fetch three times and fails when the server's file cannot be fetched), checks the shell scripts with `sh -n`, `bash -n` and
+retries the fetch three times and fails when the server's file cannot be fetched), installs the library from a git tag the way
+the server pins it, checks the shell scripts with `sh -n`, `bash -n` and
 shellcheck, validates `docker-compose.yml` with and without the `openvas` profile, and builds the image and
 smoke-tests it.
+
+### The scanner library
+
+`cvengine_scanner/` (see `pyproject.toml`) is the one copy of the scanner code that the client and the cvENGINE server both
+import. The server keeps no copy of its own. It holds:
+
+- `flags.py`, the scan policy: the nmap and nuclei flag builders, the reviewed NSE scripts, `-etags dos` on every nuclei
+  run, the UDP port list, the probe ports and the per-task limits;
+- `parsers.py` and `nmap.py`, the readers of tool output (nmap XML and its service inventory, naabu, nuclei JSON lines,
+  testssl.sh, wafw00f);
+- `fingerprint.py`, `cms.py`, `versions.py` and `soft404.py`, the pure readers of a web response (technologies and their
+  versions, which CMS a page is, whether a "200" is really a not-found page). They never fetch anything: the server does
+  the fetching and hands them what it read;
+- `scope.py`, the Sentinel's own scope floor;
+- `contract/sentinel_contract.json`, a byte-identical copy of the server's `web/agentapi/sentinel_contract.json`, with the
+  fixtures for each kind in `fixtures/`. The fixtures under `fixtures/results/v1/` are frozen: they are what a Sentinel of
+  contract version 1 sent, and their hashes are checked.
+
+It needs Python 3.12 or newer, and its one dependency is `xmltodict`. Everything in it is pure: no subprocess, no network
+and no Django. The image installs it with `pip install`.
+
+**Releases.** The version is the git tag (`setuptools-scm`), so a release is just an annotated tag on `main`:
+
+```bash
+git tag -a v1.4.0 -m "cvengine-scanner 1.4.0" && git push origin v1.4.0
+```
+
+Use `vMAJOR.MINOR.PATCH`. Raise MAJOR when a function the server calls changes or goes away, and MINOR for a new kind or
+function. A tag is never moved or reused. The server pins the tag in its `web/requirements.txt`, and its Docker build and its
+CI both install it from there:
+
+```
+cvengine-scanner @ git+https://github.com/hevnsnt/cvENGINE-sentinel@v1.4.0
+```
+
+To ship a library change to the server, merge it here, tag it, then bump that pin on the server in a pull request of its own.
 
 ### Testing OpenVAS
 
