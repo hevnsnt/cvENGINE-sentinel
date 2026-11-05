@@ -630,7 +630,9 @@ Every push to `main` and every `v*` tag builds the image for amd64 and arm64 and
 (`.github/workflows/publish.yml`), with an SBOM and build provenance attached to each platform. It is tagged `sha-<version>` (the
 12-character commit the client reports), `main` for the newest build of `main`, and `X.Y.Z` and `X.Y` for a tag `vX.Y.Z`; the run's summary
 prints the digest. cvENGINE's built-in scanner pins this image by digest (`scanner.lock.json` in the cvENGINE repository), so a tag moving
-never changes what an install runs. A Sentinel set up with `setup.sh` still builds its own image from this checkout.
+never changes what an install runs. A tag cut by the *Tag a release* workflow does not start this one (GitHub never starts a workflow for
+an event its own token made), so publish such a tag with Actions, Publish, Run workflow on the tag. A Sentinel set up with `setup.sh` still
+builds its own image from this checkout.
 
 The build is reproducible from the commit: the base image is pinned by digest, every tool by version and checksum, and WPScan with every gem it
 needs at the versions and checksums in `docker/wpscan/Gemfile.lock` (regenerate it with `BUNDLE_FORCE_RUBY_PLATFORM=true bundle lock` in
