@@ -1,0 +1,42 @@
+# Creates a release tag (annotated) on a commit of main. The scanner library's version is its git tag (setuptools-scm), and cvENGINE pins
+# the library by that tag, so cutting a library release is: merge to main, then run this workflow with the version. Run by hand only.
+name: Tag a release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to create, vMAJOR.MINOR.PATCH (for example v1.4.0)"
+        required: true
+      ref:
+        description: "Commit of main to tag (a full SHA); empty tags the tip of main"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Create and push the tag
+        env:
+          TAG: ${{ inputs.tag }}
+          REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::the tag must look like v1.4.0"; exit 1; }
+          target=$(git rev-parse --verify "${REF:-origin/main}^{commit}")
+          # only a commit that is on main can be released
+          git merge-base --is-ancestor "$target" origin/main || { echo "::error::$target is not on main"; exit 1; }
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null; then echo "::error::$TAG exists already"; exit 1; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" "$target" -m "Release $TAG"
+          git push origin "refs/tags/$TAG"
+          echo "Tagged $TAG at $target" >> "$GITHUB_STEP_SUMMARY"
