@@ -13,9 +13,9 @@ CAPABILITIES = ['nmap', 'naabu', 'nuclei_light', 'nuclei_targeted', 'nuclei_deep
                 # contract 3: asked for only from a server whose contract has them (server_knows). path_probe and nuclei_validate are offered
                 # only to the install's built-in scanner; an external Sentinel declares them and is never handed one.
                 'nmap_full', 'nmap_verify', 'node2shell', 'rdp_shot', 'db_probe', 'path_probe', 'nuclei_validate',
-                'secrets_scan', 'alive_check', 'bucket_check', 'vhost_probe', 'subdir_probe']
+                'secrets_scan', 'alive_check', 'bucket_check', 'vhost_probe', 'subdir_probe', 'route_probe']
 CONTRACT_VERSION = contract.version()  # the result contract this Sentinel speaks: the packaged sentinel_contract.json's, declared at registration and every heartbeat
-KIND_SINCE = contract.load()['kind_since']  # the contract version that introduced each kind (waf: 2, bbot_discovery, http_probe, dns_resolve, secrets_scan, alive_check, bucket_check, vhost_probe and subdir_probe: 3)
+KIND_SINCE = contract.load()['kind_since']  # the contract version that introduced each kind (waf: 2, bbot_discovery, http_probe, dns_resolve, secrets_scan, alive_check, bucket_check, vhost_probe, subdir_probe and route_probe: 3)
 PRE_CONTRACT_SERVER = 1  # what a server speaks when its replies name no contract: cvENGINE 1.3 and older, whose kinds are the version 1 kinds
 INTERNAL_CAPABILITY = 'network:internal'  # mirrors agentapi.sentinel_broker.INTERNAL_CAPABILITY
 INTERNAL_KINDS = ['discover']  # scan kinds only an internal Sentinel declares: the server sweeps a declared private range only through one

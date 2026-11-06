@@ -15,6 +15,7 @@ hosts actually asked are reported back.
 - ``vhost``: the other sites an address serves for the names cvENGINE already knows (the ``vhost_probe`` kind);
 - ``subdir``: the applications mounted under well-known subdirectories of a web host, with their curated data ``subdir_apps.json`` (the
   ``subdir_probe`` kind);
+- ``routes``: how a host's web routes answer an anonymous request, and the sign-in state they show (the ``route_probe`` kind);
 - ``versions``, ``fingerprint``, ``cms``, ``wp_core``, ``js_libraries``, ``soft404``, ``sensitive``: the pure readers of what a host answered,
   shared with cvENGINE.
 
