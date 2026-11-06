@@ -4,7 +4,8 @@ cvENGINE used to make from its own server.
 cvENGINE asks, and decides what an answer means (``cveFeed.hosting.canonical_name``, ``cveFeed.domain_ownership``, ``cveFeed.discovery.discover_ip``);
 this module only asks. Two lists, both under the task's scope policy:
 
-- ``dns``: ``[{id, name, type}]`` with ``type`` one of ``CNAME`` (the name a hostname's alias chain ends at: the answer's canonical name when the
+- ``dns``: ``[{id, name, type}]`` with ``type`` one of ``A`` (the addresses of a name, A and AAAA records: what cvENGINE's archived-host and
+  unresolved-host checks read), ``CNAME`` (the name a hostname's alias chain ends at: the answer's canonical name when the
   name has an address, none when it does not), ``NS`` and ``MX`` (the record texts of a domain) and ``PTR`` (``name`` is an address). Each answer is
   ``ok`` (with its records), ``none`` (the resolver answered that there is nothing: NXDOMAIN or no such record) or ``unknown`` (a timeout, a
   failure, a refusal by the policy): cvENGINE never reads ``unknown`` as ``none``.
@@ -27,7 +28,7 @@ MAX_DNS = 200
 MAX_CERTS = 50
 MAX_RECORDS = 50
 MAX_NAMES = 100
-DNS_TYPES = ('CNAME', 'NS', 'MX', 'PTR')
+DNS_TYPES = ('A', 'CNAME', 'NS', 'MX', 'PTR')
 DNS_TIMEOUT = 5  # seconds one question may take in all (the resolver's lifetime)
 TLS_TIMEOUT = 3  # cveFeed.discovery.IP_LOOKUP_TIMEOUT: the connection and the handshake
 
@@ -79,6 +80,22 @@ def ask(item, policy, resolver):
     import dns.resolver
     import dns.reversename
     try:
+        if item['type'] == 'A':
+            found, unanswered = [], False
+            for rtype in ('A', 'AAAA'):
+                try:
+                    found += [rd.to_text() for rd in resolver.resolve(name, rtype).rrset]
+                except dns.resolver.NXDOMAIN:
+                    break  # the name does not exist: there is no AAAA either
+                except dns.resolver.NoAnswer:
+                    continue
+                except (dns.exception.DNSException, OSError):
+                    unanswered = True
+            if found:
+                return {'id': item['id'], 'status': 'ok', 'records': list(dict.fromkeys(found))[:MAX_RECORDS]}
+            if unanswered:  # a family nobody answered: that says nothing about the name
+                return {'id': item['id'], 'status': 'unknown', 'records': [], 'error': 'no answer'}
+            return {'id': item['id'], 'status': 'none', 'records': []}
         if item['type'] == 'CNAME':
             for rtype in ('A', 'AAAA'):  # the canonical name of a name that has an address: what getaddrinfo's CANONNAME gave
                 answer = resolver.resolve(name, rtype, raise_on_no_answer=False)

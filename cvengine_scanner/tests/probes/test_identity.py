@@ -96,6 +96,25 @@ class DnsTests(unittest.TestCase):
         self.assertEqual(got['dns'][1]['records'], [])
         self.assertIn('Timeout', got['dns'][1]['error'])
 
+    def test_an_a_read_returns_the_addresses_of_both_families(self):
+        got, resolver = self.run_dns([item('a', 'www.example.test', 'A')], {('www.example.test', 'A'): FakeAnswer([FakeRdata('93.184.215.14')]),
+                                                                     ('www.example.test', 'AAAA'): FakeAnswer([FakeRdata('2001:db8::1')])})
+        self.assertEqual(got['dns'], [{'id': 'a', 'status': 'ok', 'records': ['93.184.215.14', '2001:db8::1']}])
+        self.assertEqual([r for _n, r in resolver.asked], ['A', 'AAAA'])
+
+    def test_an_a_read_is_none_for_nxdomain_or_no_records_and_unknown_when_a_family_failed(self):
+        import dns.exception
+        import dns.resolver
+        got, _ = self.run_dns([item('a', 'example.test', 'A'), item('b', 'www.example.test', 'A')],
+                              {('example.test', 'A'): dns.resolver.NXDOMAIN(), ('www.example.test', 'A'): dns.resolver.NoAnswer(),
+                               ('www.example.test', 'AAAA'): dns.exception.Timeout()})
+        self.assertEqual(got['dns'][0], {'id': 'a', 'status': 'none', 'records': []})
+        self.assertEqual(got['dns'][1]['status'], 'unknown')  # no A record, and the AAAA question was not answered
+        got, _ = self.run_dns([item('a', 'www.example.test', 'A')], {('www.example.test', 'A'): dns.resolver.NoAnswer(), ('www.example.test', 'AAAA'): dns.resolver.NoAnswer()})
+        self.assertEqual(got['dns'][0], {'id': 'a', 'status': 'none', 'records': []})
+        got, _ = self.run_dns([item('a', 'www.example.test', 'A')], {('www.example.test', 'A'): dns.exception.Timeout(), ('www.example.test', 'AAAA'): FakeAnswer([FakeRdata('2001:db8::1')])})
+        self.assertEqual(got['dns'][0], {'id': 'a', 'status': 'ok', 'records': ['2001:db8::1']})  # what was answered is kept
+
     def test_a_ptr_asks_the_reverse_name_of_an_address_the_policy_allows(self):
         got, resolver = self.run_dns([item('p', '93.184.215.14', 'PTR')], {('14.215.184.93.in-addr.arpa.', 'PTR'): FakeAnswer([FakeRdata('host.example.net.')])})
         self.assertEqual(got['dns'], [{'id': 'p', 'status': 'ok', 'records': ['host.example.net.']}])
