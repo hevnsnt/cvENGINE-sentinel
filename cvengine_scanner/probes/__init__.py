@@ -12,6 +12,8 @@ hosts actually asked are reported back.
 - ``dns``: name resolution (the ``dns_resolve`` kind);
 - ``alive``: whether a retired name's last known addresses still answer (the ``alive_check`` kind);
 - ``buckets``: anonymous checks of cloud storage buckets (the ``bucket_check`` kind);
+- ``hygiene``, ``mailfail``, ``rdap``: the TLS certificate probes and the email authentication review of a target's names (the ``hygiene_check`` kind);
+- ``dangling_dns``: the lookups that rate baddns's dangling-DNS findings (the ``dangling_dns_check`` kind);
 - ``versions``, ``fingerprint``, ``cms``, ``wp_core``, ``js_libraries``, ``soft404``, ``sensitive``: the pure readers of what a host answered,
   shared with cvENGINE.
 
