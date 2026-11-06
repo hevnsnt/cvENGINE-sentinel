@@ -584,6 +584,15 @@ def run_http_probe(target, register=None):
         raise TargetError(f'not a usable http_probe task ({exc})') from None
 
 
+def run_bucket_check(target, register=None):
+    """The ``bucket_check`` kind: anonymous checks of cloud storage buckets at the platforms' documented endpoints (``cvengine_scanner.probes.buckets``)."""
+    from cvengine_scanner.probes import buckets
+    try:
+        return buckets.run_batch(target)
+    except ValueError as exc:
+        raise TargetError(f'not a usable bucket_check task ({exc})') from None
+
+
 def run_dns_resolve(target, register=None):
     """The ``dns_resolve`` kind: this Sentinel's resolver answers for the names of the task (``cvengine_scanner.probes.dns``)."""
     from cvengine_scanner.probes import dns
@@ -928,7 +937,8 @@ RUNNERS = {'nmap': run_nmap, 'naabu': run_naabu, 'nuclei_light': run_nuclei, 'nu
            'bbot_discovery': bbot.run_bbot_discovery,  # streamed: the daemon passes it its client and task id (client/bbot.py)
            'nmap_full': run_nmap_full, 'nmap_verify': run_nmap_verify, 'node2shell': run_node2shell, 'rdp_shot': run_rdp_shot,
            'db_probe': run_db_probe, 'path_probe': run_path_probe, 'nuclei_validate': run_nuclei_validate,
-           'alive_check': run_alive_check}
+           'alive_check': run_alive_check,
+           'bucket_check': run_bucket_check}
 
 
 def run_secrets_scan(target, register=None, rules=None):

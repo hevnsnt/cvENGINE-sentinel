@@ -328,6 +328,7 @@ class PollAndExecuteTests(unittest.TestCase):
             ('http_probe', HTTP_PROBE_TARGET, {'probes': [], 'touched': [], 'refused': []}, ((HTTP_PROBE_TARGET,), {})),
             ('dns_resolve', DNS_TARGET, {'resolved': {}, 'errors': {}, 'refused': []}, ((DNS_TARGET,), {})),
             ('alive_check', ALIVE_TARGET, {'checks': [], 'touched': [], 'refused': []}, ((ALIVE_TARGET,), {})),
+            ('bucket_check', BUCKET_TARGET, {'buckets': [], 'touched': [], 'refused': []}, ((BUCKET_TARGET,), {})),
             ('openvas', {'hosts': {'192.0.2.10': 'www.example.test'}, 'excluded_families': [], 'max_hours': 24, 'preferences': {'max_checks': 3}},
              {'results': [], 'scanned_addresses': [], 'without_cve': 0, 'unusable': 0, 'partial': True},
              (({'192.0.2.10': 'www.example.test'}, [], 24), {'preferences': {'max_checks': 3}})),
@@ -923,6 +924,8 @@ HTTP_PROBE_TARGET = {'probes': [{'id': 'p1', 'host': 'www.example.test', 'probe'
 DNS_TARGET = {'names': ['www.example.test'], 'scope': HTTP_PROBE_TARGET['scope']}
 ALIVE_TARGET = {'checks': [{'id': 'c1', 'host': 'old.example.test', 'ip': '93.184.215.14', 'port': 443, 'scheme': 'https'}],
                 'scope': {**HTTP_PROBE_TARGET['scope'], 'hosts': ['93.184.215.14']}}
+BUCKET_TARGET = {'buckets': [{'id': 's3:example-static', 'provider': 's3', 'name': 'example-static'}], 'rate': 2.0,
+                 'scope': {**HTTP_PROBE_TARGET['scope'], 'hosts': [], 'domains': ['amazonaws.com']}}
 
 
 class ServerContractKindsTests(DaemonTestCase):
@@ -964,7 +967,7 @@ class ServerContractKindsTests(DaemonTestCase):
         self.assertTrue(any('speaks result contract 2' in line for line in logs.output))
 
     def test_the_probe_kinds_are_asked_for_only_from_a_contract_3_server(self):
-        self.assertEqual((config.KIND_SINCE['http_probe'], config.KIND_SINCE['dns_resolve'], config.KIND_SINCE['alive_check']), (3, 3, 3))
+        self.assertEqual((config.KIND_SINCE['http_probe'], config.KIND_SINCE['dns_resolve'], config.KIND_SINCE['alive_check'], config.KIND_SINCE['bucket_check']), (3, 3, 3, 3))
         d = self.make()
         server_speaks(self, 2)
         kinds = self.poll_kinds_sent(d)
