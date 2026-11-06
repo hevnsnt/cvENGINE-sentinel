@@ -593,6 +593,15 @@ def run_bucket_check(target, register=None):
         raise TargetError(f'not a usable bucket_check task ({exc})') from None
 
 
+def run_supplier_check(target, register=None):
+    """The ``supplier_check`` kind: passive posture checks of a third-party supplier's public names (``cvengine_scanner.probes.suppliers``)."""
+    from cvengine_scanner.probes import suppliers
+    try:
+        return suppliers.run_batch(target)
+    except ValueError as exc:
+        raise TargetError(f'not a usable supplier_check task ({exc})') from None
+
+
 def run_dns_resolve(target, register=None):
     """The ``dns_resolve`` kind: this Sentinel's resolver answers for the names of the task (``cvengine_scanner.probes.dns``)."""
     from cvengine_scanner.probes import dns
@@ -938,7 +947,8 @@ RUNNERS = {'nmap': run_nmap, 'naabu': run_naabu, 'nuclei_light': run_nuclei, 'nu
            'nmap_full': run_nmap_full, 'nmap_verify': run_nmap_verify, 'node2shell': run_node2shell, 'rdp_shot': run_rdp_shot,
            'db_probe': run_db_probe, 'path_probe': run_path_probe, 'nuclei_validate': run_nuclei_validate,
            'alive_check': run_alive_check,
-           'bucket_check': run_bucket_check}
+           'bucket_check': run_bucket_check,
+           'supplier_check': run_supplier_check}
 
 
 def run_secrets_scan(target, register=None, rules=None):
