@@ -17,7 +17,9 @@ hosts actually asked are reported back.
   ``subdir_probe`` kind);
 - ``routes``: how a host's web routes answer an anonymous request, and the sign-in state they show (the ``route_probe`` kind);
 - ``suppliers``: passive posture checks of a third-party supplier's public names (the ``supplier_check`` kind), with ``supplier_checks`` (the pure
-  evaluators), ``tls`` (the certificate), ``mail_checks`` and ``mailfail`` (SPF, DKIM, DMARC, MTA-STS and the MailFail checks);
+  evaluators), ``tls`` (the certificate), ``mail_checks`` and ``supplier_mailfail`` (SPF, DKIM, DMARC, MTA-STS and the MailFail checks);
+- ``hygiene``, ``mailfail``, ``rdap``: the TLS certificate probes and the email authentication review of a target's names (the ``hygiene_check`` kind);
+- ``dangling_dns``: the lookups that rate baddns's dangling-DNS findings (the ``dangling_dns_check`` kind);
 - ``versions``, ``fingerprint``, ``cms``, ``wp_core``, ``js_libraries``, ``soft404``, ``sensitive``: the pure readers of what a host answered,
   shared with cvENGINE.
 

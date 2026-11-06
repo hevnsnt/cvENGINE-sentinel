@@ -32,7 +32,7 @@ from .. import fingerprint as shared_fingerprint
 from .. import versions
 from . import fingerprint as page_fingerprint
 from . import http as web
-from . import mail_checks, mailfail, names, supplier_checks as checks, tls, transport
+from . import mail_checks, names, supplier_checks as checks, supplier_mailfail, tls, transport
 from .policy import ScopePolicy
 from .version_probes import challenge_of
 
@@ -46,7 +46,7 @@ MIN_GAP, MIN_HOST_GAP, MAX_GAP = 0.25, 0.5, 60.0  # a task can slow the checks d
 DEFAULT_GAP, DEFAULT_HOST_GAP = 1.0, 2.0
 TLS_COST = 3  # a certificate read is up to three handshakes: it is counted as three requests
 MTA_STS_TIMEOUT = 5
-MAX_POLICY_BYTES = mailfail.MAX_POLICY_BYTES
+MAX_POLICY_BYTES = supplier_mailfail.MAX_POLICY_BYTES
 FORBIDDEN_SUFFIXES = ('localhost', 'local', 'internal', 'lan', 'intranet', 'corp', 'home', 'home.arpa', 'onion', 'invalid')
 
 
@@ -219,7 +219,7 @@ def _email(res, domain, net, pace, budget, policy):
                 budget.spend(1)
                 pace.wait(f'mta-sts.{domain}')
                 policy_text = net.mta_sts_policy(domain, addresses)
-            found = [f for f in found if not f.check.startswith('mta_sts_')] + mailfail.evaluate_mta_sts(domain, sts, policy_text, has_mx)
+            found = [f for f in found if not f.check.startswith('mta_sts_')] + supplier_mailfail.evaluate_mta_sts(domain, sts, policy_text, has_mx)
     if net.dns_state(domain) != 'ok':  # the resolver failed on the way: an empty answer is not "no record"
         res.card['evidence']['dns'] = 'unknown'
         return

@@ -324,10 +324,10 @@ def organizational_domain(name):
 
 
 def email_findings(domain, fetch, mx, records):
-    """SPF, DMARC, DKIM and CAA review for one domain, plus the checks adapted from MailFail (``mailfail``). Same rules as cvENGINE's
+    """SPF, DMARC, DKIM and CAA review for one domain, plus the checks adapted from MailFail (``supplier_mailfail``). Same rules as cvENGINE's
     ``hygiene.email_findings`` called with injected DNS: ``fetch(name)`` reads TXT records, ``mx(name, rtype)`` says whether a record exists and
     ``records(name, rtype)`` returns any other type as text. Every answer is taken at its word, from the one resolver the caller asks."""
-    from . import mailfail
+    from . import supplier_mailfail
     askers, votes = _injected(fetch), 1
     has_mx = mx(domain, 'MX')
     txt, spf_ok, spf_seen = consensus_txt(domain, askers, 'v=spf1', votes)
@@ -360,7 +360,7 @@ def email_findings(domain, fetch, mx, records):
                 f.detail = (f'{f.detail} DMARC p={policy} already applies to this name, so mail spoofing it fails DMARC and is '
                             f'{"rejected" if policy == "reject" else "quarantined"}; publish "v=spf1 -all" if it never sends mail.')
                 f.evidence = {**f.evidence, 'dmarc_policy': policy}
-    selectors = DKIM_SELECTORS + mailfail.EXTRA_DKIM_SELECTORS
+    selectors = DKIM_SELECTORS + supplier_mailfail.EXTRA_DKIM_SELECTORS
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
         answers = pool.map(lambda selector: fetch(f'{selector}._domainkey.{domain}'), selectors)
         found = {}
@@ -371,7 +371,7 @@ def email_findings(domain, fetch, mx, records):
     findings += evaluate_dkim(domain, found, has_mx)
     findings += evaluate_caa(domain, mx(domain, 'CAA'))
     try:
-        findings += mailfail.review(domain, has_mx, txt, dmarc, found, fetch, records)
+        findings += supplier_mailfail.review(domain, has_mx, txt, dmarc, found, fetch, records)
     except Exception:  # noqa: BLE001 - the established checks above stand on their own
         logger.exception('MailFail checks failed for %s', domain)
     return findings, has_mx

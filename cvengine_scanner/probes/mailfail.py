@@ -1,63 +1,40 @@
-"""The MailFail checks, copied from cvENGINE's ``cveFeed.mailfail`` (the ``supplier_check`` kind).
+"""Email-security checks adapted from MailFail by Black Hills Information Security (https://github.com/ACK-J/MailFail), copied from cvENGINE's
+``cveFeed.mailfail`` (the ``hygiene_check`` kind runs them beside the SPF / DMARC / DKIM / CAA review of ``probes.hygiene``).
 
-Adapted from MailFail by Black Hills Information Security (https://github.com/ACK-J/MailFail). Pure evaluators over DNS answers plus ``review``,
-which runs every check for one mail domain over the caller's DNS readers. The two outbound kinds of request cvENGINE's copy can make (RDAP and
-the MTA-STS policy file) are not here: a supplier check never asks RDAP, and the policy file is fetched by ``suppliers.Network``, pinned to
-the addresses it vetted.
+MailFail is a browser extension that reviews a domain's mail setup for spoofing and takeover risks. Like MailFail these checks only read DNS,
+ask public domain registries (RDAP, ``probes.rdap``) whether a referenced domain is registered, and fetch the domain's own MTA-STS policy over
+HTTPS (under the task's scope policy). Nothing sends mail or opens an SMTP connection.
+
+Evaluators are pure functions over fetched records, so every rule is unit tested; the findings keep the server's check names and wording.
 """
 import base64
 import concurrent.futures
 import logging
 import re
 
-from .mail_checks import HIGH, INFO, LOW, MEDIUM, Finding, _txt_value, dkim_key_bits, parse_tags
+from . import names, rdap, transport
+from .hygiene import HIGH, INFO, LOW, MEDIUM, Finding, _txt_value, dkim_key_bits, parse_tags
 
 logger = logging.getLogger(__name__)
 
-
 CREDIT = 'MailFail by Black Hills Information Security (https://github.com/ACK-J/MailFail)'
-
-
 HTTP_TIMEOUT = 5
-
-
 MAX_POLICY_BYTES = 64 * 1024
-
-
+MAX_TAKEOVER_DOMAINS = 15
 MAX_REPORT_DOMAINS = 10
-
-
 SPF_MAX_TERMS = 200  # terms read from one SPF record
-
-
 SPF_MAX_DOMAINS = 30  # include:/redirect= names taken from one record
-
-
 MAX_DANE_MX = 5
-
-
 # More DKIM selectors seen in the wild (on top of hygiene.DKIM_SELECTORS), and the ARC sealing selectors of the large
 # mail platforms. Bounded on purpose: MailFail tries ~900 names, which is too many lookups for a server-side sweep.
 EXTRA_DKIM_SELECTORS = ('s1024', 's2048', 'key1', 'key2', 'dkim1', 'm1', 'sm', 'sig1', 'smtpapi', 'everlytickey1',
                         'everlytickey2', 'mailjet', 'amazonses', 'turbo-smtp')
-
-
 ARC_SELECTORS = ('arc', 'arc-20160816', 'arc-20240605', 'arcselector9901', 'arcselector10001')
-
-
 DIRECT_SEND_MX = ('mail.protection.outlook.com', 'mail.protection.partner.outlook.cn')
-
-
 DIRECT_SEND_REFERENCE = 'https://www.blackhillsinfosec.com/spoofing-microsoft-365-like-its-1995/'
-
-
-# RFC 8624 sec.3.1: algorithms that MUST NOT be used for signing (ECC-GOST is also deprecated by RFC 9558)
+# RFC 8624 §3.1: algorithms that MUST NOT be used for signing (ECC-GOST is also deprecated by RFC 9558)
 WEAK_DNSSEC_ALGORITHMS = {1: 'RSAMD5', 3: 'DSA', 5: 'RSASHA1', 6: 'DSA-NSEC3-SHA1', 7: 'RSASHA1-NSEC3-SHA1', 12: 'ECC-GOST'}
-
-
 RSA_DNSSEC_ALGORITHMS = {1, 5, 7, 8, 10}
-
-
 CHECKS_PREFIXES = ('mx_', 'mta_sts_', 'smtp_tlsrpt_', 'dane_', 'dnssec_', 'bimi_', 'arc_', 'adsp_', 'mailchannels_')
 
 
@@ -81,12 +58,14 @@ def _misplaced(values, prefix):
     return not _first(values, prefix) and next((v for v in values if prefix in v.lower()), '')
 
 
+# ----------------------------------------------------------------------------- SPF
+
 def evaluate_spf(domain, txt_records):
     values, findings = _values(txt_records), []
     bad = _misplaced(values, 'v=spf1')
     if bad:
         findings.append(_finding('spf_invalid_prefix', MEDIUM, 'SPF record does not start with v=spf1',
-                                 'Receivers only read a TXT record that begins with "v=spf1" (RFC 7208 \u00a74.5), so this one is ignored '
+                                 'Receivers only read a TXT record that begins with "v=spf1" (RFC 7208 §4.5), so this one is ignored '
                                  'and the domain has no working SPF.', domain, {'record': bad}))
     spf = _first(values, 'v=spf1').lower()
     if 'include:relay.mailchannels.net' in spf:
@@ -109,13 +88,15 @@ def spf_referenced_domains(txt_records):
     return out[:SPF_MAX_DOMAINS]
 
 
+# ----------------------------------------------------------------------------- DMARC
+
 def evaluate_dmarc(domain, records):
     values, findings = _values(records), []
     host = f'_dmarc.{domain}'
     bad = _misplaced(values, 'v=dmarc1')
     if bad:
         findings.append(_finding('dmarc_invalid_prefix', MEDIUM, 'DMARC record does not start with v=DMARC1',
-                                 'Receivers only use a record that begins with "v=DMARC1" (RFC 7489 \u00a76.3), so this policy is ignored '
+                                 'Receivers only use a record that begins with "v=DMARC1" (RFC 7489 §6.3), so this policy is ignored '
                                  'and the domain can be spoofed.', host, {'record': bad}))
     record = _first(values, 'v=dmarc1')
     if not record:
@@ -125,7 +106,7 @@ def evaluate_dmarc(domain, records):
         targets = [u.strip() for u in tags.get(tag, '').split(',') if u.strip()]
         if any(not u.lower().startswith('mailto:') for u in targets):
             findings.append(_finding(f'dmarc_{tag}_malformed', LOW, f'DMARC {tag}= is not a mailto: address',
-                                     f'{what.title()} reports are only sent to mailto: URIs (RFC 7489 \u00a76.2), so none arrive.', host,
+                                     f'{what.title()} reports are only sent to mailto: URIs (RFC 7489 §6.2), so none arrive.', host,
                                      {'record': record}))
     fo = [x.strip() for x in tags.get('fo', '').split(':') if x.strip()]
     if '1' in fo and not tags.get('ruf'):
@@ -150,17 +131,19 @@ def dmarc_report_domains(records):
 
 
 def evaluate_report_authorization(domain, report_domain, records, policy=''):
-    """RFC 7489 \u00a77.1: a report address outside the domain must publish <domain>._report._dmarc.<report domain>, or receivers
+    """RFC 7489 §7.1: a report address outside the domain must publish <domain>._report._dmarc.<report domain>, or receivers
     drop the reports. A wildcard (*._report._dmarc) record answers the same lookup. Under an enforcing ``policy`` (quarantine or
     reject) spoofed mail is already stopped and only the visibility is lost, so it is information."""
     if _first(_values(records), 'v=dmarc1'):
         return []
     enforced = policy in ('quarantine', 'reject')
-    detail = (f'{report_domain} does not publish {domain}._report._dmarc.{report_domain} (RFC 7489 \u00a77.1), so receivers drop the reports'
+    detail = (f'{report_domain} does not publish {domain}._report._dmarc.{report_domain} (RFC 7489 §7.1), so receivers drop the reports'
               + (f'. p={policy} still stops spoofed mail; only the reports are lost.' if enforced else ' and spoofing goes unseen.'))
     return [_finding('dmarc_report_unauthorized', INFO if enforced else MEDIUM, f'DMARC reports to {report_domain} are not authorised',
                      detail, f'_dmarc.{domain}', {'report_domain': report_domain, **({'policy': policy} if policy else {})})]
 
+
+# ----------------------------------------------------------------------------- DKIM, ARC, ADSP
 
 def evaluate_dkim(domain, found):
     """Extra checks on the DKIM keys found (``found`` maps selector -> record)."""
@@ -172,7 +155,7 @@ def evaluate_dkim(domain, found):
         host = f'{selector}._domainkey.{domain}'
         if 'y' in [x.strip().lower() for x in tags.get('t', '').split(':')]:
             findings.append(_finding('dkim_testing_mode', LOW, f'DKIM key {selector} is in testing mode (t=y)',
-                                     'Verifiers may treat mail signed with a testing key as unsigned (RFC 6376 \u00a73.6.1). Remove t=y.',
+                                     'Verifiers may treat mail signed with a testing key as unsigned (RFC 6376 §3.6.1). Remove t=y.',
                                      host, {'selector': selector}))
         hashes = [h.strip().lower() for h in tags.get('h', '').split(':') if h.strip()]
         if hashes and 'sha256' not in hashes:
@@ -209,6 +192,8 @@ def evaluate_adsp(domain, records):
                      'ADSP was declared historic and replaced by DMARC (RFC 7489 Appendix A.5); receivers ignore it. Remove it and '
                      'rely on DMARC.', f'_adsp._domainkey.{domain}', {'record': values[0]})]
 
+
+# ----------------------------------------------------------------------------- BIMI, MX, MailChannels
 
 def evaluate_bimi(domain, records):
     """Record checks only: the logo and certificate URLs are not fetched (they are whatever the record says)."""
@@ -255,6 +240,8 @@ def evaluate_mailchannels(domain, records):
                      {'record': record})]
 
 
+# ----------------------------------------------------------------------------- MTA-STS and TLS reporting
+
 def parse_mta_sts_mode(policy):
     for line in (policy or '').splitlines():
         key, _, value = line.partition(':')
@@ -276,7 +263,7 @@ def evaluate_mta_sts(domain, records, policy, has_mx, policy_checked=True):
                          'path.', host)]
     if not _first(values, 'v=stsv1'):
         return [_finding('mta_sts_invalid', LOW, 'MTA-STS record does not start with v=STSv1',
-                         'Senders ignore an MTA-STS record that does not begin with "v=STSv1" (RFC 8461 \u00a73.1).', host,
+                         'Senders ignore an MTA-STS record that does not begin with "v=STSv1" (RFC 8461 §3.1).', host,
                          {'record': values[0]})]
     if policy is None:
         if not policy_checked:
@@ -304,7 +291,7 @@ def evaluate_tls_reporting(domain, records, has_mx):
     record = _first(values, 'v=tlsrptv1')
     problems = []
     if not record:
-        problems.append('it does not start with v=TLSRPTv1 (RFC 8460 \u00a73)')
+        problems.append('it does not start with v=TLSRPTv1 (RFC 8460 §3)')
     else:
         targets = [u.strip().lower() for u in parse_tags(record).get('rua', '').split(',') if u.strip()]
         if not targets:
@@ -316,6 +303,8 @@ def evaluate_tls_reporting(domain, records, has_mx):
     return [_finding('smtp_tlsrpt_invalid', LOW, 'TLS-RPT record is not usable', f'Senders ignore it: {"; ".join(problems)}.',
                      host, {'record': values[0]})]
 
+
+# ----------------------------------------------------------------------------- DANE and DNSSEC
 
 def evaluate_dane(domain, tlsa_by_mx):
     """``tlsa_by_mx`` maps an MX host to its TLSA records at _25._tcp (RFC 7672)."""
@@ -374,10 +363,10 @@ def evaluate_dnssec(domain, dnskeys):
                 short_keys.append(bits)
     if bad_protocol:
         findings.append(_finding('dnssec_invalid_protocol', LOW, 'DNSKEY with a protocol other than 3',
-                                 'The protocol field must be 3 (RFC 4034 \u00a72.1.2); validators treat the key as invalid.', domain))
+                                 'The protocol field must be 3 (RFC 4034 §2.1.2); validators treat the key as invalid.', domain))
     if weak_algorithms:
         findings.append(_finding('dnssec_weak_algorithm', MEDIUM, f'DNSSEC signs with a deprecated algorithm ({", ".join(sorted(weak_algorithms))})',
-                                 'RFC 8624 \u00a73.1 says these algorithms must not be used for signing; validators increasingly treat the '
+                                 'RFC 8624 §3.1 says these algorithms must not be used for signing; validators increasingly treat the '
                                  'zone as unsigned. Roll over to ECDSAP256SHA256 (13) or ED25519 (15).', domain,
                                  {'algorithms': sorted(weak_algorithms)}))
     if short_keys:
@@ -387,19 +376,75 @@ def evaluate_dnssec(domain, dnskeys):
     return findings
 
 
+# ----------------------------------------------------------------------------- domain takeover (RDAP)
+
 def registrable(name):
     """The registrable domain of a mail-related name. Leading underscore labels (_spf, _dmarc, _report) are not host names,
     so they are dropped first: _spf.example.com -> example.com."""
-    from .names import apex_domain
     labels = (name or '').strip().lower().rstrip('.').split('.')
     while labels and labels[0].startswith('_'):
         labels.pop(0)
-    return apex_domain('.'.join(labels))
+    return names.apex_domain('.'.join(labels))
 
 
-def review(domain, has_mx, spf_txt, dmarc_txt, dkim_found, fetch, records):
+def unregistered_domains(names, domain, has_ns, registered):
+    """The registrable domains among ``names`` (other than the target's own) that no registry has: a domain that has name
+    servers is registered, so only a name with no NS records is asked about, and only an explicit "not found" counts."""
+    own = registrable(domain)
+    roots = []
+    for name in names:
+        root = registrable(name)
+        if root and root != own and root not in roots:
+            roots.append(root)
+    return [root for root in roots[:MAX_TAKEOVER_DOMAINS] if not has_ns(root) and registered(root) is False]
+
+
+def evaluate_takeover(domain, spf_domains, report_domains):
+    findings = []
+    for root in spf_domains:
+        findings.append(_finding('spf_include_registerable', HIGH, f'SPF includes {root}, which is not registered',
+                                 f'Anyone can register {root} and publish an SPF record that authorises their own servers, then send '
+                                 'mail that passes SPF as this domain. Remove the include.', domain, {'domain': root}))
+    for root in report_domains:
+        findings.append(_finding('dmarc_report_domain_registerable', HIGH, f'DMARC reports go to {root}, which is not registered',
+                                 f'Anyone can register {root} and receive this domain\'s DMARC reports, which list its mail servers '
+                                 'and senders. Point rua=/ruf= at a domain you own.', f'_dmarc.{domain}', {'domain': root}))
+    return findings
+
+
+# ----------------------------------------------------------------------------- network and the review
+
+def fetch_mta_sts_policy(domain, policy):
+    """The domain's own MTA-STS policy over verified HTTPS (RFC 8461 requires a valid certificate), connecting only to the addresses admitted once
+    by ``transport.resolve`` under ``policy`` (no rebinding between check and connect), no redirects, at most MAX_POLICY_BYTES. None when there is
+    no usable answer."""
+    import ssl
+    host = f'mta-sts.{domain}'
+    try:
+        addresses = transport.resolve(host, 443, policy)
+    except (OSError, ValueError):
+        return None
+    ctx = ssl.create_default_context()
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    conn = transport.HTTPConnection(host, 443, addresses, HTTP_TIMEOUT, policy, context=ctx)
+    try:
+        conn.request('GET', '/.well-known/mta-sts.txt', headers={'Host': host, 'User-Agent': 'CVEngine'})
+        resp = conn.getresponse()
+        if resp.status != 200:
+            return None
+        body = transport.read_body(resp, MAX_POLICY_BYTES + 1)  # a server that sends gzip despite identity is decoded, capped after decoding
+        return None if len(body) > MAX_POLICY_BYTES else body.decode('utf-8', 'replace')
+    except Exception:  # noqa: BLE001
+        return None
+    finally:
+        conn.close()
+
+
+def review(domain, has_mx, spf_txt, dmarc_txt, dkim_found, fetch, records, http=False, scope=None, rdap_on=True, rdap_get=None):
     """Every MailFail check for one mail domain. ``fetch`` reads TXT records and ``records`` (name, type) any other type, as
-    text. DNS only: cvENGINE's copy also asks RDAP and fetches the MTA-STS policy when it reads real DNS, which a supplier check never does here."""
+    text; ``http`` allows the two outbound kinds of request (RDAP and the MTA-STS policy), off when DNS is injected. ``scope`` is the task's
+    ``ScopePolicy``: the MTA-STS policy is fetched only when it lets ``mta-sts.<domain>`` be asked (else that check is not made, never read as a
+    missing policy), and an RDAP query connects only to a public address. ``rdap_on`` is the server's CVENGINE_HYGIENE_RDAP setting."""
     findings = evaluate_spf(domain, spf_txt) + evaluate_dmarc(domain, dmarc_txt) + evaluate_dkim(domain, dkim_found)
 
     def safe(label, fn):
@@ -411,25 +456,33 @@ def review(domain, has_mx, spf_txt, dmarc_txt, dkim_found, fetch, records):
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
         arc = dict(zip(ARC_SELECTORS, pool.map(lambda s: fetch(f'{s}._domainkey.{domain}'), ARC_SELECTORS)))
-        names = {'adsp': f'_adsp._domainkey.{domain}', 'bimi': f'default._bimi.{domain}', 'sts': f'_mta-sts.{domain}',
-                 'rpt': f'_smtp._tls.{domain}', 'mc': f'_mailchannels.{domain}'}
-        txt = dict(zip(names, pool.map(fetch, names.values())))
+        wanted = {'adsp': f'_adsp._domainkey.{domain}', 'bimi': f'default._bimi.{domain}', 'sts': f'_mta-sts.{domain}',
+                  'rpt': f'_smtp._tls.{domain}', 'mc': f'_mailchannels.{domain}'}
+        txt = dict(zip(wanted, pool.map(fetch, wanted.values())))
     found_arc = {s: next((r for r in rs if 'p=' in r.lower()), '') for s, rs in arc.items()}
     findings += safe('arc', lambda: evaluate_arc(domain, {s: r for s, r in found_arc.items() if r}))
     findings += safe('adsp', lambda: evaluate_adsp(domain, txt['adsp']))
     findings += safe('bimi', lambda: evaluate_bimi(domain, txt['bimi']))
     findings += safe('mailchannels', lambda: evaluate_mailchannels(domain, txt['mc']))
     findings += safe('tlsrpt', lambda: evaluate_tls_reporting(domain, txt['rpt'], has_mx))
-    findings += safe('mta-sts', lambda: evaluate_mta_sts(domain, txt['sts'], None, has_mx, policy_checked=False))
+    sts_asked = http and (scope is None or not scope.host_refusal(f'mta-sts.{domain}'))
+    findings += safe('mta-sts', lambda: evaluate_mta_sts(
+        domain, txt['sts'], fetch_mta_sts_policy(domain, scope) if (sts_asked and txt['sts']) else None, has_mx, policy_checked=sts_asked))
     mx_hosts = [r.split()[-1] for r in records(domain, 'MX') if r.split()]
     findings += safe('mx', lambda: evaluate_mx(domain, mx_hosts))
     findings += safe('dane', lambda: evaluate_dane(domain, {
         mx.rstrip('.'): records(f'_25._tcp.{mx.rstrip(".")}', 'TLSA') for mx in mx_hosts[:MAX_DANE_MX] if mx.rstrip('.')}))
     findings += safe('dnssec', lambda: evaluate_dnssec(domain, records(domain, 'DNSKEY')))
     reports = dmarc_report_domains(dmarc_txt)
-    from .mail_checks import dmarc_policy
-    policy = dmarc_policy(dmarc_txt)
+    from .hygiene import dmarc_policy
+    enforced = dmarc_policy(dmarc_txt)
     external = [r for r in reports if registrable(r) and registrable(r) != registrable(domain)][:MAX_REPORT_DOMAINS]
     for ext in external:
-        findings += safe('report-auth', lambda ext=ext: evaluate_report_authorization(domain, ext, fetch(f'{domain}._report._dmarc.{ext}'), policy))
+        findings += safe('report-auth', lambda ext=ext: evaluate_report_authorization(domain, ext, fetch(f'{domain}._report._dmarc.{ext}'), enforced))
+    if http and rdap_on:
+        has_ns = lambda name: bool(records(name, 'NS'))  # noqa: E731
+        registered = lambda name: rdap.registered(name, scope, get=rdap_get)  # noqa: E731
+        findings += safe('takeover', lambda: evaluate_takeover(
+            domain, unregistered_domains(spf_referenced_domains(spf_txt), domain, has_ns, registered),
+            unregistered_domains(reports, domain, has_ns, registered)))
     return findings

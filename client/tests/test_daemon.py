@@ -333,6 +333,8 @@ class PollAndExecuteTests(unittest.TestCase):
             ('subdir_probe', SUBDIR_TARGET, {'hosts': [], 'touched': [], 'refused': []}, ((SUBDIR_TARGET,), {})),
             ('route_probe', ROUTE_TARGET, {'routes': [], 'touched': [], 'refused': []}, ((ROUTE_TARGET,), {})),
             ('supplier_check', SUPPLIER_TARGET, {'domains': [], 'touched': [], 'refused': []}, ((SUPPLIER_TARGET,), {})),
+            ('hygiene_check', HYGIENE_TARGET, {'certs': [], 'mail': [], 'touched': [], 'refused': []}, ((HYGIENE_TARGET,), {})),
+            ('dangling_dns_check', DANGLING_TARGET, {'ratings': [], 'touched': [], 'refused': []}, ((DANGLING_TARGET,), {})),
             ('openvas', {'hosts': {'192.0.2.10': 'www.example.test'}, 'excluded_families': [], 'max_hours': 24, 'preferences': {'max_checks': 3}},
              {'results': [], 'scanned_addresses': [], 'without_cve': 0, 'unusable': 0, 'partial': True},
              (({'192.0.2.10': 'www.example.test'}, [], 24), {'preferences': {'max_checks': 3}})),
@@ -941,6 +943,11 @@ SUBDIR_TARGET = {'hosts': [{'id': 'h0', 'name': 'www.example.com', 'scheme': 'ht
 ROUTE_TARGET = {'hosts': [{'host': 'www.example.test', 'urls': ['https://www.example.test/', 'https://www.example.test/login']}],
                 'scope': {**HTTP_PROBE_TARGET['scope'], 'hosts': ['www.example.test']}}
 
+HYGIENE_TARGET = {'tls': [{'host': 'www.example.test', 'port': 443}], 'mail': [{'name': 'example.test', 'always': True}],
+                  'scope': {**HTTP_PROBE_TARGET['scope'], 'hosts': ['www.example.test']}}
+DANGLING_TARGET = {'checks': [{'id': '0', 'host': 'old.example.test', 'kind': 'ns', 'triggers': ['old.example.test']}],
+                   'providers': {'cname': [], 'nameservers': []}, 'scope': {**HTTP_PROBE_TARGET['scope'], 'hosts': ['old.example.test']}}
+
 
 class ServerContractKindsTests(DaemonTestCase):
     """cvENGINE 1.3 (contract 1, its replies name no contract) answers a poll whose ``kinds`` names one it does not have with a 400 ("kinds must be a
@@ -981,7 +988,7 @@ class ServerContractKindsTests(DaemonTestCase):
         self.assertTrue(any('speaks result contract 2' in line for line in logs.output))
 
     def test_the_probe_kinds_are_asked_for_only_from_a_contract_3_server(self):
-        self.assertEqual((config.KIND_SINCE['http_probe'], config.KIND_SINCE['dns_resolve'], config.KIND_SINCE['alive_check'], config.KIND_SINCE['bucket_check'], config.KIND_SINCE['vhost_probe'], config.KIND_SINCE['subdir_probe'], config.KIND_SINCE['route_probe'], config.KIND_SINCE['supplier_check']), (3, 3, 3, 3, 3, 3, 3, 3))
+        self.assertEqual((config.KIND_SINCE['http_probe'], config.KIND_SINCE['dns_resolve'], config.KIND_SINCE['alive_check'], config.KIND_SINCE['bucket_check'], config.KIND_SINCE['vhost_probe'], config.KIND_SINCE['subdir_probe'], config.KIND_SINCE['route_probe'], config.KIND_SINCE['supplier_check'], config.KIND_SINCE['hygiene_check'], config.KIND_SINCE['dangling_dns_check']), (3, 3, 3, 3, 3, 3, 3, 3, 3, 3))
         d = self.make()
         server_speaks(self, 2)
         kinds = self.poll_kinds_sent(d)

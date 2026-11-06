@@ -15,7 +15,7 @@ license = "GPL-3.0-only"
 dependencies = ["xmltodict>=1.0,<2"]  # the Sentinel image and the cvENGINE server both pin 1.0.4 in their requirements
 
 [project.optional-dependencies]
-test = ["jsonschema==4.26.0"]  # validates the fixtures against the contract (JSON Schema 2020-12); never needed at run time
+test = ["jsonschema==4.26.0", "dnspython==2.9.0", "cryptography==50.0.2"]  # jsonschema validates the fixtures against the contract (JSON Schema 2020-12); dnspython and cryptography run the hygiene probes' tests (the library imports them only where a probe needs them: never at run time of anything else)
 
 [project.urls]
 Source = "https://github.com/hevnsnt/cvENGINE-sentinel"

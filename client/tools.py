@@ -630,6 +630,25 @@ def run_supplier_check(target, register=None):
         raise TargetError(f'not a usable supplier_check task ({exc})') from None
 
 
+def run_hygiene_check(target, register=None):
+    """The ``hygiene_check`` kind: the TLS certificates of a target's endpoints and the email authentication review of its mail names, read from this
+    Sentinel's own vantage point (``cvengine_scanner.probes.hygiene``)."""
+    from cvengine_scanner.probes import hygiene
+    try:
+        return hygiene.run_batch(target)
+    except ValueError as exc:
+        raise TargetError(f'not a usable hygiene_check task ({exc})') from None
+
+
+def run_dangling_dns_check(target, register=None):
+    """The ``dangling_dns_check`` kind: the lookups that rate bbot's baddns findings by what an outsider can claim (``cvengine_scanner.probes.dangling_dns``)."""
+    from cvengine_scanner.probes import dangling_dns
+    try:
+        return dangling_dns.run_batch(target)
+    except ValueError as exc:
+        raise TargetError(f'not a usable dangling_dns_check task ({exc})') from None
+
+
 def run_dns_resolve(target, register=None):
     """The ``dns_resolve`` kind: this Sentinel's resolver answers for the names of the task (``cvengine_scanner.probes.dns``)."""
     from cvengine_scanner.probes import dns
@@ -977,7 +996,8 @@ RUNNERS = {'nmap': run_nmap, 'naabu': run_naabu, 'nuclei_light': run_nuclei, 'nu
            'alive_check': run_alive_check,
            'bucket_check': run_bucket_check, 'vhost_probe': run_vhost_probe, 'subdir_probe': run_subdir_probe,
            'route_probe': run_route_probe,
-           'supplier_check': run_supplier_check}
+           'supplier_check': run_supplier_check,
+           'hygiene_check': run_hygiene_check, 'dangling_dns_check': run_dangling_dns_check}
 
 
 def run_secrets_scan(target, register=None, rules=None):
