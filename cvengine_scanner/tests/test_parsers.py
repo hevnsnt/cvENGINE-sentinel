@@ -199,9 +199,17 @@ class FlagsTests(unittest.TestCase):
         self.assertEqual(flags.NUCLEI_FLAGS[flags.NUCLEI_FLAGS.index('-etags') + 1], 'dos')
 
     def test_every_flag_list_is_plain_strings(self):
-        for name in ('NMAP_FLAGS', 'NAABU_FLAGS', 'NUCLEI_FLAGS', 'TESTSSL_FLAGS', 'WPSCAN_ARGS', 'DISCOVER_FLAGS'):
+        for name in ('NMAP_FLAGS', 'NAABU_FLAGS', 'NUCLEI_FLAGS', 'TESTSSL_FLAGS', 'WPSCAN_ARGS', 'WPSCAN_THOROUGH_ARGS', 'DISCOVER_FLAGS'):
             with self.subTest(name=name):
                 self.assertTrue(all(isinstance(item, str) for item in getattr(flags, name)))
+
+    def test_the_thorough_wordpress_pass_asks_for_everything_and_its_limit_is_held_to_the_contract(self):
+        args = flags.WPSCAN_THOROUGH_ARGS
+        self.assertEqual((args[args.index('--plugins-detection') + 1], args[args.index('--themes-detection') + 1]), ('mixed', 'mixed'))
+        self.assertEqual(args[args.index('--enumerate') + 1], 'ap,at,tt')
+        self.assertEqual(flags.WPSCAN_ARGS[flags.WPSCAN_ARGS.index('--plugins-detection') + 1], 'passive')  # the quick pass is untouched
+        for given, want in ((7200, 7200), (1, 600), (10 ** 9, 86400), (None, 43200), (True, 43200), ('7200', 43200), (7200.5, 43200)):
+            self.assertEqual(flags.thorough_timeout(given), want, given)
 
     def test_the_udp_sweep_is_the_curated_list(self):
         self.assertTrue(all(0 < port < 65536 for port in flags.UDP_PORTS))

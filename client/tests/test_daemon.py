@@ -319,6 +319,8 @@ class PollAndExecuteTests(unittest.TestCase):
             ('nmap_udp', {'address': '192.0.2.10'}, {'xml': '<nmaprun/>'}, (('192.0.2.10',), {})),
             ('wpscan', {'url': 'https://www.example.test', 'token': 'tok'}, {'report': None, 'returncode': 0, 'stderr_tail': ''},
              (('https://www.example.test', 'tok'), {})),
+            ('wpscan_thorough', {'url': 'https://www.example.test', 'token': 'tok', 'timeout_seconds': 7200},
+             {'report': None, 'returncode': 0, 'stderr_tail': ''}, (('https://www.example.test', 'tok', 7200), {})),
             ('discover', {'cidr': '10.20.0.0/24'}, {'hosts': [{'ip': '10.20.0.5', 'hostnames': []}]}, (('10.20.0.0/24',), {})),
             ('waf', {'host': 'www.example.test', 'ip': '192.0.2.10', 'port': 443, 'scheme': 'https'}, {'products': [{'name': 'FortiWeb'}], 'generic': False},
              (('www.example.test', '192.0.2.10', 443, 'https'), {})),
@@ -1350,6 +1352,21 @@ class OpenvasSlotTests(DaemonTestCase):
         plan = d._poll_plan()
         self.assertIn('nmap', plan)
         self.assertNotIn('openvas', plan)  # one OpenVAS at a time
+
+    def test_one_thorough_wordpress_pass_at_a_time_and_never_the_last_free_slot_of_several(self):
+        server_speaks(self, config.CONTRACT_VERSION)  # a server whose contract has the kind
+        d = self.make(max_concurrent=3)
+        self.assertIn('wpscan_thorough', d._poll_plan())
+        self._running(d, 'nmap')
+        self.assertIn('wpscan_thorough', d._poll_plan())  # two slots free: one may go to the thorough pass
+        self._running(d, 'nmap', 'nmap')
+        self.assertNotIn('wpscan_thorough', d._poll_plan())  # it would take the last free slot
+        d = self.make(max_concurrent=3)
+        self._running(d, 'wpscan_thorough')
+        self.assertNotIn('wpscan_thorough', d._poll_plan())  # one at a time
+        self.assertIn('nmap', d._poll_plan())
+        d = self.make(max_concurrent=1)
+        self.assertIn('wpscan_thorough', d._poll_plan())  # a Sentinel with one slot has no other to leave
 
     def test_with_every_regular_slot_taken_only_openvas_is_asked_for(self):
         d = self.make(max_concurrent=1)

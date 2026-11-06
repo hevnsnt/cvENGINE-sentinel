@@ -30,6 +30,7 @@ TOOLS = {
     'testssl ip': lambda t: tools.run_testssl('www.example.test', t, 443),
     'testssl host': lambda t: tools.run_testssl(t, '93.184.215.14', 443),
     'wpscan': lambda t: tools.run_wpscan(f'https://{t}/'),
+    'wpscan_thorough': lambda t: tools.run_wpscan_thorough(f'https://{t}/'),
 }
 
 NEVER = ('127.0.0.1', '127.1.2.3', '::1', '[::1]', '::ffff:127.0.0.1', '0.0.0.0', 'localhost', 'LOCALHOST', 'foo.localhost',
@@ -44,7 +45,7 @@ PRIVATE = ('10.1.2.3', '192.168.1.10', '172.16.5.5', '100.64.0.1', 'fd12:3456::1
 class RefusedTargetTests(unittest.TestCase):
     def _assert_refused(self, target, internal):
         for name, call in TOOLS.items():
-            if name == 'wpscan' and '/' in target:
+            if name.startswith('wpscan') and '/' in target:
                 continue  # in a URL the slash starts the path: the host part is judged like any other
             if name == 'testssl host' and target in NAMES:
                 continue  # testssl.sh connects to the ip it is given and never resolves the host name (see the next test)

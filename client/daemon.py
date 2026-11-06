@@ -539,6 +539,8 @@ class Daemon:
             kinds.remove('openvas')
         if 'secrets_scan' in running and 'secrets_scan' in kinds:  # one Kingfisher at a time: about 150 MB of memory each (measured, 32 MB of input)
             kinds.remove('secrets_scan')
+        if 'wpscan_thorough' in kinds and ('wpscan_thorough' in running or (self.max_concurrent > 1 and len(running) + 1 >= self.max_concurrent)):
+            kinds.remove('wpscan_thorough')  # one thorough pass at a time (it runs for hours), and never the last free slot of a Sentinel with several
         if sum(1 for kind in running if kind != 'openvas') >= self.max_concurrent:
             kinds = [k for k in kinds if k == 'openvas']
         return kinds
@@ -741,6 +743,8 @@ class Daemon:
             out = runner(target.get('address') or '', register=register)
         elif kind == 'wpscan':
             out = runner(target.get('url') or '', target.get('token') or '', register=register)
+        elif kind == 'wpscan_thorough':  # hours per site: the task's own time limit travels in its target
+            out = runner(target.get('url') or '', target.get('token') or '', target.get('timeout_seconds'), register=register)
         elif kind == 'discover':
             out = runner(target.get('cidr') or '', register=register)
         elif kind == 'waf':
