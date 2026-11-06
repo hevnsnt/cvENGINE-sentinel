@@ -593,6 +593,24 @@ def run_bucket_check(target, register=None):
         raise TargetError(f'not a usable bucket_check task ({exc})') from None
 
 
+def run_vhost_probe(target, register=None):
+    """The ``vhost_probe`` kind: the other sites an address serves for the names cvENGINE already knows (``cvengine_scanner.probes.vhost``)."""
+    from cvengine_scanner.probes import vhost
+    try:
+        return vhost.run_batch(target)
+    except ValueError as exc:
+        raise TargetError(f'not a usable vhost_probe task ({exc})') from None
+
+
+def run_subdir_probe(target, register=None):
+    """The ``subdir_probe`` kind: the applications mounted under well-known subdirectories of a web host (``cvengine_scanner.probes.subdir``)."""
+    from cvengine_scanner.probes import subdir
+    try:
+        return subdir.run_batch(target)
+    except ValueError as exc:
+        raise TargetError(f'not a usable subdir_probe task ({exc})') from None
+
+
 def run_route_probe(target, register=None):
     """The ``route_probe`` kind: how a host's web routes answer an anonymous GET, and the sensitive data and front page libraries they show
     (``cvengine_scanner.probes.routes``), under the scope policy the task carries."""
@@ -948,7 +966,7 @@ RUNNERS = {'nmap': run_nmap, 'naabu': run_naabu, 'nuclei_light': run_nuclei, 'nu
            'nmap_full': run_nmap_full, 'nmap_verify': run_nmap_verify, 'node2shell': run_node2shell, 'rdp_shot': run_rdp_shot,
            'db_probe': run_db_probe, 'path_probe': run_path_probe, 'nuclei_validate': run_nuclei_validate,
            'alive_check': run_alive_check,
-           'bucket_check': run_bucket_check,
+           'bucket_check': run_bucket_check, 'vhost_probe': run_vhost_probe, 'subdir_probe': run_subdir_probe,
            'route_probe': run_route_probe}
 
 
