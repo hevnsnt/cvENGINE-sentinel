@@ -9,5 +9,8 @@ h11==0.16.0
 aardwolf==0.2.16
 Pillow>=13.0.0,<14
 redis==8.1.0
+# The browser of the web_screenshot kind (client/shot.py): Playwright drives the headless Chromium installed in the Dockerfile. The same pin the server's
+# web/requirements.txt carried while it took the screenshots itself.
+playwright==1.64.1
 PyMySQL==1.2.3
 pymongo==4.19.0

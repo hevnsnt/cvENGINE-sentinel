@@ -593,6 +593,19 @@ def run_bucket_check(target, register=None):
         raise TargetError(f'not a usable bucket_check task ({exc})') from None
 
 
+def run_web_screenshot(target, register=None):
+    """The ``web_screenshot`` kind: a headless Chromium photographs the pages of the task through a vetting proxy, after proving its own sandbox
+    engaged (``client.shot``); the PNGs go back as base64 and cvENGINE checks, stores and reads them. A browser that cannot prove the sandbox opens
+    nothing and says so in the result."""
+    from . import shot
+    try:
+        return shot.run(target, register=register)
+    except ValueError as exc:
+        raise TargetError(f'not a usable web_screenshot task ({exc})') from None
+    except shot.Unavailable as exc:
+        raise ToolOutputError(str(exc)) from None
+
+
 def run_dns_resolve(target, register=None):
     """The ``dns_resolve`` kind: this Sentinel's resolver answers for the names of the task (``cvengine_scanner.probes.dns``)."""
     from cvengine_scanner.probes import dns
@@ -938,7 +951,7 @@ RUNNERS = {'nmap': run_nmap, 'naabu': run_naabu, 'nuclei_light': run_nuclei, 'nu
            'nmap_full': run_nmap_full, 'nmap_verify': run_nmap_verify, 'node2shell': run_node2shell, 'rdp_shot': run_rdp_shot,
            'db_probe': run_db_probe, 'path_probe': run_path_probe, 'nuclei_validate': run_nuclei_validate,
            'alive_check': run_alive_check,
-           'bucket_check': run_bucket_check}
+           'bucket_check': run_bucket_check, 'web_screenshot': run_web_screenshot}
 
 
 def run_secrets_scan(target, register=None, rules=None):

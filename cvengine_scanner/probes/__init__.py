@@ -12,6 +12,7 @@ hosts actually asked are reported back.
 - ``dns``: name resolution (the ``dns_resolve`` kind);
 - ``alive``: whether a retired name's last known addresses still answer (the ``alive_check`` kind);
 - ``buckets``: anonymous checks of cloud storage buckets (the ``bucket_check`` kind);
+- ``screenshots``: the pure half of the ``web_screenshot`` kind (task bounds, the scope policy a browser is held to, PNG checks, the sandbox proof);
 - ``versions``, ``fingerprint``, ``cms``, ``wp_core``, ``js_libraries``, ``soft404``, ``sensitive``: the pure readers of what a host answered,
   shared with cvENGINE.
 

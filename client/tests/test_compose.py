@@ -4,6 +4,7 @@ profile: every container's log is capped, and the sentinel service stops gracefu
 stand-in registry."""
 import fnmatch
 import glob
+import hashlib
 import json
 import os
 import re
@@ -19,6 +20,7 @@ def compose_config(profiles):
     # Run against a copy, so a developer's own .env or docker-compose.override.yml cannot change the answer.
     with tempfile.TemporaryDirectory(prefix='sentinel-compose-') as tmp:
         shutil.copy(os.path.join(ROOT, 'docker-compose.yml'), tmp)
+        shutil.copytree(os.path.join(ROOT, 'config'), os.path.join(tmp, 'config'))  # compose reads the seccomp profile the sentinel service names
         env = {k: v for k, v in os.environ.items() if not k.startswith(('COMPOSE_', 'CVENGINE_', 'OPENVAS_'))}
         env['COMPOSE_PROFILES'] = profiles
         out = subprocess.run(['docker', 'compose', 'config', '--format', 'json'], cwd=tmp, env=env, capture_output=True, text=True, timeout=60)
@@ -75,6 +77,37 @@ class ComposeTests(unittest.TestCase):
         self.assertLess(text.index('RUN useradd'), text.index('USER sentinel'))
         self.assertNotIn('nuclei -update-templates', text)  # templates are pinned, not downloaded at build or start
         self.assertIn('NUCLEI_TEMPLATES_SHA256=', text)
+
+    def test_the_sentinel_container_carries_the_seccomp_profile_chromiums_sandbox_needs(self):
+        # Playwright's profile, vendored unchanged (its hash is the one THIRD-PARTY-style note in docker-compose.yml names), on the sentinel service
+        # only: the browser runs there and nowhere else, so no other service is loosened.
+        profile = os.path.join(ROOT, 'config', 'seccomp', 'playwright-chromium.json')
+        with open(profile, 'rb') as handle:
+            raw = handle.read()
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), 'cc3e61cabda6bbc1e53e54d27ba4d55a9d3be829b6dd1a596f4a7b31b1cc7849')
+        body = json.loads(raw)
+        self.assertEqual(body['defaultAction'], 'SCMP_ACT_ERRNO')
+        allowed = {name for rule in body['syscalls'] if rule['action'] == 'SCMP_ACT_ALLOW' for name in rule['names']}
+        self.assertTrue({'clone', 'setns', 'unshare'} <= allowed)
+        for config in (self.light, self.full):
+            options = config['services']['sentinel'].get('security_opt') or []
+            self.assertEqual(len(options), 1, options)
+            self.assertTrue(options[0].startswith('seccomp='), options)
+            self.assertTrue(options[0].endswith('config/seccomp/playwright-chromium.json'), options)  # the file, whatever way compose spells its path
+            for name, service in config['services'].items():
+                if name != 'sentinel':
+                    self.assertFalse([o for o in service.get('security_opt', []) if 'playwright' in o or 'chromium' in o], name)
+
+    def test_the_image_carries_the_browser_as_the_screenshot_kind_needs_it(self):
+        dockerfile, requirements = text('Dockerfile'), text('requirements.txt')
+        pin = re.search(r'(?m)^playwright==([0-9.]+)', requirements)
+        self.assertTrue(pin, 'Playwright is pinned in requirements.txt')
+        self.assertIn('playwright install --with-deps --only-shell chromium', dockerfile)  # the headless shell only, as the server image did
+        self.assertRegex(dockerfile, r'ARG PLAYWRIGHT_CHROMIUM_VERSION=\d+\.\d+\.\d+\.\d+')
+        self.assertIn('ENV PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers', dockerfile)
+        self.assertIn('runuser -u sentinel', dockerfile.split('playwright install')[1].split('# bbot (GPLv3')[0])  # launched as the run-time user too
+        self.assertLess(dockerfile.index('playwright install'), dockerfile.index('USER sentinel'))  # installed as root, run as the account
+        self.assertIn(f'v{pin.group(1)}', text('docker-compose.yml'))  # the vendored profile is the one of the pinned release
 
     def test_the_entrypoint_does_not_refresh_templates_unless_asked(self):
         with open(os.path.join(ROOT, 'docker-entrypoint.sh')) as handle:
