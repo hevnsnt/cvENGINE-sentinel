@@ -194,3 +194,29 @@ def _remove(path):
 
 def sha256_of(data):
     return hashlib.sha256(data).hexdigest()
+
+
+# --- the instance's custom secret rules (cvENGINE GET sentinel/secret-rules/bundle) -------------------------------------------------
+
+SECRET_RULES_PATH = 'sentinel/secret-rules/bundle'
+MAX_SECRET_RULES_BYTES = 64 * 1024  # the server's own cap (cveFeed.secret_rules.MAX_BYTES)
+_SECRET_RULES = {}  # sha256 -> the verified YAML text, for this process
+
+
+def secret_rules(client, sha256):
+    """The custom Kingfisher rules a ``secrets_scan`` task names by sha256, as text: fetched once per process, and used only when the bytes match.
+    The server checked them (detection only: a custom rule never carries a validator); the scanner only runs them."""
+    import io
+    if sha256 in _SECRET_RULES:
+        return _SECRET_RULES[sha256]
+    sink = io.BytesIO()
+    try:
+        digest, _size = client.download(SECRET_RULES_PATH, sink, MAX_SECRET_RULES_BYTES, timeout=DOWNLOAD_TIMEOUT)
+    except Exception as exc:  # noqa: BLE001 - any failure is the same answer: the task does not run on other rules
+        raise TemplateError(f'the custom secret rules could not be fetched: {exc}') from None
+    if digest != sha256:
+        raise TemplateError('the custom secret rules the server sent do not match the task; nothing was run')
+    text = sink.getvalue().decode('utf-8', errors='replace')
+    _SECRET_RULES.clear()  # only the current set is ever kept
+    _SECRET_RULES[sha256] = text
+    return text

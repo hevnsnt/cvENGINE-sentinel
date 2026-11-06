@@ -93,6 +93,11 @@ jobs:
           assert {'nmap_full', 'nmap_verify', 'node2shell', 'rdp_shot', 'db_probe', 'path_probe', 'nuclei_validate'} <= set(tools.RUNNERS) & set(config.CAPABILITIES)
           print('contract 3 kinds ready')"
           docker run --rm --entrypoint sh cvengine-sentinel-local:ci -c '! command -v rustc && ! command -v cargo && ! ls /usr/include/python3*/Python.h 2>/dev/null'
+      - name: Kingfisher runs as the image's unprivileged user, with its notices, and the client declares secrets_scan
+        run: |
+          docker run --rm --entrypoint kingfisher cvengine-sentinel-local:ci --version
+          docker run --rm --entrypoint test cvengine-sentinel-local:ci -f /usr/share/doc/kingfisher/NOTICE
+          docker run --rm --entrypoint python3 cvengine-sentinel-local:ci -c "from client import tools; assert tools.kingfisher_ready(); assert 'secrets_scan' in tools.RUNNERS"
       - name: The OpenVAS bootstrap check is in the image
         run: docker run --rm --entrypoint test cvengine-sentinel-local:ci -f /opt/sentinel/scripts/ci_openvas_bootstrap.py
       - name: WPScan is the pinned version, from the locked gems, and its database is not baked in

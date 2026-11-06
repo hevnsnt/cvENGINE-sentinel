@@ -164,6 +164,8 @@ def runnable_kinds():
         kinds.remove('openvas')
     if 'bbot_discovery' in kinds and 'bbot' not in detected_tools():  # an image built without bbot (or a source checkout) never takes discovery work
         kinds.remove('bbot_discovery')
+    if 'secrets_scan' in kinds and not tools.kingfisher_ready():  # the binary is in the image; a source checkout may have none
+        kinds.remove('secrets_scan')
     return kinds
 
 
@@ -535,6 +537,8 @@ class Daemon:
             running = [state.get('kind') for state in self._in_flight.values()]
         if 'openvas' in running and 'openvas' in kinds:
             kinds.remove('openvas')
+        if 'secrets_scan' in running and 'secrets_scan' in kinds:  # one Kingfisher at a time: about 150 MB of memory each (measured, 32 MB of input)
+            kinds.remove('secrets_scan')
         if sum(1 for kind in running if kind != 'openvas') >= self.max_concurrent:
             kinds = [k for k in kinds if k == 'openvas']
         return kinds
@@ -743,7 +747,7 @@ class Daemon:
             out = runner(target.get('host') or '', target.get('ip') or '', target.get('port'), target.get('scheme') or '', register=register)
         elif kind == 'bbot_discovery':  # streamed: it posts its batches itself and returns the result that closes the run
             return runner(target, self.client, task['id'], register=register, internal=config.is_internal(), halted=self._halted)
-        elif kind in ('http_probe', 'dns_resolve', 'bucket_check'):  # in-process probes: the whole target, scope policy included
+        elif kind in ('http_probe', 'dns_resolve', 'alive_check', 'bucket_check'):  # in-process probes: the whole target, scope policy included
             out = runner(target, register=register)
         elif kind == 'nmap_full':
             out = runner(target.get('address') or '', register=register)
@@ -761,10 +765,23 @@ class Daemon:
             out = runner(target.get('targets'), register=register)
         elif kind == 'nuclei_validate':
             out = runner(target.get('mode'), target.get('template'), target.get('targets'), register=register)
+        elif kind == 'secrets_scan':
+            out = runner(target, register=register, rules=self._secret_rules(target))
         else:  # openvas, the only other kind with a runner
             out = runner(target.get('hosts') or {}, target.get('excluded_families') or [], target.get('max_hours'), register=register,
                          preferences=target.get('preferences'))
         return {'outcome': 'done', **out}
+
+    def _secret_rules(self, target):
+        """The instance's custom secret rules a ``secrets_scan`` task names (``rules_bundle_sha256``), as YAML text, or ``None`` when it names none.
+        A bundle that cannot be fetched or does not match its sha256 is an error: the task is not run on another set of rules."""
+        sha256 = target.get('rules_bundle_sha256')
+        if not sha256:
+            return None
+        try:
+            return templates.secret_rules(self.client, sha256)
+        except templates.TemplateError as exc:
+            raise tools.TargetError(str(exc)) from None
 
     def _approved_templates(self, target):
         """The directory of the server's approved nuclei templates a task must run on, or ``None`` when the task names no bundle and the server asks

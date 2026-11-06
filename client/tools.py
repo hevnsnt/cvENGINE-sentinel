@@ -244,13 +244,15 @@ def _join(proc, readers):
             reader.join(5)
 
 
-def _run(argv, timeout, register=None, max_bytes=None):
+def _run(argv, timeout, register=None, max_bytes=None, env=None, ok_codes=(0,)):
     """Run ``argv`` (a fixed list, never a string, never ``shell=True``) in its own session and return its stdout, at most
     ``max_bytes`` of it (``MAX_TOOL_OUTPUT`` by default): more stops the run and raises ``ToolOutputError``. ``register``, if given, is called with a handle
     (``poll()``, ``kill()``) right after it starts, so a caller (the daemon's SIGTERM handler) can stop the whole process
-    group without waiting out the full timeout. A timeout kills the group and raises ``subprocess.TimeoutExpired``."""
+    group without waiting out the full timeout. A timeout kills the group and raises ``subprocess.TimeoutExpired``. ``env`` replaces the
+    environment of the run (Kingfisher's detection pass points every proxy at a closed port); ``ok_codes`` are the exit codes that are not a
+    failure (Kingfisher says "findings" with 200 and 205)."""
     max_bytes = max_bytes or MAX_TOOL_OUTPUT
-    proc = _start(argv, register, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    proc = _start(argv, register, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **({'env': env} if env is not None else {}))
     out, err, too_big = bytearray(), bytearray(), threading.Event()
 
     def overflow():
@@ -270,7 +272,7 @@ def _run(argv, timeout, register=None, max_bytes=None):
     _join(proc, readers)
     if too_big.is_set():
         raise ToolOutputError(f'{os.path.basename(argv[0])} wrote more than {max_bytes} bytes of output; the run was stopped')
-    if proc.returncode not in (0, None):
+    if proc.returncode not in (*ok_codes, None):
         # A crashed or killed tool leaves nothing, or something incomplete: returning that would read as "no open ports" or "no findings".
         tail = ''.join(ch for ch in err.decode('utf-8', errors='replace')[:300] if ch.isprintable() or ch == ' ').strip()
         logger.warning('%s exited %s: %s', os.path.basename(argv[0]), proc.returncode, tail)
@@ -920,19 +922,47 @@ def run_nuclei_validate(mode, template, targets=None, register=None):
     raise TargetError(f'not a nuclei_validate mode: {str(mode)[:20]!r}')
 
 
+def run_alive_check(target, register=None):
+    """The ``alive_check`` kind: whether a retired name's last known addresses still answer (``cvengine_scanner.probes.alive``)."""
+    from cvengine_scanner.probes import alive
+    try:
+        return alive.run_batch(target)
+    except ValueError as exc:
+        raise TargetError(f'not a usable alive_check task ({exc})') from None
+
+
 RUNNERS = {'nmap': run_nmap, 'naabu': run_naabu, 'nuclei_light': run_nuclei, 'nuclei_targeted': run_nuclei,
            'nuclei_deep': run_nuclei, 'testssl': run_testssl, 'nmap_udp': run_nmap_udp, 'wpscan': run_wpscan,
            'openvas': openvas.run_openvas, 'discover': run_discover, 'waf': run_waf, 'http_probe': run_http_probe, 'dns_resolve': run_dns_resolve,
            'bbot_discovery': bbot.run_bbot_discovery,  # streamed: the daemon passes it its client and task id (client/bbot.py)
            'nmap_full': run_nmap_full, 'nmap_verify': run_nmap_verify, 'node2shell': run_node2shell, 'rdp_shot': run_rdp_shot,
            'db_probe': run_db_probe, 'path_probe': run_path_probe, 'nuclei_validate': run_nuclei_validate,
+           'alive_check': run_alive_check,
            'bucket_check': run_bucket_check}
+
+
+def run_secrets_scan(target, register=None, rules=None):
+    """The ``secrets_scan`` kind (``client.secrets_scan``): imported here so ``RUNNERS`` names every kind's entry point in one place."""
+    from client import secrets_scan
+    return secrets_scan.run(target, register=register, rules=rules)
+
+
+RUNNERS['secrets_scan'] = run_secrets_scan
+KINGFISHER_BIN = os.environ.get('CVENGINE_KINGFISHER_BIN', 'kingfisher')
+
+
+def kingfisher_ready():
+    """Whether the Kingfisher binary is here: the image carries it; a Sentinel run from a source checkout may not, and then it does not declare
+    ``secrets_scan``."""
+    import shutil
+    return shutil.which(KINGFISHER_BIN) is not None
 
 
 # --- version probing, for the capabilities a bootstrapping Sentinel declares ------------------------------------------
 
 VERSION_ARGS = {'nmap': [NMAP_BIN, '--version'], 'naabu': [NAABU_BIN, '-version'], 'nuclei': [NUCLEI_BIN, '-version'],
                 'testssl': [TESTSSL_BIN, '--version'], 'wpscan': [WPSCAN_BIN, '--version'], 'wafw00f': [WAFW00F_BIN, '--version'],
+                'kingfisher': [KINGFISHER_BIN, '--version'],
                 'bbot': [bbot.BBOT_BIN, '--version']}
 
 
