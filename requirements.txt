@@ -11,3 +11,6 @@ Pillow>=13.0.0,<14
 redis==8.1.0
 PyMySQL==1.2.3
 pymongo==4.19.0
+# identity_check (cvengine_scanner.probes.identity): DNS reads and the certificate reader, pinned like the server's web/requirements.txt (imported lazily).
+dnspython==2.9.0
+cryptography==50.0.2

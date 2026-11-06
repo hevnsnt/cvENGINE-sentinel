@@ -329,6 +329,7 @@ class PollAndExecuteTests(unittest.TestCase):
             ('dns_resolve', DNS_TARGET, {'resolved': {}, 'errors': {}, 'refused': []}, ((DNS_TARGET,), {})),
             ('alive_check', ALIVE_TARGET, {'checks': [], 'touched': [], 'refused': []}, ((ALIVE_TARGET,), {})),
             ('bucket_check', BUCKET_TARGET, {'buckets': [], 'touched': [], 'refused': []}, ((BUCKET_TARGET,), {})),
+            ('identity_check', IDENTITY_TARGET, {'dns': [], 'certs': [], 'touched': [], 'refused': []}, ((IDENTITY_TARGET,), {})),
             ('openvas', {'hosts': {'192.0.2.10': 'www.example.test'}, 'excluded_families': [], 'max_hours': 24, 'preferences': {'max_checks': 3}},
              {'results': [], 'scanned_addresses': [], 'without_cve': 0, 'unusable': 0, 'partial': True},
              (({'192.0.2.10': 'www.example.test'}, [], 24), {'preferences': {'max_checks': 3}})),
@@ -926,6 +927,8 @@ ALIVE_TARGET = {'checks': [{'id': 'c1', 'host': 'old.example.test', 'ip': '93.18
                 'scope': {**HTTP_PROBE_TARGET['scope'], 'hosts': ['93.184.215.14']}}
 BUCKET_TARGET = {'buckets': [{'id': 's3:example-static', 'provider': 's3', 'name': 'example-static'}], 'rate': 2.0,
                  'scope': {**HTTP_PROBE_TARGET['scope'], 'hosts': [], 'domains': ['amazonaws.com']}}
+IDENTITY_TARGET = {'dns': [{'id': 'd1', 'name': 'www.example.test', 'type': 'CNAME'}], 'certs': [{'id': 'c1', 'host': '192.0.2.10', 'port': 443}],
+                   'scope': {**HTTP_PROBE_TARGET['scope'], 'hosts': ['www.example.test', '192.0.2.10']}}
 
 
 class ServerContractKindsTests(DaemonTestCase):
