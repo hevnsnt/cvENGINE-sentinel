@@ -6,6 +6,10 @@ either). The built-in scanner reads the credential with ``POST sentinel/tasks/<i
 lives in this process's memory and, for the run, in a nuclei secrets file (the ``static`` format, the same document the server writes for its own
 signed-in runs) of mode 0600 in a private 0700 directory on a memory file system (``/dev/shm`` when it is writable). The file is overwritten and removed
 when the run ends, however it ends. Nothing of the value is logged, put in an error or sent back: a finding that echoes it has it replaced by ``***``.
+
+The signed-in web route check (``route_probe_signed``) uses the same one read (``read_sign_in`` / ``run_sign_in``): the credential lives only in this process's
+memory for the run (no file), is sent only where ``cvengine_scanner.probes.routes_signed`` says the stored sign-in applies, and every string of the result and
+every error of the run goes through ``redact`` before it leaves.
 """
 import contextlib
 import json
@@ -153,3 +157,39 @@ def run(client, task_id, targets, runner):
         return redact(result, secrets)
     finally:
         headers.clear()
+
+
+def read_sign_in(client, task_id):
+    """The stored sign-in of one task as ``routes_signed.SignIn`` (its headers, cookie and where it may go), read once from the server. Every header is
+    checked (``routes_signed.SignIn.parse``); the error never contains a value."""
+    from . import httpclient
+    from cvengine_scanner.probes import routes_signed
+    try:
+        out = client.call('POST', f'sentinel/tasks/{task_id}/secret')
+    except httpclient.ApiError as exc:
+        raise SignedInError(f'the server did not hand over the stored sign-in for this task (HTTP {exc.status})') from None
+    credential = out.get('credential') if isinstance(out, dict) else None
+    if not isinstance(credential, dict):
+        raise SignedInError('the server answered the sign-in read without a credential')
+    try:
+        return routes_signed.SignIn.parse(credential)
+    except routes_signed.SignInError as exc:
+        raise SignedInError(str(exc)) from None
+
+
+def run_sign_in(client, task_id, runner):
+    """Read the task's stored sign-in once, run ``runner(sign_in)`` with it and return the runner's result with every value redacted. Whatever the runner
+    raises is re-raised as a ``SignedInError`` whose message is the exception's type and text with every value redacted (a library may quote a header it
+    refuses). The sign-in is dropped from memory as soon as the run ends."""
+    sign_in = read_sign_in(client, task_id)
+    secrets = secret_values(sign_in.headers)
+    try:
+        result = runner(sign_in)
+        logger.info('task %s: signed-in run finished', task_id)
+        return redact(result, secrets)
+    except SignedInError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - nothing of the value may reach a log or a result: only its type and a redacted message do
+        raise SignedInError(redact(f'{type(exc).__name__}: {exc}', secrets)[:300]) from None
+    finally:
+        sign_in.clear()

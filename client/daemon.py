@@ -167,6 +167,8 @@ def runnable_kinds():
         kinds.remove('bbot_discovery')
     if 'web_screenshot' in kinds and not shot.available():  # an image built without the browser (or a source checkout) never takes screenshot work
         kinds.remove('web_screenshot')
+    if 'route_probe_signed' in kinds and not config.builtin():  # the stored sign-in is read by cvENGINE's own scanner only; no other Sentinel declares or takes the kind
+        kinds.remove('route_probe_signed')
     if 'secrets_scan' in kinds and not tools.kingfisher_ready():  # the binary is in the image; a source checkout may have none
         kinds.remove('secrets_scan')
     return kinds
@@ -771,6 +773,14 @@ class Daemon:
             out = runner(target.get('host') or '', target.get('ip') or '', target.get('port'), target.get('scheme') or '', register=register)
         elif kind == 'bbot_discovery':  # streamed: it posts its batches itself and returns the result that closes the run
             return runner(target, self.client, task['id'], register=register, internal=config.is_internal(), halted=self._halted)
+        elif kind == 'route_probe_signed':
+            # a signed-in route check names a stored sign-in (task['signed_in']): only the built-in scanner reads it, and nothing ever runs it signed out
+            if not config.builtin() or not task.get('signed_in'):
+                raise tools.TargetError('the signed-in route check runs only on the built-in scanner, for a task that names a stored sign-in')
+            try:
+                out = signed_in.run_sign_in(self.client, task['id'], lambda sign_in: runner(target, sign_in, register=register))
+            except signed_in.SignedInError as exc:
+                raise tools.TargetError(str(exc)) from None
         elif kind in ('http_probe', 'dns_resolve', 'alive_check', 'bucket_check', 'vhost_probe', 'subdir_probe', 'route_probe', 'supplier_check', 'hygiene_check', 'dangling_dns_check', 'identity_check', 'web_screenshot'):  # in-process probes: the whole target, scope policy included
             out = runner(target, register=register)
         elif kind == 'nmap_full':

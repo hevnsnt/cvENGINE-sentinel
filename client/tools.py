@@ -634,6 +634,17 @@ def run_route_probe(target, register=None):
         raise TargetError(f'not a usable route_probe task ({exc})') from None
 
 
+def run_route_probe_signed(target, sign_in, register=None):
+    """The ``route_probe_signed`` kind: the routes of a web host asked once each with the stored sign-in the task names (``cvengine_scanner.probes.routes_signed``).
+    Built-in scanner only: the daemon reads the credential once (``client.signed_in.run_sign_in``) and hands it here; it is sent only where it was stored for
+    (host, scheme, port, not expired, inside the task's scope policy), no redirect is followed, and nothing of it is in the result."""
+    from cvengine_scanner.probes import routes_signed
+    try:
+        return routes_signed.run_batch(target, sign_in)
+    except ValueError as exc:
+        raise TargetError(f'not a usable route_probe_signed task ({exc})') from None
+
+
 def run_supplier_check(target, register=None):
     """The ``supplier_check`` kind: passive posture checks of a third-party supplier's public names (``cvengine_scanner.probes.suppliers``)."""
     from cvengine_scanner.probes import suppliers
@@ -1032,7 +1043,7 @@ RUNNERS = {'nmap': run_nmap, 'naabu': run_naabu, 'nuclei_light': run_nuclei, 'nu
            'db_probe': run_db_probe, 'path_probe': run_path_probe, 'nuclei_validate': run_nuclei_validate,
            'alive_check': run_alive_check,
            'bucket_check': run_bucket_check, 'vhost_probe': run_vhost_probe, 'subdir_probe': run_subdir_probe,
-           'route_probe': run_route_probe,
+           'route_probe': run_route_probe, 'route_probe_signed': run_route_probe_signed,  # the second takes the stored sign-in the daemon read (built-in scanner only)
            'supplier_check': run_supplier_check,
            'hygiene_check': run_hygiene_check, 'dangling_dns_check': run_dangling_dns_check,
            'identity_check': run_identity_check, 'web_screenshot': run_web_screenshot}
