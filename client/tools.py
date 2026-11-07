@@ -1079,8 +1079,8 @@ def kingfisher_ready():
 # --- ssh_probe: sshamble's host key inspection, read-only ---------------------------------------------------------------------------------
 
 SSHAMBLE_BIN = os.environ.get('CVENGINE_SSHAMBLE_BIN', 'sshamble')
-# A directory holding the badkeys blocklist (``sshamble badkeys-update`` writes blocklist.dat and badkeysdata.json there). Optional: without it the
-# check does nothing and the result says "not checked".
+# The directory the badkeys blocklist lives in (client/badkeys.py refreshes it with ``sshamble badkeys-update``; the tool's files are badkeysdata.json,
+# blocklist.dat and lookup.txt). Optional: without data the check does nothing and the result says "not checked".
 BADKEYS_DIR = os.environ.get('CVENGINE_BADKEYS_DIR', '/var/lib/cvengine-sentinel/badkeys')
 SSH_PROBE_TIMEOUT = 30  # seconds for one target (the tool's own connect timeout is 5)
 SSH_PROBE_STDOUT = 4096  # bytes of the tool's stdout kept: it writes its result to the file, and logs nowhere
@@ -1093,9 +1093,16 @@ def sshamble_ready():
 
 
 def badkeys_ready(directory=None):
-    """Whether the badkeys blocklist data is present (both files the tool reads)."""
+    """Whether the badkeys blocklist data is present (all three files the tool loads)."""
     directory = BADKEYS_DIR if directory is None else directory
-    return bool(directory) and all(os.path.isfile(os.path.join(directory, name)) for name in ('blocklist.dat', 'badkeysdata.json'))
+    return bool(directory) and all(os.path.isfile(os.path.join(directory, name)) for name in ('blocklist.dat', 'badkeysdata.json', 'lookup.txt'))
+
+
+def _badkeys_age(badkeys_dir):
+    """Whole hours since the blocklist data in ``badkeys_dir`` was fetched, or ``None`` when unknown."""
+    from . import badkeys
+    stamp = badkeys.refreshed_at(badkeys_dir)
+    return None if stamp is None else max(0, int((time.time() - stamp) // 3600))
 
 
 def _ssh_probe_one(address, port, register, badkeys_dir):
@@ -1104,6 +1111,7 @@ def _ssh_probe_one(address, port, register, badkeys_dir):
         out = os.path.join(work, 'out.jsonl')
         home = os.path.join(work, 'home')
         checked = badkeys_ready(badkeys_dir)
+        age = _badkeys_age(badkeys_dir) if checked else None
         os.makedirs(os.path.join(home, '.cache'))
         if checked:  # the tool reads $HOME/.cache/badkeys: a link to the data, which a scan never writes
             os.symlink(badkeys_dir, os.path.join(home, '.cache', 'badkeys'))
@@ -1118,12 +1126,12 @@ def _ssh_probe_one(address, port, register, badkeys_dir):
         try:
             size = os.path.getsize(out)
         except OSError:  # no file: nothing was reachable or nothing there speaks SSH
-            return ssh_probe.parse_host(address, port, '', checked)
+            return ssh_probe.parse_host(address, port, '', checked, age)
         if size > ssh_probe.MAX_OUTPUT_BYTES:
             return ssh_probe.unverified(address, port, 'the tool output was larger than is read', 'ssh_oversized')
         with open(out, 'rb') as handle:
             text = handle.read(ssh_probe.MAX_OUTPUT_BYTES + 1).decode('utf-8', errors='replace')
-        return ssh_probe.parse_host(address, port, text, checked)
+        return ssh_probe.parse_host(address, port, text, checked, age)
 
 
 def run_ssh_probe(target, register=None, badkeys_dir=None):
@@ -1141,7 +1149,9 @@ def run_ssh_probe(target, register=None, badkeys_dir=None):
             raise TargetError('an ssh_probe target is an object with address and port')
         clean.append((_one_address(item.get('address')), _validate_port(item.get('port'))))
     policy = ScopePolicy(target.get('scope'))
-    badkeys_dir = BADKEYS_DIR if badkeys_dir is None else badkeys_dir
+    if badkeys_dir is None:
+        from . import badkeys
+        badkeys_dir = badkeys.data_dir(BADKEYS_DIR) or BADKEYS_DIR  # the refreshed data (BADKEYS_DIR/current) or data placed there by hand
     hosts = []
     for address, port in clean:
         try:

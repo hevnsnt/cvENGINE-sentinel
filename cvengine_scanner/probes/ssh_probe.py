@@ -243,9 +243,17 @@ def _check_hits(vulns):
     return hits
 
 
-def parse_host(address, port, text, badkeys_checked):
+def data_age(hours):
+    """The sentence that makes the blocklist's age visible in a result."""
+    if isinstance(hours, int) and not isinstance(hours, bool) and hours >= 0:
+        return f'host key blocklist data: {hours} hour{"" if hours == 1 else "s"} old'
+    return 'host key blocklist data: age unknown'
+
+
+def parse_host(address, port, text, badkeys_checked, badkeys_age_hours=None):
     """The contract's host entry for one target from the tool's output (``text``: JSON lines). ``badkeys_checked`` is whether the blocklist data was
-    present for the run: without it the check did nothing, so the entry says so (unverified) instead of implying the keys are clean."""
+    present for the run: without it the check did nothing, so the entry says so (unverified) instead of implying the keys are clean.
+    ``badkeys_age_hours`` is how old that data is (whole hours, ``None`` unknown), said in the evidence so a stale list is visible."""
     if not isinstance(text, str) or not text.strip():
         return unverified(address, port, 'the tool wrote no result: the address was unreachable, nothing there speaks SSH, or the handshake did not finish')
     if len(text) > MAX_OUTPUT_BYTES:
@@ -278,10 +286,10 @@ def parse_host(address, port, text, badkeys_checked):
     hits = _check_hits(record.get('vulns')) if badkeys_checked else []
     if not badkeys_checked:
         observations.append(_obs('badkeys_not_checked', 'Host keys were not checked against the badkeys blocklist', 0,
-                                 'the blocklist data is not present on this Sentinel; a compromised host key would not have been found', False))
+                                 'host key blocklist data: not present on this Sentinel; a compromised host key would not have been found', False))
     elif hits:
         for hit in hits:
             observations.append(_obs('badkeys_blocklist_hit', 'SSH host key is on the badkeys compromised-key blocklist', 4, f"{hit['id']} {hit['proof']}", True))
     elif isinstance(record.get('hostkeys'), dict) and record['hostkeys']:
-        observations.append(_obs('badkeys_blocklist_clear', 'Host keys are not on the badkeys blocklist', 0, 'checked against the blocklist data on this Sentinel', True))
+        observations.append(_obs('badkeys_blocklist_clear', 'Host keys are not on the badkeys blocklist', 0, 'checked against the blocklist data on this Sentinel; ' + data_age(badkeys_age_hours), True))
     return host_entry(address, port, True, observations, hits)

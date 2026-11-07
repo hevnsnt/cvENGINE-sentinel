@@ -34,6 +34,7 @@ services:
     restart: "no"
     volumes:
       - sentinel-state:/var/lib/cvengine-sentinel
+      - sentinel-badkeys:/var/lib/cvengine-sentinel/badkeys
     logging: *logging
 
   sentinel:
@@ -100,6 +101,9 @@ services:
       CVENGINE_PROXY_PRIVATE: "${CVENGINE_PROXY_PRIVATE:-}"
       # Optional: 1 keeps each OpenVAS task and report in gvmd after it finishes, to investigate a scan (they are deleted otherwise).
       CVENGINE_OPENVAS_KEEP_TASKS: "${CVENGINE_OPENVAS_KEEP_TASKS:-}"
+      # Optional: 0 turns off the daily refresh of the badkeys blocklist data the ssh_probe host key check reads (an air-gapped Sentinel). The check then
+      # reports "not checked" unless you put the data in the badkeys volume yourself (README.md). The download's address is fixed and not configurable.
+      CVENGINE_BADKEYS_REFRESH: "${CVENGINE_BADKEYS_REFRESH:-}"
     # nmap's OS detection, naabu's SYN scanning and the UDP sweep need raw sockets; NET_RAW/NET_ADMIN are enough, no --privileged.
     cap_add:
       - NET_RAW
@@ -107,6 +111,8 @@ services:
     # To scan your LAN directly instead of only the Docker bridge network: docker-compose.override.yml.example (./setup.sh --host-network).
     volumes:
       - sentinel-state:/var/lib/cvengine-sentinel
+      # The badkeys blocklist data (client/badkeys.py): a named volume of its own so it survives restarts and recreates, mounted inside the state directory.
+      - sentinel-badkeys:/var/lib/cvengine-sentinel/badkeys
       # gvmd's GMP socket, read-only: an empty directory until openvas-gvmd is up and has created it (client/openvas.py
       # tolerates that - a task dispatched before then simply reports an error, like any other tool that is not ready).
       - openvas_gvmd_socket_vol:/run/gvmd:ro
@@ -382,6 +388,8 @@ volumes:
   # Persists the Sentinel's own issued token (and its generated GVM login, client/openvas.py's own credentials file)
   # across restarts, so the one-time enrollment blob is only ever needed once.
   sentinel-state:
+  # The badkeys blocklist data the ssh_probe host key check reads, refreshed daily by the daemon (sshamble badkeys-update).
+  sentinel-badkeys:
   openvas_gpg_data_vol:
   openvas_scap_data_vol:
   openvas_cert_data_vol:

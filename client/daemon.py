@@ -25,6 +25,7 @@ import time
 
 import requests
 
+from . import badkeys
 from . import bbot
 from . import blob as blob_mod
 from . import config
@@ -236,6 +237,11 @@ def info():
     if 'openvas' in config.registered_capabilities() and 'openvas' not in config.disabled_kinds():
         ready, why = tools.gvm_status()  # cached for a minute; lets cvENGINE say why a Sentinel is not scanning (still syncing feeds, no scan config)
         out['openvas'] = {'ready': bool(ready), 'reason': '' if ready else str(why or '')[:200]}
+    if 'ssh_probe' in declared_kinds():
+        try:
+            out['badkeys'] = badkeys.status()  # {present, age_hours, refresh, last_ok}: a missing or stale host key blocklist is visible on the Sentinels page
+        except Exception:  # noqa: BLE001 - a status line must never stop a heartbeat
+            logger.exception('badkeys status could not be read')
     return out
 
 
@@ -286,6 +292,8 @@ class Daemon:
         hb.start()
         if self.watchdog:
             threading.Thread(target=self._watchdog_loop, name='sentinel-watchdog', daemon=True).start()
+        if 'ssh_probe' in declared_kinds():
+            badkeys.start(self.stop_event)  # the host key blocklist data for ssh_probe: refreshed in the background (CVENGINE_BADKEYS_REFRESH=0 turns it off)
         if shot.available():  # the browser's sandbox is checked once at every start, as the server's celery container once did (never blocks a start)
             threading.Thread(target=self._check_screenshot_sandbox, name='sentinel-shot-sandbox', daemon=True).start()
         try:
@@ -296,6 +304,7 @@ class Daemon:
                     logger.exception('the poll loop failed; backing off')
                     self._sleep_backoff()
         finally:
+            badkeys.stop()
             self._shutdown()
             hb.join(timeout=2)
 
