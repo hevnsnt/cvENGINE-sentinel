@@ -1,8 +1,10 @@
 """Everything the daemon reads from its environment, in one place, each with a sane default."""
+import importlib.metadata
 import ipaddress
 import logging
 import os
 import platform
+import re
 import socket
 from urllib.parse import urlsplit
 
@@ -370,6 +372,21 @@ def build_version(path=None):
             return _clean_version(handle.read(200))
     except OSError:
         return None
+
+
+RELEASE_RE = re.compile(r'[0-9]+(\.[0-9]+){1,3}([.-]?(a|b|rc)[0-9]+)?')  # 1.4.0, 1.4, 1.4.0rc1: a release, never a dev or commit string
+
+
+def release(name='cvengine-scanner'):
+    """The release number (``1.4.0``) of the installed ``cvengine-scanner`` package, which the image build sets from the git tag of a tagged
+    publish run (``SENTINEL_RELEASE``, see Dockerfile), else ``None``. A checkout without a tag, a development build (``0.0.0.dev0``,
+    ``1.4.1.dev3+gabc``) and a package that is not installed have no release number: nothing is invented, and the client reports only the commit
+    (``version()``). Display only: the server never gates on it, the contract version does that."""
+    try:
+        value = importlib.metadata.version(name)
+    except importlib.metadata.PackageNotFoundError:
+        return None
+    return value if RELEASE_RE.fullmatch(value) and not value.startswith('0.0.') else None
 
 
 def version():

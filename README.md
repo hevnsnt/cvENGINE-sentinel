@@ -142,6 +142,8 @@ Run these in the checkout directory.
 | `docker compose stop`                                           | Stop without removing anything (see [Shutdown](#shutdown)).                                                                                |
 | `docker compose down`                                           | Stop and remove the containers. Volumes (token, GVM data, feeds) are kept.                                                                 |
 
+Release number. Registration and every heartbeat report `info.release` (for example `1.4.0`) next to `info.version` (the commit). It is read from the installed `cvengine-scanner` package, whose version the image build takes from the `SENTINEL_RELEASE` build argument that the publish workflow sets from a `vX.Y.Z` git tag; a build without a tag reports only the commit (never an invented number). The server shows it and never gates on it: the contract version is the gate.
+
 Check that it registered: open the **Sentinels** page on your CVEngine instance. The new Sentinel appears by its name
 (`CVENGINE_SENTINEL_NAME`, else the container's host name), `pending` until an administrator approves it, then
 `active`, and `live` once it heartbeats. It is administered like any other agent there (**Suspend**, **Revoke**), or
