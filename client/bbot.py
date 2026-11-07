@@ -438,7 +438,24 @@ def build_command(target, out_dir, blacklist_file, keys_file=None):
         cmd += ['-rf', ','.join(flags)]
     if target.get('force') is True:
         cmd.append('--force')
-    return cmd + ['-b', blacklist_file, '-o', out_dir, '--json', '-y', '--no-color']
+    # --no-deps: this image installs every module's dependencies when it is built and a running Sentinel has no root and no sudo. Without it bbot
+    # looks up each module in its own record of installed dependencies, which is keyed by (among other things) the container's hostname, finds
+    # none, and tries to install as root: ``PermissionError: Permission denied: 'sudo'`` before it has scanned anything.
+    return cmd + ['--no-deps', '-b', blacklist_file, '-o', out_dir, '--json', '-y', '--no-color']
+
+
+_NEEDS_ROOT = re.compile(r"Permission denied: 'sudo'|No such file or directory: 'sudo'|needs root privileges to install its dependencies", re.I)
+
+
+def start_failure(lines):
+    """A plain sentence for a bbot that could not start for a cause this Sentinel knows (bbot's own text is a Python traceback), or ''."""
+    text = '\n'.join(lines)
+    if _NEEDS_ROOT.search(text):
+        found = re.search(r'Installing dependencies for module "(\w+)"|Module "(\w+)" needs root', text)
+        module = (found.group(1) or found.group(2)) if found else ''
+        return ('bbot cannot start: it tried to install a module dependency' + (f' ({module})' if module else '') +
+                ' and that needs root, which this Sentinel does not have. The image lacks something bbot needs; update or rebuild it')
+    return ''
 
 
 def _stop(proc):
@@ -549,7 +566,7 @@ def run_bbot_discovery(target, client, task_id, register=None, internal=False, h
         elif proc.returncode not in (0, None):
             reason = next((ln for ln in reversed(stderr_tail) if ln.strip()), 'no error output')
             incomplete = ('bbot was killed, almost always for lack of memory' if proc.returncode in (-9, 137)
-                          else f'bbot exited with status {proc.returncode}: {reason}')[:300]
+                          else start_failure(stderr_tail) or f'bbot exited with status {proc.returncode}: {reason}')[:300]
         elif not collector.found_any and any(_CONFIG_REJECTED.search(ln) for ln in stderr_tail):
             incomplete = 'bbot refused its configuration and scanned nothing'
         if incomplete and not collector.found_any:

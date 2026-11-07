@@ -48,6 +48,7 @@ ARGV_TAIL = ['badkeys-update']
 _lock = threading.Lock()  # one refresh at a time
 _state = {'attempted_at': None, 'ok': None, 'error': ''}
 _running = {'handle': None}
+_thread = {'thread': None}  # the refresh loop, so asking to start it again while it runs starts nothing
 
 
 class RefreshError(RuntimeError):
@@ -338,15 +339,21 @@ def run_forever(stop_event, runner=None, rng=random):
 
 
 def start(stop_event):
-    """Start the refresh thread unless it is switched off (``CVENGINE_BADKEYS_REFRESH=0``) or there is no sshamble to run. Returns the thread or ``None``."""
+    """Start the refresh thread unless it is switched off (``CVENGINE_BADKEYS_REFRESH=0``) or there is no sshamble to run. Returns the thread or ``None``.
+    Safe to call again (the daemon does, whenever its capabilities become known): while the thread runs, that thread is returned and none is added."""
     try:
+        running = _thread['thread']
+        if running is not None and running.is_alive():
+            return running
         if not enabled():
             logger.info('badkeys refresh is off (CVENGINE_BADKEYS_REFRESH): the host key blocklist check stays "not checked" unless data is provided in %s', root_dir())
             return None
         if not tools.sshamble_ready():
+            logger.info('badkeys refresh not started: the sshamble tool is not available on this Sentinel')
             return None
         thread = threading.Thread(target=run_forever, args=(stop_event,), name='sentinel-badkeys', daemon=True)
         thread.start()
+        _thread['thread'] = thread
         return thread
     except Exception:  # noqa: BLE001 - never stops the daemon from starting
         logger.exception('badkeys refresh could not start')

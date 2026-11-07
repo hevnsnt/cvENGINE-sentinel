@@ -79,7 +79,21 @@ class RunnerTests(unittest.TestCase):
         ids = {o['id']: o for o in got['hosts'][0]['observations']}
         self.assertFalse(ids['badkeys_not_checked']['verified'])
         self.assertNotIn('badkeys_blocklist_clear', ids)
-        self.assertIn('host key blocklist data: not present', ids['badkeys_not_checked']['evidence'])
+        self.assertIn('host key blocklist data: not downloaded to this Sentinel yet', ids['badkeys_not_checked']['evidence'])
+
+    def test_a_failed_run_without_data_is_not_checked_not_just_unreachable(self):
+        for raises in (subprocess.TimeoutExpired('sshamble', 30), tools.ToolExitError('sshamble exited 1')):
+            with self.fake(raises=raises), tempfile.TemporaryDirectory() as empty:
+                host = tools.run_ssh_probe(task(('93.184.215.14', 22)), badkeys_dir=empty)['hosts'][0]
+            ids = {o['id'] for o in host['observations']}
+            self.assertFalse(host['reached'])
+            self.assertIn('badkeys_not_checked', ids)
+            self.assertIn('not downloaded yet', host['error'])
+        with self.fake(raises=subprocess.TimeoutExpired('sshamble', 30)), tempfile.TemporaryDirectory() as data:
+            for name in ('blocklist.dat', 'badkeysdata.json', 'lookup.txt'):
+                (Path(data) / name).write_text('x')
+            host = tools.run_ssh_probe(task(('93.184.215.14', 22)), badkeys_dir=data)['hosts'][0]
+        self.assertNotIn('badkeys_not_checked', {o['id'] for o in host['observations']})
 
     def test_the_refreshed_data_is_what_a_scan_reads(self):
         from client import badkeys

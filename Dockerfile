@@ -77,10 +77,10 @@ ARG NUCLEI_TEMPLATES_SHA256=30fe1cfaced4635f886e4a2673641bba86998dceec28e4682745
 
 ENV DEBIAN_FRONTEND="noninteractive" \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    GOROOT="/usr/local/go" \
-    GOPATH="/root/go"
-ENV PATH="/opt/venv/bin:${PATH}:${GOROOT}/bin:${GOPATH}/bin"
+    PYTHONUNBUFFERED=1
+# No root-only entries on PATH: the Go toolchain and its GOPATH (/root/go, mode 0700) exist only inside the one build step that uses them, below. A
+# PATH entry the run-time user cannot read turns "command not found" (ENOENT) into "Permission denied" (EACCES) for every program looked up after it.
+ENV PATH="/opt/venv/bin:${PATH}"
 
 RUN ARCH=$(dpkg --print-architecture) \
     && if [ "${ARCH}" != "arm64" ] && [ "${ARCH}" != "amd64" ]; then \
@@ -133,7 +133,8 @@ RUN test -s "$NMAPDIR/nmap-service-probes"
 # nuclei and naabu, built with a checksum-verified Go toolchain that is removed again in the same layer, with Go's module and build caches
 # (GOPATH is /root/go): nothing at runtime runs go, only the two binaries, installed into /usr/local/bin where the unprivileged user can run them.
 ENV GO111MODULE=on
-RUN ARCH=$(dpkg --print-architecture) \
+RUN export GOROOT=/usr/local/go GOPATH=/root/go PATH="/usr/local/go/bin:${PATH}" \
+    && ARCH=$(dpkg --print-architecture) \
     && if [ "${ARCH}" = "arm64" ]; then GO_SHA="${GO_SHA256_ARM64}"; else GO_SHA="${GO_SHA256_AMD64}"; fi \
     && curl -fsSLo /tmp/go.tgz https://go.dev/dl/go${GOVERSION}.linux-${ARCH}.tar.gz \
     && echo "${GO_SHA}  /tmp/go.tgz" | sha256sum -c - \
@@ -267,12 +268,23 @@ RUN printf '{"config": {"modules": {"shodan_dns": {"api_key": "build-check"}}}}\
     ! grep -q 'Error parsing' /tmp/bbot-check.txt && \
     rm -f /tmp/keys.yml /tmp/bbot-check.txt && rm -rf /var/lib/apt/lists/* /root/.cache && \
     chown -R sentinel:sentinel /home/sentinel
-# bbot installs git as one of its core dependencies during the check above, and the image must not carry git. bbot records in its cache
-# (~/.bbot/cache) that its core dependencies were installed and does not look again, so git goes once that is written: then a dry run as the
-# run-time user must neither try to install anything nor fail.
+# Every module's dependencies, not only the ones the check above loads: a task may ask for any of the presets client/bbot.py accepts, with or without
+# the flag filters, and kitchen-sink is the union of them. bbot installs them as root here (it needs apt, ansible and a compiler for some), into the
+# run-time user's ~/.bbot (tools, lib, cache), and the tree is handed to that user. A running Sentinel installs nothing: bbot keys its record of
+# "this module's dependencies are installed" (setup_status.json) by a hash that includes the container's hostname, so a record written at build never
+# matches in a container (each has its own hostname), and every start would try to install again, which needs root this image does not have (no sudo,
+# no root login: "PermissionError: Permission denied: 'sudo'", found first in dnscommonsrv, whose massdns dependency is installed here). So
+# client/bbot.py starts bbot with --no-deps, and this image has to carry what the modules need: the check below runs bbot the way the client does.
+RUN HOME=/home/sentinel bbot -t example.com -p kitchen-sink --force --dry-run -y --no-color > /tmp/bbot-deps.txt 2>&1; \
+    status=$?; tail -n 20 /tmp/bbot-deps.txt; [ "$status" = 0 ] && rm -f /tmp/bbot-deps.txt && rm -rf /var/lib/apt/lists/* /root/.cache && \
+    chown -R sentinel:sentinel /home/sentinel
+# bbot installs git as one of its core dependencies during the checks above, and the image must not carry git. bbot records in its cache
+# (~/.bbot/cache) that its core dependencies were installed and does not look again, so git goes once that is written: then a start as the run-time
+# user, as the client makes it (--no-deps), must neither try to install anything nor fail. The client's own command is checked the same way
+# after the client is copied in, below.
 RUN apt-get purge -y git git-man && rm -rf /var/lib/apt/lists/* && \
     ! command -v git && \
-    runuser -u sentinel -- env HOME=/home/sentinel bbot -t example.com -p subdomain-enum -rf safe --dry-run -y > /tmp/bbot-user.txt 2>&1; \
+    runuser -u sentinel -- env HOME=/home/sentinel bbot -t example.com -p subdomain-enum -rf safe --dry-run -y --no-deps > /tmp/bbot-user.txt 2>&1; \
     status=$?; cat /tmp/bbot-user.txt | tail -n 20; \
     [ "$status" = 0 ] && ! grep -qi 'Installing core BBOT dependencies' /tmp/bbot-user.txt && rm -f /tmp/bbot-user.txt
 
@@ -287,7 +299,10 @@ COPY client /opt/sentinel/client
 COPY docker-entrypoint.sh /opt/sentinel/docker-entrypoint.sh
 # The OpenVAS login bootstrap check (README.md, "Testing OpenVAS"): docker compose exec sentinel python3 scripts/ci_openvas_bootstrap.py
 COPY scripts/ci_openvas_bootstrap.py /opt/sentinel/scripts/ci_openvas_bootstrap.py
-RUN chmod +x /opt/sentinel/docker-entrypoint.sh
+# The bbot start check (client/bbot.py's own command, --dry-run), as the run-time user: run here at build and again by CI under another hostname.
+COPY scripts/ci_bbot_start.py /opt/sentinel/scripts/ci_bbot_start.py
+RUN chmod +x /opt/sentinel/docker-entrypoint.sh && \
+    runuser -u sentinel -- env HOME=/home/sentinel python3 /opt/sentinel/scripts/ci_bbot_start.py
 
 # The commit this image is built from, so the Sentinels page always knows the build; scripts/update.sh checks it after a swap. Only git's HEAD, packed-refs and refs are copied, and when the build context has no .git (a zip download) requirements.txt is the
 # only source that matches and VERSION is left empty, which the client reports as unknown. The refs directory's contents land directly in

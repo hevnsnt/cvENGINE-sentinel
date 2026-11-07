@@ -57,6 +57,19 @@ class SampleTests(unittest.TestCase):
         self.assertNotIn('badkeys_blocklist_clear', obs)
         self.assertTrue(valid([entry]) == [])
 
+    def test_an_unanswering_host_without_the_data_says_the_data_is_not_downloaded_and_the_check_not_checked(self):
+        for text in ('', 'not json', json.dumps({'host': 'x', 'port': 1})):
+            entry = ssh_probe.parse_host(ADDRESS, PORT, text, False)
+            obs = by_id(entry)
+            self.assertFalse(entry['reached'])
+            self.assertIn('not downloaded yet', entry['error'])
+            self.assertIn('not downloaded to this Sentinel yet', obs['badkeys_not_checked']['evidence'])
+            self.assertFalse(obs['badkeys_not_checked']['verified'])
+            self.assertEqual(valid([entry]), [])
+        with_data = by_id(ssh_probe.parse_host(ADDRESS, PORT, '', True))
+        self.assertNotIn('badkeys_not_checked', with_data)  # the data is there: the host simply did not answer
+        self.assertNotIn('not downloaded', ssh_probe.parse_host(ADDRESS, PORT, '', True)['error'])
+
     def test_with_the_data_and_no_hit_the_keys_are_reported_as_checked(self):
         obs = by_id(ssh_probe.parse_host(ADDRESS, PORT, SAMPLE, True))
         self.assertTrue(obs['badkeys_blocklist_clear']['verified'])
@@ -67,7 +80,7 @@ class SampleTests(unittest.TestCase):
             obs = by_id(ssh_probe.parse_host(ADDRESS, PORT, SAMPLE, True, hours))
             self.assertIn(f'host key blocklist data: {text}', obs['badkeys_blocklist_clear']['evidence'])
         obs = by_id(ssh_probe.parse_host(ADDRESS, PORT, SAMPLE, False))
-        self.assertIn('host key blocklist data: not present', obs['badkeys_not_checked']['evidence'])
+        self.assertIn('host key blocklist data: not downloaded to this Sentinel yet', obs['badkeys_not_checked']['evidence'])
 
     def test_a_blocklisted_host_key_is_a_check_hit_and_a_critical_observation(self):
         doc = json.loads(SAMPLE)
