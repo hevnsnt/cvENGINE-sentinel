@@ -83,7 +83,7 @@ FROZEN = {'v1': contract.FIXTURES / 'results' / 'v1', 'v2': contract.FIXTURES / 
 KIND_OF = {'nmap': 'nmap', 'naabu': 'naabu', 'nuclei_light': 'nuclei_light', 'testssl': 'testssl', 'nmap_udp': 'nmap_udp', 'wpscan': 'wpscan',
            'discover': 'discover', 'openvas': 'openvas', 'waf': 'waf', 'bbot_discovery': 'bbot_discovery', 'error': 'nmap', 'nmap_full': 'nmap_full', 'nmap_verify': 'nmap_verify',
            'node2shell': 'node2shell', 'rdp_shot': 'rdp_shot', 'db_probe': 'db_probe', 'path_probe': 'path_probe',
-           'nuclei_validate': 'nuclei_validate', 'secrets_scan': 'secrets_scan'}  # fixture name -> the kind it is a result of
+           'nuclei_validate': 'nuclei_validate', 'secrets_scan': 'secrets_scan', 'wpscan_thorough': 'wpscan_thorough'}  # fixture name -> the kind it is a result of
 V1_SHA256 = {
     'discover.json': '6f9825383a3efbf69724ee168a07935d965b7b57add1605a79660d269cf8f5a6',
     'error.json': 'f38516e7aecb480a2f749c9ee7fff22d0926d2056c82665754059ae05815f340',

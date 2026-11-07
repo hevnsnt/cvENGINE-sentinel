@@ -560,6 +560,70 @@ class WpscanRunnerTests(unittest.TestCase):
         popen.assert_not_called()
 
 
+class RunWpscanThoroughTests(unittest.TestCase):
+    """The thorough pass (kind ``wpscan_thorough``): its own fixed option list and its own time limit, the same url, scope and token handling."""
+    _FakeProc = WpscanRunnerTests._FakeProc
+
+    def _run(self, **kwargs):
+        captured = {}
+        report = kwargs.pop('report', {'version': {'number': '6.4'}})
+
+        def fake_popen(argv, env=None, **kw):
+            proc = self._FakeProc(argv, env, report)
+            captured.update(argv=argv, env=env)
+            return proc
+        real_communicate = self._FakeProc.communicate
+
+        def communicate(proc, timeout=None):
+            captured['timeout'] = timeout
+            return real_communicate(proc, timeout=timeout)
+        with mock.patch('client.tools.subprocess.Popen', side_effect=fake_popen), mock.patch.object(self._FakeProc, 'communicate', communicate):
+            result = tools.run_wpscan_thorough('https://www.example.test', **kwargs)
+        return result, captured
+
+    def test_it_asks_for_every_plugin_and_theme_and_the_token_stays_in_the_environment(self):
+        result, seen = self._run(token='super-secret-token', timeout_seconds=7200)
+        argv = seen['argv']
+        self.assertEqual(argv[0], tools.WPSCAN_BIN)
+        self.assertEqual(argv[argv.index('--plugins-detection') + 1], 'mixed')
+        self.assertEqual(argv[argv.index('--themes-detection') + 1], 'mixed')
+        self.assertEqual(argv[argv.index('--enumerate') + 1], 'ap,at,tt')
+        self.assertNotIn('super-secret-token', argv)
+        self.assertEqual(seen['env'].get('WPSCAN_API_TOKEN'), 'super-secret-token')
+        self.assertEqual(result, {'report': {'version': {'number': '6.4'}}, 'returncode': 0, 'stderr_tail': ''})
+
+    def test_the_time_limit_is_the_tasks_own_and_the_scan_ends_thirty_seconds_before_it(self):
+        _, seen = self._run(timeout_seconds=7200)
+        self.assertEqual(seen['timeout'], 7200)
+        self.assertEqual(seen['argv'][seen['argv'].index('--max-scan-duration') + 1], str(7200 - 30))
+
+    def test_a_missing_or_out_of_range_limit_is_held_to_the_contracts_range(self):
+        for given, want in ((None, 12 * 3600), (60, 600), (10 ** 9, 24 * 3600), (True, 12 * 3600), ('7200', 12 * 3600), (7200.0, 12 * 3600)):
+            with self.subTest(given=given):
+                _, seen = self._run(timeout_seconds=given)
+                self.assertEqual(seen['timeout'], want)
+
+    def test_the_quick_pass_keeps_its_passive_options(self):
+        quick = [a for a in tools.WPSCAN_ARGS]
+        self.assertEqual(quick[quick.index('--plugins-detection') + 1], 'passive')
+        self.assertNotIn('tt', tools.WPSCAN_ARGS[tools.WPSCAN_ARGS.index('--enumerate') + 1].split(','))
+        self.assertGreater(int(tools.WPSCAN_THOROUGH_ARGS[tools.WPSCAN_THOROUGH_ARGS.index('--throttle') + 1]), 0)
+
+    def test_a_cut_short_run_reports_what_it_read_with_exit_code_4(self):
+        report = {'scan_aborted': 'Scan Aborted: duration', 'version': {'number': '6.4'}}
+        with mock.patch('client.tools.subprocess.Popen', side_effect=lambda argv, env=None, **kw: self._FakeProc(argv, env, report, returncode=4)):
+            result = tools.run_wpscan_thorough('https://www.example.test', timeout_seconds=600)
+        self.assertEqual((result['returncode'], result['report']), (4, report))
+
+    def test_rejects_a_non_url_and_a_refused_address_before_anything_runs(self):
+        with mock.patch('client.tools.subprocess.Popen') as popen:
+            with self.assertRaises(tools.TargetError):
+                tools.run_wpscan_thorough('not-a-url; rm -rf /')
+            with self.assertRaises(tools.TargetError):
+                tools.run_wpscan_thorough('http://127.0.0.1/')
+        popen.assert_not_called()
+
+
 class DetectToolsTests(unittest.TestCase):
     def test_a_missing_binary_is_left_out_not_fatal(self):
         with mock.patch('client.tools.subprocess.run', side_effect=FileNotFoundError), \

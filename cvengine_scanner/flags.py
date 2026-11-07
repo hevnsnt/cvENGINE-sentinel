@@ -198,6 +198,25 @@ WPSCAN_ARGS = ['--format', 'json', '--no-banner', '--random-user-agent', '--thro
                '--connect-timeout', '15', '--detection-mode', 'mixed', '--plugins-detection', 'passive',
                '--themes-detection', 'passive', '--disable-tls-checks', '--enumerate', 'vp,vt,cb,dbe,u1-5']
 
+# The thorough pass (kind ``wpscan_thorough``): the same base options, but plugin and theme detection in mixed mode asks the site for every plugin
+# and theme slug WPScan knows (about 170,000 requests, hours per site), and the timthumb check. A fixed list for this kind: nothing in a task
+# changes it, only the time limit does (``thorough_timeout``).
+WPSCAN_THOROUGH_ARGS = ['--format', 'json', '--no-banner', '--random-user-agent', '--throttle', '100', '--request-timeout', '30',
+                        '--connect-timeout', '15', '--detection-mode', 'mixed', '--plugins-detection', 'mixed',
+                        '--themes-detection', 'mixed', '--disable-tls-checks', '--enumerate', 'ap,at,tt']
+WPSCAN_THOROUGH_DEFAULT_SECONDS = 12 * 3600  # the server's default; the contract's range for a task's timeout_seconds is 600 to 86400
+WPSCAN_THOROUGH_MIN_SECONDS = 600
+WPSCAN_THOROUGH_MAX_SECONDS = 24 * 3600
+
+
+def thorough_timeout(value):
+    """The seconds one thorough run may take: the task's ``timeout_seconds`` when it is a whole number, held to the contract's range (a boolean, a
+    float, text or nothing is the default). The run ends its own scan 30 seconds before this and reports what it read."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return WPSCAN_THOROUGH_DEFAULT_SECONDS
+    return min(WPSCAN_THOROUGH_MAX_SECONDS, max(WPSCAN_THOROUGH_MIN_SECONDS, value))
+
+
 # wafw00f, the options cveFeed.waf_scan.run_wafw00f builds: -a tries every fingerprint instead of stopping at the first, -r does not follow
 # redirects, and the report is JSON in a file the runner names with -o. No version or confidence comes out of it, so none is reported.
 WAFW00F_TIMEOUT = 60  # seconds one site's check may take before it is killed

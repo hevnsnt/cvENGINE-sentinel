@@ -31,6 +31,7 @@ from . import config
 from . import control
 from . import httpclient
 from . import openvas
+from . import shot
 from . import signed_in
 from . import templates
 from . import tools
@@ -164,6 +165,8 @@ def runnable_kinds():
         kinds.remove('openvas')
     if 'bbot_discovery' in kinds and 'bbot' not in detected_tools():  # an image built without bbot (or a source checkout) never takes discovery work
         kinds.remove('bbot_discovery')
+    if 'web_screenshot' in kinds and not shot.available():  # an image built without the browser (or a source checkout) never takes screenshot work
+        kinds.remove('web_screenshot')
     if 'secrets_scan' in kinds and not tools.kingfisher_ready():  # the binary is in the image; a source checkout may have none
         kinds.remove('secrets_scan')
     return kinds
@@ -279,6 +282,8 @@ class Daemon:
         hb.start()
         if self.watchdog:
             threading.Thread(target=self._watchdog_loop, name='sentinel-watchdog', daemon=True).start()
+        if shot.available():  # the browser's sandbox is checked once at every start, as the server's celery container once did (never blocks a start)
+            threading.Thread(target=self._check_screenshot_sandbox, name='sentinel-shot-sandbox', daemon=True).start()
         try:
             while not self.stop_event.is_set():
                 try:
@@ -289,6 +294,21 @@ class Daemon:
         finally:
             self._shutdown()
             hb.join(timeout=2)
+
+    def _check_screenshot_sandbox(self):
+        """Start the screenshot browser once and log whether Chromium's sandbox engaged. A task proves it again before it opens any page; this only
+        says early, in the log, what that proof will find."""
+        try:
+            engaged, reason, version = shot.sandbox_probe()
+        except Exception:  # noqa: BLE001 - a log line must never stop a Sentinel
+            logger.exception('the screenshot sandbox check could not run')
+            return
+        if engaged is True:
+            logger.info("screenshots: Chromium %s runs inside its sandbox", version or '(version unknown)')
+        elif engaged is False:
+            logger.error('screenshots stay off on this Sentinel until its sandbox can start: %s', reason)
+        else:
+            logger.warning('the screenshot sandbox check did not finish: %s', reason)
 
     def request_stop(self):
         self.stop_event.set()
@@ -539,6 +559,8 @@ class Daemon:
             kinds.remove('openvas')
         if 'secrets_scan' in running and 'secrets_scan' in kinds:  # one Kingfisher at a time: about 150 MB of memory each (measured, 32 MB of input)
             kinds.remove('secrets_scan')
+        if 'wpscan_thorough' in kinds and ('wpscan_thorough' in running or (self.max_concurrent > 1 and len(running) + 1 >= self.max_concurrent)):
+            kinds.remove('wpscan_thorough')  # one thorough pass at a time (it runs for hours), and never the last free slot of a Sentinel with several
         if sum(1 for kind in running if kind != 'openvas') >= self.max_concurrent:
             kinds = [k for k in kinds if k == 'openvas']
         return kinds
@@ -741,13 +763,15 @@ class Daemon:
             out = runner(target.get('address') or '', register=register)
         elif kind == 'wpscan':
             out = runner(target.get('url') or '', target.get('token') or '', register=register)
+        elif kind == 'wpscan_thorough':  # hours per site: the task's own time limit travels in its target
+            out = runner(target.get('url') or '', target.get('token') or '', target.get('timeout_seconds'), register=register)
         elif kind == 'discover':
             out = runner(target.get('cidr') or '', register=register)
         elif kind == 'waf':
             out = runner(target.get('host') or '', target.get('ip') or '', target.get('port'), target.get('scheme') or '', register=register)
         elif kind == 'bbot_discovery':  # streamed: it posts its batches itself and returns the result that closes the run
             return runner(target, self.client, task['id'], register=register, internal=config.is_internal(), halted=self._halted)
-        elif kind in ('http_probe', 'dns_resolve', 'alive_check', 'bucket_check', 'vhost_probe', 'subdir_probe', 'route_probe', 'supplier_check', 'hygiene_check', 'dangling_dns_check'):  # in-process probes: the whole target, scope policy included
+        elif kind in ('http_probe', 'dns_resolve', 'alive_check', 'bucket_check', 'vhost_probe', 'subdir_probe', 'route_probe', 'supplier_check', 'hygiene_check', 'dangling_dns_check', 'identity_check', 'web_screenshot'):  # in-process probes: the whole target, scope policy included
             out = runner(target, register=register)
         elif kind == 'nmap_full':
             out = runner(target.get('address') or '', register=register)

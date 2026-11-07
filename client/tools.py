@@ -31,7 +31,7 @@ from cvengine_scanner.flags import (DISCOVER_FLAGS, KERNEL_MARKERS, MAX_DISCOVER
                                     MAX_PATH_TARGETS, MAX_TARGETS, MAX_TEMPLATE_BYTES, MAX_VERIFY_PORTS, NAABU_FLAGS, NMAP_FLAGS, NMAP_FULL_FLAGS,
                                     NMAP_VERIFY_FLAGS, NSE_SCRIPT_TIMEOUT, NSE_SCRIPTS, NUCLEI_FIXTURE_FLAGS, NUCLEI_FLAGS, NUCLEI_TEMPLATE_FLAGS,
                                     NUCLEI_VALIDATE_FLAGS, PATH_PROBE_ODD, PATH_PROBE_PLAIN, TESTSSL_FLAGS, UDP_NSE_SCRIPTS, UDP_PORTS, WAFW00F_TIMEOUT,
-                                    WPSCAN_ARGS, host_of, udp_nmap_flags, wafw00f_flags)
+                                    WPSCAN_ARGS, WPSCAN_THOROUGH_ARGS, host_of, thorough_timeout, udp_nmap_flags, wafw00f_flags)
 from cvengine_scanner.parsers import (MAX_FINDINGS, MAX_FINDINGS_BYTES, MAX_LIST_ITEMS, ToolOutputError, parse_discover_xml,  # noqa: F401
                                       parse_naabu_output, parse_nmap_xml, parse_nuclei_jsonl, parse_port_reasons, parse_testssl_report,
                                       parse_waf_output)
@@ -505,11 +505,24 @@ def _failure_line(stderr, stdout, token=''):
 
 
 def run_wpscan(url, token='', timeout=900, register=None):
-    """Run WPScan on one site and return its raw outcome: ``{'report', 'returncode', 'stderr_tail'}``, exactly what
+    """Run the quick pass of WPScan on one site and return its raw outcome: ``{'report', 'returncode', 'stderr_tail'}``, exactly what
     ``cveFeed.wpscan_scan._classify`` already reads from a local run: the one function, local or dispatched, that
     turns a wpscan process's outcome into a report or a classified failure. The API token travels in the environment,
     never a command line argument, and never logged. The URL's host is judged by scope (with every address it resolves
     to); WPScan resolves it again, so a DNS answer that changes in between is the one gap."""
+    return _wpscan(url, token, timeout, register, WPSCAN_ARGS)
+
+
+def run_wpscan_thorough(url, token='', timeout_seconds=None, register=None):
+    """The thorough pass of WPScan on one site (task kind ``wpscan_thorough``): every plugin and theme WPScan knows in mixed detection mode, plus the
+    timthumb check (``WPSCAN_THOROUGH_ARGS``, a fixed list), for as long as the task's ``timeout_seconds`` allows (hours; held to the contract's range by
+    ``flags.thorough_timeout``). Same URL, scope, token and result handling as the quick pass: ``{'report', 'returncode', 'stderr_tail'}``, where a
+    run cut at its limit still reports what it read (WPScan ends its scan 30 seconds before the process would be killed, exit code 4 with a partial
+    report)."""
+    return _wpscan(url, token, thorough_timeout(timeout_seconds), register, WPSCAN_THOROUGH_ARGS)
+
+
+def _wpscan(url, token, timeout, register, args):
     if not isinstance(url, str) or not url.strip() or not _URL.match(url.strip()) or any(not ch.isprintable() for ch in url.strip()):
         raise TargetError(f'not a usable url: {str(url)[:100]!r}')
     url = url.strip()
@@ -523,7 +536,7 @@ def run_wpscan(url, token='', timeout=900, register=None):
         env['WPSCAN_API_TOKEN'] = token
     with tempfile.TemporaryDirectory(prefix='wpscan-') as work:
         out = os.path.join(work, 'report.json')
-        argv = [WPSCAN_BIN, '--url', url, *WPSCAN_ARGS, *_proxy_args('wpscan', [url]), '--max-scan-duration', str(max(30, timeout - 30)), '-o', out]
+        argv = [WPSCAN_BIN, '--url', url, *args, *_proxy_args('wpscan', [url]), '--max-scan-duration', str(max(30, timeout - 30)), '-o', out]
         proc = _start(argv, register, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         try:
             out_text, err = proc.communicate(timeout=timeout)
@@ -647,6 +660,29 @@ def run_dangling_dns_check(target, register=None):
         return dangling_dns.run_batch(target)
     except ValueError as exc:
         raise TargetError(f'not a usable dangling_dns_check task ({exc})') from None
+
+
+def run_identity_check(target, register=None):
+    """The ``identity_check`` kind: the CNAME, NS, MX and PTR reads and the certificate names cvENGINE used to read from its own server, answered by
+    this Sentinel's own resolver and connection (``cvengine_scanner.probes.identity``)."""
+    from cvengine_scanner.probes import identity
+    try:
+        return identity.run_batch(target)
+    except ValueError as exc:
+        raise TargetError(f'not a usable identity_check task ({exc})') from None
+
+
+def run_web_screenshot(target, register=None):
+    """The ``web_screenshot`` kind: a headless Chromium photographs the pages of the task through a vetting proxy, after proving its own sandbox
+    engaged (``client.shot``); the PNGs go back as base64 and cvENGINE checks, stores and reads them. A browser that cannot prove the sandbox opens
+    nothing and says so in the result."""
+    from . import shot
+    try:
+        return shot.run(target, register=register)
+    except ValueError as exc:
+        raise TargetError(f'not a usable web_screenshot task ({exc})') from None
+    except shot.Unavailable as exc:
+        raise ToolOutputError(str(exc)) from None
 
 
 def run_dns_resolve(target, register=None):
@@ -989,6 +1025,7 @@ def run_alive_check(target, register=None):
 
 RUNNERS = {'nmap': run_nmap, 'naabu': run_naabu, 'nuclei_light': run_nuclei, 'nuclei_targeted': run_nuclei,
            'nuclei_deep': run_nuclei, 'testssl': run_testssl, 'nmap_udp': run_nmap_udp, 'wpscan': run_wpscan,
+           'wpscan_thorough': run_wpscan_thorough,
            'openvas': openvas.run_openvas, 'discover': run_discover, 'waf': run_waf, 'http_probe': run_http_probe, 'dns_resolve': run_dns_resolve,
            'bbot_discovery': bbot.run_bbot_discovery,  # streamed: the daemon passes it its client and task id (client/bbot.py)
            'nmap_full': run_nmap_full, 'nmap_verify': run_nmap_verify, 'node2shell': run_node2shell, 'rdp_shot': run_rdp_shot,
@@ -997,7 +1034,8 @@ RUNNERS = {'nmap': run_nmap, 'naabu': run_naabu, 'nuclei_light': run_nuclei, 'nu
            'bucket_check': run_bucket_check, 'vhost_probe': run_vhost_probe, 'subdir_probe': run_subdir_probe,
            'route_probe': run_route_probe,
            'supplier_check': run_supplier_check,
-           'hygiene_check': run_hygiene_check, 'dangling_dns_check': run_dangling_dns_check}
+           'hygiene_check': run_hygiene_check, 'dangling_dns_check': run_dangling_dns_check,
+           'identity_check': run_identity_check, 'web_screenshot': run_web_screenshot}
 
 
 def run_secrets_scan(target, register=None, rules=None):

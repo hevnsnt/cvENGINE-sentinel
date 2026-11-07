@@ -98,6 +98,32 @@ jobs:
           docker run --rm --entrypoint kingfisher cvengine-sentinel-local:ci --version
           docker run --rm --entrypoint test cvengine-sentinel-local:ci -f /usr/share/doc/kingfisher/NOTICE
           docker run --rm --entrypoint python3 cvengine-sentinel-local:ci -c "from client import tools; assert tools.kingfisher_ready(); assert 'secrets_scan' in tools.RUNNERS"
+      - name: Chromium is the pinned build, runs as the image's unprivileged user, and the client declares web_screenshot
+        run: |
+          docker run --rm --entrypoint python3 cvengine-sentinel-local:ci -c "
+          import sys
+          from client import config, shot, tools
+          assert shot.available(), 'the headless shell is not installed'
+          assert 'web_screenshot' in tools.RUNNERS and 'web_screenshot' in config.CAPABILITIES
+          print('playwright', shot.pinned_browser())
+          sys.exit(0 if shot.pinned_browser().get('version') == '$(grep -m1 '^ARG PLAYWRIGHT_CHROMIUM_VERSION=' Dockerfile | cut -d= -f2)' else 1)"
+          docker run --rm --entrypoint sh cvengine-sentinel-local:ci -c '! ls /opt/pw-browsers/ffmpeg-* >/dev/null 2>&1'
+      # Chromium's sandbox cannot be proven by the build (build steps run under the builder's default seccomp profile, which refuses user namespaces).
+      # Run the image the way the compose file runs the Sentinel: with Playwright's seccomp profile the sandbox must engage (client.shot_child --probe: the
+      # renderer in its own user and PID namespace, under its own seccomp filter); with Docker's default profile it must fail closed (engaged false, exit
+      # status 1), never fall back to running without it.
+      - name: Screenshot browser sandbox
+        run: |
+          probe() { docker run --rm "$@" --entrypoint python3 cvengine-sentinel-local:ci -m client.shot_child --probe; }
+          probe --security-opt seccomp=config/seccomp/playwright-chromium.json | tee "$RUNNER_TEMP/sandbox-on.json"
+          grep -q '"engaged":true' "$RUNNER_TEMP/sandbox-on.json" || { echo "::error::Chromium's sandbox did not engage with the seccomp profile"; exit 1; }
+          status=0; probe > "$RUNNER_TEMP/sandbox-off.json" || status=$?  # no pipe: the probe's own exit status is what counts
+          cat "$RUNNER_TEMP/sandbox-off.json"
+          [ "$status" = 1 ] && grep -q '"engaged":false' "$RUNNER_TEMP/sandbox-off.json" || { echo "::error::without the profile the browser did not fail closed (status $status)"; exit 1; }
+      - name: The browser takes a picture of a page, inside its sandbox, through the vetting proxy
+        run: |
+          docker run --rm --security-opt seccomp=config/seccomp/playwright-chromium.json -v "$PWD/client/tests:/opt/sentinel/client/tests:ro" --entrypoint python3 cvengine-sentinel-local:ci -m unittest client.tests.test_shot_browser -v 2>&1 | tee "$RUNNER_TEMP/browser-tests.txt"
+          grep -q 'skipped' "$RUNNER_TEMP/browser-tests.txt" && { echo "::error::the browser tests were skipped"; exit 1; } || true
       - name: The OpenVAS bootstrap check is in the image
         run: docker run --rm --entrypoint test cvengine-sentinel-local:ci -f /opt/sentinel/scripts/ci_openvas_bootstrap.py
       - name: WPScan is the pinned version, from the locked gems, and its database is not baked in
