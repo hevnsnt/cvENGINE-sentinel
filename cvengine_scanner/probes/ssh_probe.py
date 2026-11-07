@@ -149,10 +149,26 @@ def host_entry(address, port, reached, observations, check_hits=(), error=None):
     return entry
 
 
-def unverified(address, port, why, ident='ssh_not_inspected'):
-    """What a target the tool gave nothing usable for is reported as: nothing is known, so nothing is clean."""
+NOT_DOWNLOADED = 'host key blocklist data: not downloaded to this Sentinel yet (it downloads in the background after the Sentinel starts)'
+NOT_DOWNLOADED_SHORT = 'the host key blocklist data is not downloaded yet'
+
+
+def not_checked_observation():
+    """The host key check did not run, which is a fact about this Sentinel's data and says nothing about the host."""
+    return _obs('badkeys_not_checked', 'Host keys were not checked against the badkeys blocklist', 0,
+                NOT_DOWNLOADED + '; a compromised host key would not have been found', False)
+
+
+def unverified(address, port, why, ident='ssh_not_inspected', badkeys_checked=True):
+    """What a target the tool gave nothing usable for is reported as: nothing is known, so nothing is clean. ``badkeys_checked`` false (the blocklist
+    data is not on this Sentinel yet) is said next to it: the host key check is "not checked", a separate fact from whatever kept the host from answering."""
+    if not badkeys_checked:
+        why = clip(why, ERROR_LEN - len(NOT_DOWNLOADED_SHORT) - 2) + '; ' + NOT_DOWNLOADED_SHORT
     why = clip(why, ERROR_LEN)
-    return host_entry(address, port, False, [_obs(ident, 'SSH service could not be inspected', 0, why, False)], error=why)
+    observations = [_obs(ident, 'SSH service could not be inspected', 0, why, False)]
+    if not badkeys_checked:
+        observations.append(not_checked_observation())
+    return host_entry(address, port, False, observations, error=why)
 
 
 # ----------------------------------------------------------------------------- the parser
@@ -255,9 +271,9 @@ def parse_host(address, port, text, badkeys_checked, badkeys_age_hours=None):
     present for the run: without it the check did nothing, so the entry says so (unverified) instead of implying the keys are clean.
     ``badkeys_age_hours`` is how old that data is (whole hours, ``None`` unknown), said in the evidence so a stale list is visible."""
     if not isinstance(text, str) or not text.strip():
-        return unverified(address, port, 'the tool wrote no result: the address was unreachable, nothing there speaks SSH, or the handshake did not finish')
+        return unverified(address, port, 'the tool wrote no result: the address was unreachable, nothing there speaks SSH, or the handshake did not finish', badkeys_checked=badkeys_checked)
     if len(text) > MAX_OUTPUT_BYTES:
-        return unverified(address, port, 'the tool output was larger than is read')
+        return unverified(address, port, 'the tool output was larger than is read', badkeys_checked=badkeys_checked)
     record = None
     for number, line in enumerate(text.splitlines()):
         if number >= MAX_LINES:
@@ -267,15 +283,15 @@ def parse_host(address, port, text, badkeys_checked, badkeys_age_hours=None):
         try:
             doc = json.loads(line)
         except ValueError:
-            return unverified(address, port, 'the tool output could not be parsed', 'ssh_unparseable')
+            return unverified(address, port, 'the tool output could not be parsed', 'ssh_unparseable', badkeys_checked=badkeys_checked)
         if isinstance(doc, dict) and doc.get('port') == port and str(doc.get('host', '')).strip('[]') == address:
             record = doc
             break
     if record is None:
-        return unverified(address, port, 'the tool output had no entry for this address and port')
+        return unverified(address, port, 'the tool output had no entry for this address and port', badkeys_checked=badkeys_checked)
     version = record.get('version')
     if not _is_banner(version):
-        return unverified(address, port, 'no SSH identification string was read: the service may not be SSH', 'ssh_not_identified')
+        return unverified(address, port, 'no SSH identification string was read: the service may not be SSH', 'ssh_not_identified', badkeys_checked=badkeys_checked)
 
     observations = [_banner_observation(version), _hostkey_observation(record.get('hostkeys')), _methods_observation(record.get('methods'))]
     observations.extend(_algorithm_observations(record.get('kex')))
@@ -285,8 +301,7 @@ def parse_host(address, port, text, badkeys_checked, badkeys_age_hours=None):
 
     hits = _check_hits(record.get('vulns')) if badkeys_checked else []
     if not badkeys_checked:
-        observations.append(_obs('badkeys_not_checked', 'Host keys were not checked against the badkeys blocklist', 0,
-                                 'host key blocklist data: not present on this Sentinel; a compromised host key would not have been found', False))
+        observations.append(not_checked_observation())
     elif hits:
         for hit in hits:
             observations.append(_obs('badkeys_blocklist_hit', 'SSH host key is on the badkeys compromised-key blocklist', 4, f"{hit['id']} {hit['proof']}", True))

@@ -225,6 +225,24 @@ class RunTests(unittest.TestCase):
         with self.assertRaises(bbot.RunError):
             self.run_with(FakeProc([], code=1, stderr='Traceback\nValueError: boom\n'))
 
+    def test_bbot_never_installs_dependencies_in_a_running_sentinel(self):
+        # bbot keys its record of installed dependencies by hostname, so the one written at image build never matches in a container, and bbot then
+        # wants root (sudo -K) to install again. The image installs them at build; the command must say not to look.
+        self.assertIn('--no-deps', bbot.build_command(TARGET, '/o', '/b'))
+        self.assertIn('--no-deps', bbot.build_command({**TARGET, 'presets': ['kitchen-sink'], 'require_flags': []}, '/o', '/b'))
+
+    def test_a_bbot_that_cannot_start_for_want_of_root_says_so_in_plain_words(self):
+        traceback = ('Traceback (most recent call last):\n  File "installer.py", line 437, in ensure_root\n'
+                     "PermissionError: [Errno 13] Permission denied: 'sudo'\n")
+        with self.assertRaises(bbot.RunError) as caught:
+            self.run_with(FakeProc([], code=1, stderr=traceback))
+        message = str(caught.exception)
+        self.assertIn('bbot cannot start', message)
+        self.assertIn('needs root', message)
+        self.assertNotIn('Permission denied', message)
+        self.assertLessEqual(len(message), 300)
+        self.assertEqual(bbot.start_failure(['ValueError: boom']), '')
+
     def test_a_stop_from_the_server_ends_the_run(self):
         client = FakeClient([httpclient.ApiError(409, 'the scan was stopped')])
         with self.assertRaises(bbot.Stopped):

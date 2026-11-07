@@ -1137,6 +1137,40 @@ class RegistrationLifecycleTests(DaemonTestCase):
         d._heartbeat_once()
         self.assertEqual(len(attempts), 2)  # registered: nothing more to send
 
+    def test_the_badkeys_refresh_starts_when_the_capabilities_become_known_after_a_server_that_was_down_at_boot(self):
+        d = self.make()
+        kinds = []
+        attempts = []
+
+        def flaky():
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise requests.ConnectionError('server down at boot')
+            kinds.append('ssh_probe')  # the server answered: its kinds are known, ssh_probe is declared
+            return {}
+        d.reregister = flaky
+        with mock.patch.object(daemon, 'declared_kinds', lambda: ['nmap', *kinds]), mock.patch.object(daemon.badkeys, 'start') as start, \
+                self.assertLogs('sentinel.daemon', 'INFO') as logs:
+            d._ensure_badkeys()  # the start of run(): nothing declared yet
+            d.start_registration()  # the server is down
+            d._ensure_badkeys()
+            start.assert_not_called()
+            d._heartbeat_once()  # registered now
+        start.assert_called_once_with(d.stop_event)
+        skipped = [line for line in logs.output if 'badkeys refresh not started' in line]
+        self.assertEqual(len(skipped), 1, 'logged once, not at every ask')
+
+    def test_asking_to_start_the_badkeys_refresh_twice_runs_one_thread(self):
+        from client import badkeys
+        stop = threading.Event()
+        self.addCleanup(stop.set)
+        with mock.patch.object(badkeys.tools, 'sshamble_ready', return_value=True), mock.patch.object(badkeys, 'run_forever', lambda ev, **kw: ev.wait(5)), \
+                mock.patch.dict(badkeys._thread, {'thread': None}):
+            first = badkeys.start(stop)
+            self.assertIs(badkeys.start(stop), first)
+            stop.set()
+            first.join(2)
+
     def test_startup_registers_once_when_the_servers_settings_change_nothing_it_reports(self):
         d = self.make()
         sent = []

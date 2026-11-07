@@ -1120,15 +1120,15 @@ def _ssh_probe_one(address, port, register, badkeys_dir):
         try:
             _run(argv, SSH_PROBE_TIMEOUT, register, max_bytes=SSH_PROBE_STDOUT, env=env)
         except subprocess.TimeoutExpired:
-            return ssh_probe.unverified(address, port, 'the inspection timed out', 'ssh_timeout')
+            return ssh_probe.unverified(address, port, 'the inspection timed out', 'ssh_timeout', badkeys_checked=checked)
         except (ToolExitError, ToolOutputError) as exc:
-            return ssh_probe.unverified(address, port, f'the tool failed: {exc}')
+            return ssh_probe.unverified(address, port, f'the tool failed: {exc}', badkeys_checked=checked)
         try:
             size = os.path.getsize(out)
         except OSError:  # no file: nothing was reachable or nothing there speaks SSH
             return ssh_probe.parse_host(address, port, '', checked, age)
         if size > ssh_probe.MAX_OUTPUT_BYTES:
-            return ssh_probe.unverified(address, port, 'the tool output was larger than is read', 'ssh_oversized')
+            return ssh_probe.unverified(address, port, 'the tool output was larger than is read', 'ssh_oversized', badkeys_checked=checked)
         with open(out, 'rb') as handle:
             text = handle.read(ssh_probe.MAX_OUTPUT_BYTES + 1).decode('utf-8', errors='replace')
         return ssh_probe.parse_host(address, port, text, checked, age)

@@ -263,6 +263,7 @@ class Daemon:
         self.reregister = None  # set by the entry point: sends this Sentinel's registration and returns the server's reply
         self.exit_code = 0  # non-zero once the server stopped accepting this Sentinel's token
         self._update_reply = None  # what cvENGINE last said about updating (mode, requested)
+        self._badkeys_skip_logged = False  # the "badkeys refresh not started" line is logged once, not at every registration
         self._register_pending = False  # the last registration did not reach the server: retried at every heartbeat until it does
         self._settings_rev = None  # fingerprint of the server's settings this Sentinel last applied
         self._registered = self._registration()  # what the server was last told, so a change after it is noticed
@@ -292,8 +293,7 @@ class Daemon:
         hb.start()
         if self.watchdog:
             threading.Thread(target=self._watchdog_loop, name='sentinel-watchdog', daemon=True).start()
-        if 'ssh_probe' in declared_kinds():
-            badkeys.start(self.stop_event)  # the host key blocklist data for ssh_probe: refreshed in the background (CVENGINE_BADKEYS_REFRESH=0 turns it off)
+        self._ensure_badkeys()
         if shot.available():  # the browser's sandbox is checked once at every start, as the server's celery container once did (never blocks a start)
             threading.Thread(target=self._check_screenshot_sandbox, name='sentinel-shot-sandbox', daemon=True).start()
         try:
@@ -307,6 +307,22 @@ class Daemon:
             badkeys.stop()
             self._shutdown()
             hb.join(timeout=2)
+
+    def _ensure_badkeys(self):
+        """Start the host key blocklist refresh for ssh_probe (background; CVENGINE_BADKEYS_REFRESH=0 turns it off) once ssh_probe is declared. Asked at
+        start and again whenever a registration succeeds: a server that was down at start leaves the kinds unknown, so the declaration, and with it the
+        refresh, only becomes possible later. Says in the log, once, why it is not running yet."""
+        try:
+            if 'ssh_probe' not in declared_kinds():
+                if not self._badkeys_skip_logged:
+                    self._badkeys_skip_logged = True
+                    logger.info('badkeys refresh not started: ssh_probe is not declared (the server has not said which kinds it takes, or the sshamble tool is missing); '
+                                'it starts when the capabilities become known')
+                return
+            self._badkeys_skip_logged = False
+            badkeys.start(self.stop_event)
+        except Exception:  # noqa: BLE001 - never stops the daemon
+            logger.exception('badkeys refresh could not be started')
 
     def _check_screenshot_sandbox(self):
         """Start the screenshot browser once and log whether Chromium's sandbox engaged. A task proves it again before it opens any page; this only
@@ -503,6 +519,7 @@ class Daemon:
         self._register_pending = False
         self._registered = current
         self._note_contract(reply)
+        self._ensure_badkeys()  # the kinds are known now (a server that was down at start): ssh_probe may be declared for the first time
         return reply
 
     def _reconcile(self, leases, asked_at=None):

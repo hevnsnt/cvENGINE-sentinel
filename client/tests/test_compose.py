@@ -216,6 +216,27 @@ class PinTests(unittest.TestCase):
         self.assertIn('rm -rf "${GOROOT}" "${GOPATH}/pkg"', step)
         self.assertNotIn('/go/pkg/*', dockerfile)
 
+    def test_no_root_only_directory_is_on_the_path_of_the_run_time_user(self):
+        # /root is mode 0700: a PATH entry under it makes a lookup of a program that is not found fail with EACCES (PermissionError) instead of
+        # ENOENT, which is how bbot's `sudo -K` probe crashed it
+        dockerfile = text('Dockerfile')
+        for line in dockerfile.splitlines():
+            if line.startswith('ENV PATH') or re.match(r'\s*PATH=', line):
+                self.assertNotIn('/root', line)
+                self.assertNotIn('GOPATH', line)
+        self.assertNotRegex(dockerfile, r'(?m)^\s*(ENV\s+)?GO(PATH|ROOT)=')  # set only inside the build step that runs go
+
+    def test_every_bbot_module_dependency_is_installed_at_build_and_the_client_start_is_checked(self):
+        dockerfile = text('Dockerfile')
+        self.assertIn('-p kitchen-sink --force --dry-run', dockerfile)
+        self.assertIn('scripts/ci_bbot_start.py', dockerfile)
+        self.assertIn('--no-deps', dockerfile)
+        self.assertLess(dockerfile.index('-p kitchen-sink'), dockerfile.index('apt-get purge -y git'))
+
+    def test_ci_starts_bbot_in_the_built_image_as_the_unprivileged_user(self):
+        workflow = text('.github', 'workflows', 'image.yml')
+        self.assertRegex(workflow, r'docker run --rm --hostname \S+ --user 10001 --entrypoint python3 cvengine-sentinel-local:ci /opt/sentinel/scripts/ci_bbot_start\.py')
+
     def test_the_openvas_bootstrap_check_is_in_the_image(self):
         self.assertIn('COPY scripts/ci_openvas_bootstrap.py /opt/sentinel/scripts/', text('Dockerfile'))
 
