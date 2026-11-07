@@ -683,6 +683,16 @@ def run_identity_check(target, register=None):
         raise TargetError(f'not a usable identity_check task ({exc})') from None
 
 
+def run_page_read(target, register=None):
+    """The ``page_read`` kind: a validation re-test's HEAD of a URL and re-read of a host's front pages and scripts, made from this Sentinel
+    (``cvengine_scanner.probes.page_read``); the server weighs what was read."""
+    from cvengine_scanner.probes import page_read
+    try:
+        return page_read.run_batch(target)
+    except ValueError as exc:
+        raise TargetError(f'not a usable page_read task ({exc})') from None
+
+
 def run_web_screenshot(target, register=None):
     """The ``web_screenshot`` kind: a headless Chromium photographs the pages of the task through a vetting proxy, after proving its own sandbox
     engaged (``client.shot``); the PNGs go back as base64 and cvENGINE checks, stores and reads them. A browser that cannot prove the sandbox opens
@@ -1046,7 +1056,7 @@ RUNNERS = {'nmap': run_nmap, 'naabu': run_naabu, 'nuclei_light': run_nuclei, 'nu
            'route_probe': run_route_probe, 'route_probe_signed': run_route_probe_signed,  # the second takes the stored sign-in the daemon read (built-in scanner only)
            'supplier_check': run_supplier_check,
            'hygiene_check': run_hygiene_check, 'dangling_dns_check': run_dangling_dns_check,
-           'identity_check': run_identity_check, 'web_screenshot': run_web_screenshot}
+           'identity_check': run_identity_check, 'web_screenshot': run_web_screenshot, 'page_read': run_page_read}
 
 
 def run_secrets_scan(target, register=None, rules=None):

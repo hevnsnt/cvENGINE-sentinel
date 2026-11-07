@@ -338,6 +338,7 @@ class PollAndExecuteTests(unittest.TestCase):
             ('hygiene_check', HYGIENE_TARGET, {'certs': [], 'mail': [], 'touched': [], 'refused': []}, ((HYGIENE_TARGET,), {})),
             ('dangling_dns_check', DANGLING_TARGET, {'ratings': [], 'touched': [], 'refused': []}, ((DANGLING_TARGET,), {})),
             ('identity_check', IDENTITY_TARGET, {'dns': [], 'certs': [], 'touched': [], 'refused': []}, ((IDENTITY_TARGET,), {})),
+            ('page_read', PAGE_READ_TARGET, {'reads': [], 'touched': [], 'refused': []}, ((PAGE_READ_TARGET,), {})),
             ('openvas', {'hosts': {'192.0.2.10': 'www.example.test'}, 'excluded_families': [], 'max_hours': 24, 'preferences': {'max_checks': 3}},
              {'results': [], 'scanned_addresses': [], 'without_cve': 0, 'unusable': 0, 'partial': True},
              (({'192.0.2.10': 'www.example.test'}, [], 24), {'preferences': {'max_checks': 3}})),
@@ -950,6 +951,8 @@ HYGIENE_TARGET = {'tls': [{'host': 'www.example.test', 'port': 443}], 'mail': [{
                   'scope': {**HTTP_PROBE_TARGET['scope'], 'hosts': ['www.example.test']}}
 DANGLING_TARGET = {'checks': [{'id': '0', 'host': 'old.example.test', 'kind': 'ns', 'triggers': ['old.example.test']}],
                    'providers': {'cname': [], 'nameservers': []}, 'scope': {**HTTP_PROBE_TARGET['scope'], 'hosts': ['old.example.test']}}
+PAGE_READ_TARGET = {'reads': [{'id': 'h1', 'op': 'head', 'host': 'www.example.test', 'url': 'https://www.example.test/'}],
+                    'scope': {**HTTP_PROBE_TARGET['scope'], 'hosts': ['www.example.test']}}
 IDENTITY_TARGET = {'dns': [{'id': 'd1', 'name': 'www.example.test', 'type': 'CNAME'}], 'certs': [{'id': 'c1', 'host': '192.0.2.10', 'port': 443}],
                    'scope': {**HTTP_PROBE_TARGET['scope'], 'hosts': ['www.example.test', '192.0.2.10']}}
 
