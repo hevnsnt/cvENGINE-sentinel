@@ -1076,6 +1076,89 @@ def kingfisher_ready():
     return shutil.which(KINGFISHER_BIN) is not None
 
 
+# --- ssh_probe: sshamble's host key inspection, read-only ---------------------------------------------------------------------------------
+
+SSHAMBLE_BIN = os.environ.get('CVENGINE_SSHAMBLE_BIN', 'sshamble')
+# A directory holding the badkeys blocklist (``sshamble badkeys-update`` writes blocklist.dat and badkeysdata.json there). Optional: without it the
+# check does nothing and the result says "not checked".
+BADKEYS_DIR = os.environ.get('CVENGINE_BADKEYS_DIR', '/var/lib/cvengine-sentinel/badkeys')
+SSH_PROBE_TIMEOUT = 30  # seconds for one target (the tool's own connect timeout is 5)
+SSH_PROBE_STDOUT = 4096  # bytes of the tool's stdout kept: it writes its result to the file, and logs nowhere
+
+
+def sshamble_ready():
+    """Whether the sshamble binary is here: the image carries it; a Sentinel run from a source checkout may not, and then it does not declare ``ssh_probe``."""
+    import shutil
+    return shutil.which(SSHAMBLE_BIN) is not None
+
+
+def badkeys_ready(directory=None):
+    """Whether the badkeys blocklist data is present (both files the tool reads)."""
+    directory = BADKEYS_DIR if directory is None else directory
+    return bool(directory) and all(os.path.isfile(os.path.join(directory, name)) for name in ('blocklist.dat', 'badkeysdata.json'))
+
+
+def _ssh_probe_one(address, port, register, badkeys_dir):
+    from cvengine_scanner.probes import ssh_probe
+    with tempfile.TemporaryDirectory(prefix='sshamble-') as work:
+        out = os.path.join(work, 'out.jsonl')
+        home = os.path.join(work, 'home')
+        checked = badkeys_ready(badkeys_dir)
+        os.makedirs(os.path.join(home, '.cache'))
+        if checked:  # the tool reads $HOME/.cache/badkeys: a link to the data, which a scan never writes
+            os.symlink(badkeys_dir, os.path.join(home, '.cache', 'badkeys'))
+        argv = ssh_probe.build_argv(SSHAMBLE_BIN, address, port, out)
+        env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'HOME': home, 'TERM': 'dumb', 'LC_ALL': 'C'}
+        try:
+            _run(argv, SSH_PROBE_TIMEOUT, register, max_bytes=SSH_PROBE_STDOUT, env=env)
+        except subprocess.TimeoutExpired:
+            return ssh_probe.unverified(address, port, 'the inspection timed out', 'ssh_timeout')
+        except (ToolExitError, ToolOutputError) as exc:
+            return ssh_probe.unverified(address, port, f'the tool failed: {exc}')
+        try:
+            size = os.path.getsize(out)
+        except OSError:  # no file: nothing was reachable or nothing there speaks SSH
+            return ssh_probe.parse_host(address, port, '', checked)
+        if size > ssh_probe.MAX_OUTPUT_BYTES:
+            return ssh_probe.unverified(address, port, 'the tool output was larger than is read', 'ssh_oversized')
+        with open(out, 'rb') as handle:
+            text = handle.read(ssh_probe.MAX_OUTPUT_BYTES + 1).decode('utf-8', errors='replace')
+        return ssh_probe.parse_host(address, port, text, checked)
+
+
+def run_ssh_probe(target, register=None, badkeys_dir=None):
+    """The ``ssh_probe`` kind (``cvengine_scanner.probes.ssh_probe``): for each address and port, one read-only ``sshamble scan --checks badkeys-blocklist``.
+    Every address is held to the task's scope policy and this Sentinel's floor before anything is sent; a target that is refused, times out, writes nothing or
+    writes something unreadable is reported unverified (unknown), never as a clean host."""
+    from cvengine_scanner.probes import ssh_probe
+    from cvengine_scanner.probes.policy import ScopePolicy
+    raw = target.get('targets') if isinstance(target, dict) else None
+    if not isinstance(raw, list) or not raw or len(raw) > ssh_probe.MAX_TARGETS:
+        raise TargetError(f'ssh_probe names 1 to {ssh_probe.MAX_TARGETS} targets')
+    clean = []
+    for item in raw:
+        if not isinstance(item, dict):
+            raise TargetError('an ssh_probe target is an object with address and port')
+        clean.append((_one_address(item.get('address')), _validate_port(item.get('port'))))
+    policy = ScopePolicy(target.get('scope'))
+    badkeys_dir = BADKEYS_DIR if badkeys_dir is None else badkeys_dir
+    hosts = []
+    for address, port in clean:
+        try:
+            policy.check_host(address)
+            policy.check_address(address, literal=True)
+        except ValueError as exc:
+            policy.refuse(address)
+            hosts.append(ssh_probe.unverified(address, port, f'not run: {exc}', 'ssh_refused'))
+            continue
+        policy.touch(address)
+        hosts.append(_ssh_probe_one(address, port, register, badkeys_dir))
+    return {'hosts': hosts, 'touched': policy.touched, 'refused': policy.refused}
+
+
+RUNNERS['ssh_probe'] = run_ssh_probe
+
+
 # --- version probing, for the capabilities a bootstrapping Sentinel declares ------------------------------------------
 
 VERSION_ARGS = {'nmap': [NMAP_BIN, '--version'], 'naabu': [NAABU_BIN, '-version'], 'nuclei': [NUCLEI_BIN, '-version'],
