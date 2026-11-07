@@ -1,7 +1,9 @@
 """The one HTTP GET every probe makes, copied from cvENGINE's ``route_auth`` (``probe_url``, ``page_title`` and the limits they use).
 
 Every request is bounded (bytes, per-read timeouts and a total time budget), read-only (GET or HEAD), anonymous (no cookie, no credential, only a
-Host override or a cached script's ETag may be added) and goes to a numeric address the task's scope policy accepted (``transport``)."""
+Host override or a cached script's ETag may be added) and goes to a numeric address the task's scope policy accepted (``transport``). The one exception is
+the signed-in route check (``routes_signed``): it passes ``signed`` (the stored sign-in's header pairs, already checked) and then the server certificate is
+verified unless that sign-in's owner switched verification off for it."""
 import http.client
 import re
 import socket
@@ -11,6 +13,11 @@ from .. import versions
 from . import transport
 
 CONNECT_TIMEOUT, READ_TIMEOUT = 3, 6
+UNTRUSTED_CERTIFICATE = 'sign-in not sent: the server certificate does not verify'  # the error of a signed-in route whose certificate did not verify (cvENGINE reads it, cveFeed.auth_routes)
+
+
+class UntrustedCertificate(ValueError):
+    """A stored sign-in was not sent because the server's certificate does not verify and the sign-in's owner has not allowed that. Holds no value."""
 PROBE_TOTAL_SECONDS = 20  # wall-clock budget for one probe: the per-read timeouts alone let a host that trickles bytes hold a worker thread for good
 ROUTE_SAMPLE_BYTES = 64 * 1024
 MAX_PROBE_BYTES = 256 * 1024  # the most a version probe may ask for (a JavaScript bundle names its framework version deep inside)
@@ -48,12 +55,14 @@ def page_title(text):
 
 
 def probe_url(url, policy, timeout=(CONNECT_TIMEOUT, READ_TIMEOUT), max_bytes=ROUTE_SAMPLE_BYTES, headers=None, method='GET', browser=False,
-              connect_ip=None):
+              connect_ip=None, signed=None, verify=True):
     """Bounded anonymous GET/HEAD using a pinned numeric destination and original Host/SNI, copied from cvENGINE's ``route_auth.probe_url``.
     The URL's host must pass ``policy`` (a ``policy.ScopePolicy``) and so must every address it resolves to; a redirect is never followed here
     (``version_probes.fetch`` follows one, asking the policy again). ``connect_ip`` connects to that vetted address instead of resolving the URL's
-    name: the name is still sent as the Host header and the TLS server name. No credential is ever sent; the server certificate is never verified,
-    so a broken-certificate site is still inspected."""
+    name: the name is still sent as the Host header and the TLS server name. No credential is sent and the server certificate is never verified,
+    so a broken-certificate site is still inspected, unless ``signed`` is given: ``signed`` (``[(name, value)]``, the stored sign-in, checked by
+    ``routes_signed``) is the one way a credential is sent, and then the certificate is verified (unless the caller passes ``verify=False``, the
+    sign-in owner's explicit switch) and one that does not verify raises ``UntrustedCertificate`` before anything is sent."""
     import ssl
     from http.cookies import SimpleCookie, CookieError
     from urllib.parse import quote, urlsplit
@@ -86,8 +95,9 @@ def probe_url(url, policy, timeout=(CONNECT_TIMEOUT, READ_TIMEOUT), max_bytes=RO
     if parsed.scheme == 'https':
         context = ssl.create_default_context()
         context.minimum_version = ssl.TLSVersion.TLSv1_2
-        context.check_hostname = False  # an anonymous check inspects broken-certificate sites too
-        context.verify_mode = ssl.CERT_NONE
+        if not signed or not verify:
+            context.check_hostname = False  # an anonymous check inspects broken-certificate sites too
+            context.verify_mode = ssl.CERT_NONE
     connection = transport.HTTPConnection(host, port, addresses, timeout[0], policy, context=context, literal=literal)
     authority = f'[{host}]' if ':' in host else host
     if parsed.port is not None:
@@ -97,6 +107,10 @@ def probe_url(url, policy, timeout=(CONNECT_TIMEOUT, READ_TIMEOUT), max_bytes=RO
     if browser:
         request_headers.update(BROWSER_HEADERS)
     request_headers.update({key.title(): value for key, value in (headers or {}).items()})
+    for name, value in signed or ():  # the stored sign-in replaces a header of the same name, whatever its case
+        for existing in [k for k in request_headers if k.lower() == name.lower()]:
+            del request_headers[existing]
+        request_headers[name] = value
     path = quote(parsed.path or '/', safe="/%:@!$&'()*+,;=-._~")
     if parsed.query:
         path += '?' + quote(parsed.query, safe="/%?:@!$&'()*+,;=-._~")
@@ -143,6 +157,10 @@ def probe_url(url, policy, timeout=(CONNECT_TIMEOUT, READ_TIMEOUT), max_bytes=RO
                 'powered_by': response.getheader('X-Powered-By', ''), 'headers': versions.keep_headers(response.headers.items()),
                 'raw_headers': {k.lower(): ' '.join(v.split())[:200] for k, v in list(response.headers.items())[:60]
                                 if k.lower() not in ('set-cookie', 'authorization', 'proxy-authorization')}}
+    except ssl.SSLCertVerificationError:
+        if signed:  # nothing was sent: the handshake failed before the request
+            raise UntrustedCertificate(UNTRUSTED_CERTIFICATE) from None
+        raise
     except (OSError, http.client.HTTPException):
         if expired.is_set():
             raise TimeoutError('probe exceeded its total time budget') from None

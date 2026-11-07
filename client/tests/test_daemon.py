@@ -153,7 +153,7 @@ class RegisterTests(unittest.TestCase):
         self.assertEqual(body['name'], 'my-sentinel')
         self.assertEqual(body['max_concurrent'], 5)
         self.assertEqual(body['tools'], ['nmap', 'naabu', 'bbot'])
-        self.assertEqual(sorted(body['capabilities']), sorted(config.CAPABILITIES))
+        self.assertEqual(sorted(body['capabilities']), sorted(k for k in config.CAPABILITIES if k != 'route_probe_signed'))  # the built-in scanner's kind: no other Sentinel declares it
         self.assertNotIn('scope', body)
 
     def test_bbot_discovery_is_declared_only_with_bbot_installed_and_a_server_that_knows_it(self):
