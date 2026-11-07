@@ -82,6 +82,13 @@ jobs:
           assert flags.NUCLEI_FLAGS[flags.NUCLEI_FLAGS.index('-etags') + 1] == 'dos'
           print('installed', cvengine_scanner.__version__, 'contract', contract.version())
           PY
+      - name: Install by commit sha (the server's pin since T7, no tag needed) and read the contract
+        run: |
+          sha=$(git rev-parse HEAD)
+          python -m venv "$RUNNER_TEMP/venv-sha"
+          "$RUNNER_TEMP/venv-sha/bin/pip" install -q "cvengine-scanner @ git+file://$GITHUB_WORKSPACE@$sha"
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/venv-sha/bin/python" -I -c "from cvengine_scanner import contract; print('contract', contract.version(), len(contract.load()['kind_since']), 'kinds'); assert contract.PATH.is_file()"
 
   # The secrets_scan kind runs Kingfisher (cvENGINE docs/SECRETS-PLAN.md 6.3). The pinned release tarballs are verified here the way Kingfisher
   # documents (docs/INSTALLATION.md, "Verifying release artifacts"): the build attestation, then the sha256 the Dockerfile pins. Then the real
@@ -130,37 +137,64 @@ jobs:
             echo "::warning::Kingfisher $latest is out; the image pins $pinned. Bump the version and both sha256 pins, and re-review the server's validation allow-list."
           fi
 
+  # This library is the one source of truth for the result contract (cvengine_scanner/contract/sentinel_contract.json). The server keeps no copy: it
+  # installs this library at the commit sha it pins in web/requirements.txt. A contract change lands here first, then the server bumps its sha.
+  # So this job no longer compares files. It runs the contract's own self-tests, and checks that the sha the server pins is a commit of this
+  # repository's main (an ancestor of it, or main itself), so the server never pins a commit that was dropped or is not merged. While the server
+  # still pins a tag (before its T7 change merges) there is no sha to check and the check passes: neither pull request waits on the other.
   contract:
-    name: Vendored contract equals the server's
+    name: Contract self-tests and the server's pinned sha is on main
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - name: Compare cvengine_scanner/contract/sentinel_contract.json with the server's file
-        env:
-          SERVER_CONTRACT_URL: https://raw.githubusercontent.com/hevnsnt/CVEngine/1.4-develop/web/agentapi/sentinel_contract.json
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: The contract's own self-tests (schema, one fixture per kind, targets, partials, frozen sets)
         run: |
-          server="$RUNNER_TEMP/server_sentinel_contract.json"
-          # Fails closed: a file that cannot be fetched (after three tries with a growing wait) or is not JSON fails the job, because a skipped
-          # comparison would let the two copies drift unnoticed. A file that was read and differs fails too.
+          pip install -r requirements.txt ".[test]"
+          python -m unittest cvengine_scanner.tests.test_contract -v
+      - name: The sha the server pins is on main
+        env:
+          SERVER_REQUIREMENTS_URL: https://raw.githubusercontent.com/hevnsnt/CVEngine/1.4-develop/web/requirements.txt
+        run: |
+          reqs="$RUNNER_TEMP/server_requirements.txt"
+          # Fails closed: a file that cannot be fetched (after three tries with a growing wait) fails the job, because a skipped check would let a
+          # pin to an unmerged commit through unnoticed.
           fetched=0
           for attempt in 1 2 3; do
-            rm -f "$server"
-            if curl -fsSL --max-time 30 -o "$server" "$SERVER_CONTRACT_URL" && python3 -c 'import json, sys; json.load(open(sys.argv[1]))' "$server"; then
+            rm -f "$reqs"
+            if curl -fsSL --max-time 30 -o "$reqs" "$SERVER_REQUIREMENTS_URL" && grep -q '^cvengine-scanner' "$reqs"; then
               fetched=1
               break
             fi
-            echo "attempt $attempt of 3: could not fetch a valid contract from $SERVER_CONTRACT_URL"
+            echo "attempt $attempt of 3: could not fetch $SERVER_REQUIREMENTS_URL"
             [ "$attempt" -lt 3 ] && sleep $((attempt * 10))
           done
           if [ "$fetched" -ne 1 ]; then
-            echo "::error::could not fetch the server's contract from $SERVER_CONTRACT_URL after 3 attempts; the comparison cannot be made, so this check fails (re-run it when the server's file is reachable)"
+            echo "::error::could not fetch the server's web/requirements.txt after 3 attempts; the check cannot be made, so it fails (re-run it when the file is reachable)"
             exit 1
           fi
-          if cmp -s "$server" cvengine_scanner/contract/sentinel_contract.json; then
-            echo "the vendored contract is byte-identical to the server's"
+          pin=$(grep '^cvengine-scanner' "$reqs" | sed 's/[[:space:]]*#.*//')
+          echo "the server pins: $pin"
+          ref=${pin##*@}
+          if ! printf '%s' "$ref" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "the server pins '$ref', not a commit sha: nothing to compare (the server still pins a release tag)"
+            exit 0
+          fi
+          git fetch -q origin main
+          if ! git cat-file -e "$ref^{commit}" 2>/dev/null; then
+            echo "::error::the server pins $ref, which is not a commit of this repository"
+            exit 1
+          fi
+          if git merge-base --is-ancestor "$ref" origin/main; then
+            echo "the server's pin $ref is on main ($(git rev-parse --short origin/main) or an ancestor of it)"
           else
-            diff -u "$server" cvengine_scanner/contract/sentinel_contract.json | head -80 || true
-            echo "::error::cvengine_scanner/contract/sentinel_contract.json differs from the server's web/agentapi/sentinel_contract.json; copy the server's file over it (and its fixtures)"
+            echo "::error::the server pins $ref, which is not an ancestor of (or equal to) main: merge the contract change here first, then bump the server's pin to a main commit"
             exit 1
           fi
 
