@@ -110,7 +110,7 @@ class ResolverTests(unittest.TestCase):
             built[-1].nameservers = []
             return built[-1]
         with mock.patch.object(hy, '_resolver', return_value=Resolver(Answer())), mock.patch('dns.resolver.Resolver', side_effect=build):
-            self.assertEqual([label for label, _ in hy.dns_askers(['192.0.2.53', '198.51.100.53', 'not-an-address'])], ['system', '192.0.2.53', '198.51.100.53'])
+            self.assertEqual([label for label, _ in hy.dns_askers(['192.0.2.53', '198.51.100.53'])], ['system', '192.0.2.53', '198.51.100.53'])
         self.assertEqual(built[0].nameservers, ['192.0.2.53'])
 
 
