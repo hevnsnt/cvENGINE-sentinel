@@ -20,6 +20,7 @@ hosts actually asked are reported back.
   evaluators), ``tls`` (the certificate), ``mail_checks`` and ``supplier_mailfail`` (SPF, DKIM, DMARC, MTA-STS and the MailFail checks);
 - ``hygiene``, ``mailfail``, ``rdap``: the TLS certificate probes and the email authentication review of a target's names (the ``hygiene_check`` kind);
 - ``dangling_dns``: the lookups that rate baddns's dangling-DNS findings (the ``dangling_dns_check`` kind);
+- ``identity``: the CNAME, NS, MX and PTR reads and the certificate names of an endpoint (the ``identity_check`` kind);
 - ``screenshots``: the pure half of the ``web_screenshot`` kind (task bounds, the scope policy a browser is held to, PNG checks, the sandbox proof);
 - ``versions``, ``fingerprint``, ``cms``, ``wp_core``, ``js_libraries``, ``soft404``, ``sensitive``: the pure readers of what a host answered,
   shared with cvENGINE.
