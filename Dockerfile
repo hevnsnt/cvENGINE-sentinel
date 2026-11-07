@@ -1,4 +1,4 @@
-# The Sentinel client: a standalone image with nmap, naabu, nuclei, testssl.sh, WPScan, wafw00f, bbot, Kingfisher and the client daemon, pinned
+# The Sentinel client: a standalone image with nmap, naabu, nuclei, testssl.sh, WPScan, wafw00f, bbot, Kingfisher, Playwright's headless Chromium and the client daemon, pinned
 # to the exact same tool versions the cvENGINE server repository's web/Dockerfile pins (its scripts/check_tool_versions.py checks both; keep them equal on
 # purpose, see docs/UPDATES.md "Pinned tools" in that repository), so a Sentinel's results are never skewed by running a different
 # nmap/naabu/nuclei/testssl/wpscan than the instance it reports to would have run locally. The OpenVAS (GVM) stack
@@ -207,6 +207,25 @@ RUN pip install --no-cache-dir pip==25.2 setuptools==80.9.0 wheel==0.45.1 setupt
 
 # wafw00f, pinned like every other tool, into the same venv: a plain pip package, no compiler and no network at run time.
 RUN pip install --no-cache-dir wafw00f==${WAFW00F_VERSION} PySocks==${PYSOCKS_VERSION} && wafw00f --version | grep "v${WAFW00F_VERSION}" >/dev/null
+
+# Web screenshots (kind web_screenshot, client/shot.py): Playwright's own headless Chromium, installed with the operating system libraries it needs on this
+# release (Playwright 1.64 knows Ubuntu 26.04 on amd64 and arm64). The browser is fixed by the Playwright pin in requirements.txt: PLAYWRIGHT_CHROMIUM_VERSION
+# is the build that release drives, and the build fails if it launches anything else, so a Playwright bump that moves the browser is read before it ships.
+# Only the headless shell is installed (what a screenshot needs, about 100 MB smaller than the full browser), and without Playwright's ffmpeg (it records
+# video; a screenshot never does). Playwright fetches its own pinned revision from its CDN: there is no checksum of the download to pin here, and the version
+# check below is what verifies it. It is launched as root and as the unprivileged account the daemon runs as (sentinel), against about:blank, so a missing
+# library or an unreadable install stops the build instead of the first task. Chromium's sandbox cannot be checked here: build steps run under the builder's
+# default seccomp profile, which refuses the user namespaces the sandbox needs (so this check launches without it). The running container has Playwright's
+# seccomp profile (docker-compose.yml, vendored in config/seccomp) and proves the sandbox engages at every start (client/daemon.py) and before every task
+# (client/shot_child.py); a browser that cannot prove it takes no picture. A Playwright bump that moves the browser means rebuilding the image.
+ARG PLAYWRIGHT_CHROMIUM_VERSION=156.0.8078.4
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers
+RUN set -e; playwright install --with-deps --only-shell chromium \
+    && rm -rf /var/lib/apt/lists/* /opt/pw-browsers/ffmpeg-* \
+    && chmod -R a+rX /opt/pw-browsers \
+    && CHECK="import sys; from playwright.sync_api import sync_playwright as sp; p = sp().start(); b = p.chromium.launch(args=['--disable-dev-shm-usage']); pg = b.new_page(); pg.goto('about:blank'); v = b.version; b.close(); p.stop(); print('chromium', v); sys.exit(0 if v == '${PLAYWRIGHT_CHROMIUM_VERSION}' else 1)" \
+    && python3 -c "$CHECK" \
+    && runuser -u sentinel -- env HOME=/tmp python3 -c "$CHECK"
 
 # bbot (GPLv3, run as a separate program, never imported) for a bbot_discovery task (client/bbot.py), in its own venv so its pins cannot clash with the
 # client's. The same pins as the server repository's web/Dockerfile (BBOT_VERSION, TZDATA_VERSION: without zone data bbot cannot find "UTC").

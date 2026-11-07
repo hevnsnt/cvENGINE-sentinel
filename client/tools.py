@@ -662,6 +662,29 @@ def run_dangling_dns_check(target, register=None):
         raise TargetError(f'not a usable dangling_dns_check task ({exc})') from None
 
 
+def run_identity_check(target, register=None):
+    """The ``identity_check`` kind: the CNAME, NS, MX and PTR reads and the certificate names cvENGINE used to read from its own server, answered by
+    this Sentinel's own resolver and connection (``cvengine_scanner.probes.identity``)."""
+    from cvengine_scanner.probes import identity
+    try:
+        return identity.run_batch(target)
+    except ValueError as exc:
+        raise TargetError(f'not a usable identity_check task ({exc})') from None
+
+
+def run_web_screenshot(target, register=None):
+    """The ``web_screenshot`` kind: a headless Chromium photographs the pages of the task through a vetting proxy, after proving its own sandbox
+    engaged (``client.shot``); the PNGs go back as base64 and cvENGINE checks, stores and reads them. A browser that cannot prove the sandbox opens
+    nothing and says so in the result."""
+    from . import shot
+    try:
+        return shot.run(target, register=register)
+    except ValueError as exc:
+        raise TargetError(f'not a usable web_screenshot task ({exc})') from None
+    except shot.Unavailable as exc:
+        raise ToolOutputError(str(exc)) from None
+
+
 def run_dns_resolve(target, register=None):
     """The ``dns_resolve`` kind: this Sentinel's resolver answers for the names of the task (``cvengine_scanner.probes.dns``)."""
     from cvengine_scanner.probes import dns
@@ -1011,7 +1034,8 @@ RUNNERS = {'nmap': run_nmap, 'naabu': run_naabu, 'nuclei_light': run_nuclei, 'nu
            'bucket_check': run_bucket_check, 'vhost_probe': run_vhost_probe, 'subdir_probe': run_subdir_probe,
            'route_probe': run_route_probe,
            'supplier_check': run_supplier_check,
-           'hygiene_check': run_hygiene_check, 'dangling_dns_check': run_dangling_dns_check}
+           'hygiene_check': run_hygiene_check, 'dangling_dns_check': run_dangling_dns_check,
+           'identity_check': run_identity_check, 'web_screenshot': run_web_screenshot}
 
 
 def run_secrets_scan(target, register=None, rules=None):
