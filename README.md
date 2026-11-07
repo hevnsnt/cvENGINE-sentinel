@@ -721,9 +721,9 @@ The second command runs the scanner library's tests (see "The scanner library" b
 
 The tests never touch the host's gvmd, credentials or tool binaries. CI (`.github/workflows/`) runs them on every
 pull request and push to `main` (the client on Python 3.13 and 3.14, the `cvengine_scanner` library on 3.12, 3.13 and 3.14: the
-library's floor is 3.12 because the cvENGINE server imports it), checks that the vendored contract equals the server's (it
-retries the fetch three times and fails when the server's file cannot be fetched), installs the library from a git tag the way
-the server pins it, checks the shell scripts with `sh -n`, `bash -n` and
+library's floor is 3.12 because the cvENGINE server imports it), runs the contract's own self-tests and checks that the commit sha the server pins is on `main` (it
+retries the fetch three times and fails when the server's `web/requirements.txt` cannot be fetched; while the server still pins a tag it passes),
+installs the library by git tag and by commit sha the way the server pins it, checks the shell scripts with `sh -n`, `bash -n` and
 shellcheck, validates `docker-compose.yml` with and without the `openvas` profile, and builds the image and
 smoke-tests it.
 
@@ -740,8 +740,8 @@ import. The server keeps no copy of its own. It holds:
   versions, which CMS a page is, whether a "200" is really a not-found page). They never fetch anything: the server does
   the fetching and hands them what it read;
 - `scope.py`, the Sentinel's own scope floor;
-- `contract/sentinel_contract.json`, a byte-identical copy of the server's `web/agentapi/sentinel_contract.json`, with the
-  fixtures for each kind in `fixtures/`. The fixtures under `fixtures/results/v1/` are frozen: they are what a Sentinel of
+- `contract/sentinel_contract.json`, the **single source of truth** for the result contract (the server keeps no copy and reads it from
+  its install of this library), with the fixtures for each kind in `fixtures/`. The fixtures under `fixtures/results/v1/` are frozen: they are what a Sentinel of
   contract version 1 sent, and their hashes are checked.
 
 It needs Python 3.12 or newer, and its one dependency is `xmltodict`. Everything in it is pure: no subprocess, no network
@@ -764,7 +764,18 @@ CI both install it from there:
 cvengine-scanner @ git+https://github.com/hevnsnt/cvENGINE-sentinel@v1.4.0
 ```
 
-To ship a library change to the server, merge it here, tag it, then bump that pin on the server in a pull request of its own.
+The server now pins a **commit sha of `main`** instead (a tag is a release and needs the owner's approval; a sha is not a version change):
+
+```
+cvengine-scanner @ git+https://github.com/hevnsnt/cvENGINE-sentinel@<40 character sha of a main commit>
+```
+
+**How a contract change lands.** Sentinel pull request first: change `contract/sentinel_contract.json` and its fixtures here, with
+`cvengine_scanner/tests/test_contract.py` green, and merge it to `main`. Then a server pull request bumps the sha in
+`web/requirements.txt` to that merge commit and carries the server side (the broker's limits and cleaners, its fixtures). The CI job
+"Contract self-tests and the server's pinned sha is on main" runs the self-tests here and checks that the server's pin is an ancestor of (or equal
+to) `main`, so it never goes red because of the server's pull request, and a server pin to an unmerged commit is caught. To ship any other
+library change to the server, merge it here, then bump that sha on the server in a pull request of its own.
 
 ### Testing OpenVAS
 

@@ -1,7 +1,8 @@
-"""The result contract between cvENGINE and a Sentinel (``sentinel_contract.json``), read from the copy packaged here.
+"""The result contract between cvENGINE and a Sentinel (``sentinel_contract.json``), read from the file packaged here.
 
-The file is a byte-identical copy of the server's ``web/agentapi/sentinel_contract.json`` (CI checks it); the helpers below are the
-reading half of the server's own ``agentapi/sentinel_contract.py``."""
+This file is the single source of truth: the cvENGINE server keeps no copy and reads it from its install of this library (pinned by commit sha
+in its ``web/requirements.txt``). A contract change lands here first, then the server bumps its sha. The helpers below are the reading half
+the server's ``agentapi/sentinel_contract.py`` delegates to."""
 import json
 from pathlib import Path
 
