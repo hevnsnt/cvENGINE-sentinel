@@ -781,7 +781,7 @@ class Daemon:
                 out = signed_in.run_sign_in(self.client, task['id'], lambda sign_in: runner(target, sign_in, register=register))
             except signed_in.SignedInError as exc:
                 raise tools.TargetError(str(exc)) from None
-        elif kind in ('http_probe', 'dns_resolve', 'alive_check', 'bucket_check', 'vhost_probe', 'subdir_probe', 'route_probe', 'supplier_check', 'hygiene_check', 'dangling_dns_check', 'identity_check', 'web_screenshot'):  # in-process probes: the whole target, scope policy included
+        elif kind in ('http_probe', 'dns_resolve', 'alive_check', 'bucket_check', 'vhost_probe', 'subdir_probe', 'route_probe', 'supplier_check', 'hygiene_check', 'dangling_dns_check', 'identity_check', 'web_screenshot', 'page_read'):  # in-process probes: the whole target, scope policy included
             out = runner(target, register=register)
         elif kind == 'nmap_full':
             out = runner(target.get('address') or '', register=register)
