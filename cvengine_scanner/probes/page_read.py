@@ -59,6 +59,17 @@ def _base_ok(base, host):
             and _host_of(base) == host)
 
 
+def _site_base_ok(base, host):
+    """Whether ``base`` is ``scheme://host[:port]`` of ``host`` with at most a plain path (WordPress installed in a sub directory), no query, no user."""
+    try:
+        parts = urlsplit(base)
+        parts.port  # noqa: B018
+    except ValueError:
+        return False
+    return (parts.scheme in ('http', 'https') and bool(parts.hostname) and not parts.query and not parts.fragment and parts.username is None
+            and _host_of(base) == host and bool(re.match(r'^(/[A-Za-z0-9._~-]{1,80}){0,4}/?$', parts.path)) and '..' not in parts.path)
+
+
 def _entry(raw):
     """One read of a task, or None when it is malformed: ``id`` (the server's own key, echoed back), ``op``, ``host``, and for ``head`` a ``url`` on the host,
     for ``control`` a ``url`` that is a control path on the host, for ``readme`` the ``base`` and the ``slugs``, for ``libraries`` the ``bases`` of the host, the ``library`` key and the ``seen_urls``."""
@@ -70,7 +81,7 @@ def _entry(raw):
     host = host.lower().rstrip('.')
     if op == 'readme':
         base, slugs = raw.get('base'), raw.get('slugs')
-        if (not isinstance(base, str) or len(base) > 300 or not _base_ok(base, host) or not isinstance(slugs, list) or not 1 <= len(slugs) <= MAX_SLUGS
+        if (not isinstance(base, str) or len(base) > 300 or not _site_base_ok(base, host) or not isinstance(slugs, list) or not 1 <= len(slugs) <= MAX_SLUGS
                 or not all(isinstance(x, str) and SLUG.match(x) and '..' not in x for x in slugs)):
             return None
         return {'id': ident[:200], 'op': op, 'host': host, 'base': base.rstrip('/'), 'slugs': list(dict.fromkeys(slugs))}

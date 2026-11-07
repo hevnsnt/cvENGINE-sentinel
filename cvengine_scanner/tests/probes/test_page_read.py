@@ -261,10 +261,15 @@ class ReadmeTests(unittest.TestCase):
 
     def test_a_malformed_read_is_refused(self):
         bad = [readme(slugs=()), readme(slugs=[f's{i}' for i in range(9)]), readme(slugs=['../etc']), readme(slugs=['a/b']), readme(slugs=['.hidden']),
-               readme(base='https://elsewhere.example.test'), readme(base=f'{BASE}/blog')]
+               readme(base='https://elsewhere.example.test'), readme(base=f'{BASE}/blog?x=1'), readme(base=f'{BASE}/a/../b')]
         for read in bad:
             with self.assertRaises(ValueError, msg=str(read)):
                 page_read.run_batch(task(read), probe=fake_net({}))
+
+    def test_wordpress_in_a_sub_directory_is_read_under_its_path(self):
+        url = f'{BASE}/blog/wp-content/plugins/akismet/readme.txt'
+        out, asked, _m = run(task(readme(('akismet',), base=f'{BASE}/blog/')), {url: {'status': 200, 'body': '=== Akismet ===\n'}})
+        self.assertEqual((out['reads'][0]['readme']['titles'], asked), ({'akismet': 'Akismet'}, [url]))
 
     def test_a_redirect_off_the_host_is_refused_and_counted_unread(self):
         pages = {self.url('akismet'): {'status': 301, 'location': 'https://elsewhere.example.test/x'}}

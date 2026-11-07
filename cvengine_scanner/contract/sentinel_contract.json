@@ -6064,7 +6064,7 @@
                   "type": "string",
                   "minLength": 1,
                   "maxLength": 300,
-                  "description": "op readme: scheme://host[:port] of the web base of the host the plugins are read from"
+                  "description": "op readme: scheme://host[:port][/path] of the WordPress site on the host the plugins are read from (a plain path of at most four segments, no query)"
                 },
                 "slugs": {
                   "type": "array",
