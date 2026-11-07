@@ -1,6 +1,7 @@
 """The page_read kind (``probes.page_read``): a validation re-test's HEAD of a URL and re-read of a host's pages and scripts, under the task's scope policy,
 with the network replaced. Every case below is one the server's own tests held its reader to while the server did the reading (cvENGINE's
 ``tests/test_client_library_validation.py`` and ``test_client_library_script_read_review.py``)."""
+import hashlib
 import json
 import unittest
 
@@ -50,6 +51,17 @@ def libraries(**kw):
 
 def head(url=f'{BASE}/', **kw):
     return {'id': 'head:' + url, 'op': 'head', 'host': WWW, 'url': url, **kw}
+
+
+CTRL = f'{BASE}/.cvengine-control-0123456789ab'
+
+
+def control(url=CTRL, **kw):
+    return {'id': 'control:' + url, 'op': 'control', 'host': WWW, 'url': url, **kw}
+
+
+def readme(slugs=('akismet', 'hello-dolly'), **kw):
+    return {'id': 'readme:' + WWW, 'op': 'readme', 'host': WWW, 'base': BASE, 'slugs': list(slugs), **kw}
 
 
 def run(target, pages, **kw):
@@ -209,16 +221,79 @@ class TaskTests(unittest.TestCase):
         self.assertIn('not run', out['reads'][0]['error'])
 
 
+class ControlTests(unittest.TestCase):
+    def test_the_answer_is_kept_as_status_location_length_and_a_digest_of_the_body_never_the_body(self):
+        body = '<h1>503   No server is\navailable</h1>'
+        out, asked, methods = run(task(control()), {CTRL: {'status': 503, 'body': body}})
+        want = hashlib.sha256(b'<h1>503 No server is available</h1>').hexdigest()
+        self.assertEqual(out['reads'], [{'id': f'control:{CTRL}', 'control': {'status': 503, 'location': '', 'length': len(body), 'digest': want}}])
+        self.assertEqual((asked, methods, out['touched']), ([CTRL], [('GET', CTRL)], [WWW]))
+        self.assertNotIn('No server', json.dumps(out))
+
+    def test_a_redirect_is_an_answer_and_is_not_followed(self):
+        out, asked, _m = run(task(control()), {CTRL: {'status': 302, 'location': '/login'}})
+        self.assertEqual((out['reads'][0]['control']['status'], out['reads'][0]['control']['location'], asked), (302, '/login', [CTRL]))
+
+    def test_only_a_control_path_on_the_host_is_asked(self):
+        for url in (f'{BASE}/', f'{BASE}/admin', f'{CTRL}?x=1', f'{BASE}/.cvengine-control-xyz', 'https://elsewhere.example.test/.cvengine-control-0123456789ab'):
+            with self.assertRaises(ValueError, msg=url):
+                page_read.run_batch(task(control(url)), probe=fake_net({}))
+
+    def test_a_host_the_policy_refuses_is_not_asked_and_a_failed_read_is_an_error_never_an_answer(self):
+        out, asked, _m = run(task(control(), scope={**SCOPE, 'excluded': [WWW]}), {})
+        self.assertEqual((asked, out['refused']), ([], [WWW]))
+        self.assertIn('not run', out['reads'][0]['error'])
+        out, _a, _m = run(task(control()), {CTRL: OSError('timed out')})
+        self.assertIn('error', out['reads'][0])
+        self.assertNotIn('control', out['reads'][0])
+
+
+class ReadmeTests(unittest.TestCase):
+    def url(self, slug):
+        return f'{BASE}/wp-content/plugins/{slug}/readme.txt'
+
+    def test_the_title_of_each_plugin_is_read_and_a_missing_or_unreadable_one_is_counted(self):
+        pages = {self.url('akismet'): {'status': 200, 'body': '=== Akismet Anti-Spam: Spam Protection ===\nContributors: x\n'},
+                 self.url('hello-dolly'): {'status': 404}, self.url('broken'): OSError('reset')}
+        out, asked, methods = run(task(readme(('akismet', 'hello-dolly', 'broken'))), pages)
+        self.assertEqual(out['reads'][0]['readme'], {'titles': {'akismet': 'Akismet Anti-Spam Spam Protection'}, 'asked': 3, 'unread': 1})
+        self.assertEqual((asked, {m for m, _u in methods}), ([self.url(s) for s in ('akismet', 'hello-dolly', 'broken')], {'GET'}))
+
+    def test_a_malformed_read_is_refused(self):
+        bad = [readme(slugs=()), readme(slugs=[f's{i}' for i in range(9)]), readme(slugs=['../etc']), readme(slugs=['a/b']), readme(slugs=['.hidden']),
+               readme(base='https://elsewhere.example.test'), readme(base=f'{BASE}/blog?x=1'), readme(base=f'{BASE}/a/../b')]
+        for read in bad:
+            with self.assertRaises(ValueError, msg=str(read)):
+                page_read.run_batch(task(read), probe=fake_net({}))
+
+    def test_wordpress_in_a_sub_directory_is_read_under_its_path(self):
+        url = f'{BASE}/blog/wp-content/plugins/akismet/readme.txt'
+        out, asked, _m = run(task(readme(('akismet',), base=f'{BASE}/blog/')), {url: {'status': 200, 'body': '=== Akismet ===\n'}})
+        self.assertEqual((out['reads'][0]['readme']['titles'], asked), ({'akismet': 'Akismet'}, [url]))
+
+    def test_a_redirect_off_the_host_is_refused_and_counted_unread(self):
+        pages = {self.url('akismet'): {'status': 301, 'location': 'https://elsewhere.example.test/x'}}
+        out, asked, _m = run(task(readme(('akismet',))), pages)
+        self.assertEqual(out['reads'][0]['readme'], {'titles': {}, 'asked': 1, 'unread': 0})
+        self.assertEqual(asked, [self.url('akismet')])
+
+    def test_a_host_the_policy_refuses_is_not_asked(self):
+        out, asked, _m = run(task(readme(), scope={**SCOPE, 'excluded': [WWW]}), {})
+        self.assertEqual((asked, out['refused']), ([], [WWW]))
+        self.assertIn('not run', out['reads'][0]['error'])
+
+
 class ContractTests(unittest.TestCase):
     def schema(self, section):
         doc = contract.load()
         return Draft202012Validator({**doc, '$ref': f'#/$defs/{section}/page_read'})
 
     def test_the_task_the_server_sends_and_the_result_this_returns_fit_the_contract(self):
-        target = task(head(), libraries(seen_urls=[f'{BASE}/old.js']))
+        target = task(head(), libraries(seen_urls=[f'{BASE}/old.js']), control(), readme())
         self.assertEqual(list(self.schema('targets').iter_errors(target)), [])
         site = {f'{BASE}/': {'status': 200, 'body': page('/js/jquery.min.js')}, JQ: {'status': 200, 'body': JQUERY.replace('{v}', '3.6.0')},
-                f'{BASE}/old.js': {'status': 200, 'body': JQUERY.replace('{v}', '1.12.4')}}
+                f'{BASE}/old.js': {'status': 200, 'body': JQUERY.replace('{v}', '1.12.4')}, CTRL: {'status': 404, 'body': 'not found'},
+                f'{BASE}/wp-content/plugins/akismet/readme.txt': {'status': 200, 'body': '=== Akismet ===\n'}}
         out, _a, _m = run(target, site)
         result = {'outcome': 'done', **out}
         self.assertEqual([e.message for e in self.schema('results').iter_errors(json.loads(json.dumps(result)))], [])

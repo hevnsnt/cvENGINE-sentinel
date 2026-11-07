@@ -10,11 +10,19 @@ built the task, asked at every hop, redirects and script reads included):
                every script searched whole (``js_libraries.whole_body``). The files the host was seen to load the library from (``seen_urls``) that the
                pages did not load are fetched too, within what is left of the same per-host script budget, when a page still shows the library: a
                fixed version can be weighed against them. The reading is returned as data; cvENGINE decides what it means for the finding.
+``control``    one GET of a path no site serves (``/.cvengine-control-<12 hex>``, nothing else is accepted), for the nuclei result screen: does the host answer
+               anything with one page? Returns the status, the redirect target, the length and the SHA-256 of the body with its whitespace collapsed;
+               never the body. Nothing is followed.
+``readme``     the ``readme.txt`` of up to 8 plugin slugs of a WordPress site (``<base>/wp-content/plugins/<slug>/readme.txt``), the title line of each
+               kept (an advisory names a plugin by its title). A slug whose readme gave no title is absent from ``titles``; one that could not be read
+               is counted in ``unread``.
 
 Every request is a GET or HEAD without a cookie or a credential, bounded in bytes and time, to a numeric address the policy accepted
 (``http.probe_url``). A read that cannot be made is reported with its error: unknown, never "gone" or "fixed".
 """
+import hashlib
 import logging
+import re
 import time
 from urllib.parse import urljoin, urlsplit
 
@@ -27,6 +35,12 @@ logger = logging.getLogger(__name__)
 MAX_READS = 10         # reads in one task (cvENGINE sends one per check)
 MAX_BASES = 6          # web bases of one host
 MAX_SEEN = 20          # files a host was seen to load the library from
+MAX_SLUGS = 8          # plugin readmes of one readme read
+CONTROL_BYTES = 64 * 1024   # the most of a control answer that is read (cvENGINE's nuclei_fp.CONTROL_BYTES)
+README_BYTES = 32 * 1024
+CONTROL_PATH = re.compile(r'^/\.cvengine-control-[0-9a-f]{12}$')
+SLUG = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$')
+README_TITLE = re.compile(r'^===\s*(.{1,120}?)\s*===', re.M)  # copied from cvENGINE's wpscan_scan.README_TITLE
 BATCH_SECONDS = 540    # no read starts after this; the rest are reported as not run and stay due on the server
 
 
@@ -45,16 +59,33 @@ def _base_ok(base, host):
             and _host_of(base) == host)
 
 
+def _site_base_ok(base, host):
+    """Whether ``base`` is ``scheme://host[:port]`` of ``host`` with at most a plain path (WordPress installed in a sub directory), no query, no user."""
+    try:
+        parts = urlsplit(base)
+        parts.port  # noqa: B018
+    except ValueError:
+        return False
+    return (parts.scheme in ('http', 'https') and bool(parts.hostname) and not parts.query and not parts.fragment and parts.username is None
+            and _host_of(base) == host and bool(re.match(r'^(/[A-Za-z0-9._~-]{1,80}){0,4}/?$', parts.path)) and '..' not in parts.path)
+
+
 def _entry(raw):
     """One read of a task, or None when it is malformed: ``id`` (the server's own key, echoed back), ``op``, ``host``, and for ``head`` a ``url`` on the host,
-    for ``libraries`` the ``bases`` of the host, the ``library`` key and the ``seen_urls``."""
+    for ``control`` a ``url`` that is a control path on the host, for ``readme`` the ``base`` and the ``slugs``, for ``libraries`` the ``bases`` of the host, the ``library`` key and the ``seen_urls``."""
     if not isinstance(raw, dict):
         return None
     ident, op, host = raw.get('id'), raw.get('op'), raw.get('host')
-    if not isinstance(ident, str) or not ident or op not in ('head', 'libraries') or not isinstance(host, str) or not host:
+    if not isinstance(ident, str) or not ident or op not in ('head', 'libraries', 'control', 'readme') or not isinstance(host, str) or not host:
         return None
     host = host.lower().rstrip('.')
-    if op == 'head':
+    if op == 'readme':
+        base, slugs = raw.get('base'), raw.get('slugs')
+        if (not isinstance(base, str) or len(base) > 300 or not _site_base_ok(base, host) or not isinstance(slugs, list) or not 1 <= len(slugs) <= MAX_SLUGS
+                or not all(isinstance(x, str) and SLUG.match(x) and '..' not in x for x in slugs)):
+            return None
+        return {'id': ident[:200], 'op': op, 'host': host, 'base': base.rstrip('/'), 'slugs': list(dict.fromkeys(slugs))}
+    if op in ('head', 'control'):
         url = raw.get('url')
         if not isinstance(url, str) or len(url) > 2000 or any(ord(c) <= 32 or ord(c) == 127 for c in url):
             return None
@@ -65,6 +96,8 @@ def _entry(raw):
             return None
         if parts.scheme not in ('http', 'https') or parts.username is not None or _host_of(url) != host:
             return None  # a read is of the host the task names: what is asked is what the server planned
+        if op == 'control' and (parts.query or parts.fragment or not CONTROL_PATH.match(parts.path)):
+            return None  # a control read asks for a path no site serves, never a real page
         return {'id': ident[:200], 'op': op, 'host': host, 'url': url}
     bases = raw.get('bases')
     if not isinstance(bases, list) or not 1 <= len(bases) <= MAX_BASES or not all(isinstance(b, str) and len(b) <= 300 and _base_ok(b, host) for b in bases):
@@ -89,6 +122,45 @@ def run_head(url, policy, probe=None):
         answer, used = probe(url, policy, method='GET', max_bytes=http.ROUTE_SAMPLE_BYTES, browser=False), 'GET'
     return {'status': answer.get('status'), 'method': used, 'server': str(answer.get('server') or '')[:300],
             'powered_by': str(answer.get('powered_by') or '')[:300], 'title': str(answer.get('title') or '')[:300]}
+
+
+def _digest(body):
+    """The SHA-256 of ``body`` with its whitespace collapsed (cvENGINE compares the same normal form of the response it holds)."""
+    return hashlib.sha256(' '.join(str(body or '').split()).encode('utf-8', 'replace')).hexdigest()
+
+
+def run_control(url, policy, probe=None):
+    """One GET of ``url`` (a control path) and what the host answered: ``{'status', 'location', 'length', 'digest'}``. The policy is asked first (a
+    refusal raises ``ValueError``); nothing is followed, no browser headers are sent. The body is hashed and dropped."""
+    probe = probe or http.probe_url
+    host = _host_of(url)
+    why = policy.host_refusal(host)
+    if why:
+        policy.refuse(host)
+        raise ValueError(f'not read: the host is {why}')
+    answer = probe(url, policy, method='GET', max_bytes=CONTROL_BYTES, browser=False)
+    body = answer.get('body') or ''
+    status = answer.get('status')
+    return {'status': status if isinstance(status, int) and not isinstance(status, bool) else 0, 'location': str(answer.get('location') or '')[:500],
+            'length': min(len(body.encode('utf-8', 'replace')), 300 * 1024), 'digest': _digest(body)}
+
+
+def run_readme(base, slugs, host, policy, probe=None, sleep=time.sleep):
+    """The title of each plugin in ``slugs`` from its ``readme.txt`` under ``base`` (one GET each through ``fetch``: a redirect is followed only to the
+    host's apex or ``www`` twin and passes the policy at every hop, a pause between two requests). Returns ``{'titles': {slug: title}, 'asked', 'unread'}``:
+    a readme that gave no title is absent, one that could not be read (refused, no answer) is counted in ``unread``, never a title."""
+    titles, unread = {}, 0
+    for slug in slugs[:MAX_SLUGS]:
+        sleep(REQUEST_GAP)
+        try:
+            got = fetch(f'{base.rstrip("/")}/wp-content/plugins/{slug}/readme.txt', policy, probe=probe, allowed=_group(host), sleep=sleep, max_bytes=README_BYTES)
+        except (OSError, ValueError):
+            unread += 1
+            continue
+        found = README_TITLE.search((got or {}).get('body') or '') if 200 <= ((got or {}).get('status') or 0) < 300 else None
+        if found:
+            titles[slug] = re.sub(r'[^A-Za-z0-9 ._+&()-]', '', found.group(1))[:120]
+    return {'titles': titles, 'asked': len(slugs[:MAX_SLUGS]), 'unread': unread}
 
 
 def read_host_libraries(bases, host, policy, probe=None, sleep=time.sleep, reader=None):
@@ -238,6 +310,10 @@ def run_batch(target, probe=None, sleep=time.sleep, clock=time.monotonic, max_se
         try:
             if entry['op'] == 'head':
                 out.append({'id': entry['id'], 'head': run_head(entry['url'], policy, probe=probe)})
+            elif entry['op'] == 'control':
+                out.append({'id': entry['id'], 'control': run_control(entry['url'], policy, probe=probe)})
+            elif entry['op'] == 'readme':
+                out.append({'id': entry['id'], 'readme': run_readme(entry['base'], entry['slugs'], entry['host'], policy, probe=probe, sleep=sleep)})
             else:
                 reading = read_host_libraries(entry['bases'], entry['host'], policy, probe=probe, sleep=sleep)
                 reading['extra'] = {}

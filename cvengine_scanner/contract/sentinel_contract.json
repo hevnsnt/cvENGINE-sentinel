@@ -3716,7 +3716,7 @@
         ]
       },
       "page_read": {
-        "description": "Per read: head (status, method, server, powered_by, title) or reading (pages, scanned, extra, budget_left), or an error (the read could not be made: unknown, never a state). A reading has one page per web base asked; scanned and extra map a script URL to what searching it whole found.",
+        "description": "Per read: head (status, method, server, powered_by, title) or reading (pages, scanned, extra, budget_left), or control (status, location, length, digest) or readme (titles, asked, unread), or an error (the read could not be made: unknown, never a state). A reading has one page per web base asked; scanned and extra map a script URL to what searching it whole found.",
         "allOf": [
           {
             "$ref": "#/$defs/envelope"
@@ -3776,6 +3776,59 @@
                         "title": {
                           "type": "string",
                           "maxLength": 300
+                        }
+                      }
+                    },
+                    "control": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "description": "op control: the answer of the host to one GET of a path no site serves: the status, the redirect target, the byte length and the SHA-256 of the body with its whitespace collapsed (the body itself is never returned)",
+                      "properties": {
+                        "status": {
+                          "type": [
+                            "integer",
+                            "null"
+                          ],
+                          "minimum": 0,
+                          "maximum": 999
+                        },
+                        "location": {
+                          "type": "string",
+                          "maxLength": 500
+                        },
+                        "length": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 307200
+                        },
+                        "digest": {
+                          "type": "string",
+                          "pattern": "^[0-9a-f]{64}$"
+                        }
+                      }
+                    },
+                    "readme": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "description": "op readme: the plugin titles read from the readme.txt of each slug asked (a slug whose readme gave none is absent), how many were asked and how many could not be read",
+                      "properties": {
+                        "titles": {
+                          "type": "object",
+                          "maxProperties": 8,
+                          "additionalProperties": {
+                            "type": "string",
+                            "maxLength": 120
+                          }
+                        },
+                        "asked": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 8
+                        },
+                        "unread": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 8
                         }
                       }
                     },
@@ -5935,7 +5988,7 @@
         }
       },
       "page_read": {
-        "description": "A validation re-test's read of one page or host, asked of a Sentinel instead of this server: op head (one HEAD of url, a GET only when the server answers 405; the status, Server, X-Powered-By and title are kept, never a body) or op libraries (the front page of each web base of the host and the scripts it loads, searched whole, past every cache; the files the host was seen to load library from, seen_urls, are fetched too within the same script budget). Read under the scope policy, which lists every host any hop or script read may ask.",
+        "description": "A validation re-test's read of one page or host, asked of a Sentinel instead of this server: op head (one HEAD of url, a GET only when the server answers 405; the status, Server, X-Powered-By and title are kept, never a body) or op libraries (the front page of each web base of the host and the scripts it loads, searched whole, past every cache; the files the host was seen to load library from, seen_urls, are fetched too within the same script budget), op control (one GET of a path no site serves, to learn whether the host answers anything with one page: the status, redirect target, length and a SHA-256 of the body, never the body) or op readme (the readme.txt of up to 8 plugins of a WordPress site, the title of each kept). Read under the scope policy, which lists every host any hop or script read may ask.",
         "type": "object",
         "additionalProperties": false,
         "required": [
@@ -5964,7 +6017,9 @@
                 "op": {
                   "enum": [
                     "head",
-                    "libraries"
+                    "libraries",
+                    "control",
+                    "readme"
                   ]
                 },
                 "host": {
@@ -5977,7 +6032,7 @@
                   "type": "string",
                   "minLength": 1,
                   "maxLength": 2000,
-                  "description": "op head: the URL asked, http or https, on host"
+                  "description": "op head: the URL asked, http or https, on host; op control: http(s)://host[:port]/.cvengine-control-<12 hex> (a path no site serves)"
                 },
                 "bases": {
                   "type": "array",
@@ -6004,6 +6059,22 @@
                     "maxLength": 2000
                   },
                   "description": "op libraries: files the host was seen to load the library from"
+                },
+                "base": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 300,
+                  "description": "op readme: scheme://host[:port][/path] of the WordPress site on the host the plugins are read from (a plain path of at most four segments, no query)"
+                },
+                "slugs": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 8,
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$"
+                  },
+                  "description": "op readme: plugin slugs; each readme.txt is read at base/wp-content/plugins/<slug>/readme.txt"
                 }
               }
             }
