@@ -1,4 +1,4 @@
-# The Sentinel client: a standalone image with nmap, naabu, nuclei, testssl.sh, WPScan, wafw00f, bbot, Kingfisher, Playwright's headless Chromium and the client daemon, pinned
+# The Sentinel client: a standalone image with nmap, naabu, nuclei, testssl.sh, WPScan, wafw00f, bbot, Kingfisher, sshamble, Playwright's headless Chromium and the client daemon, pinned
 # to the exact same tool versions the cvENGINE server repository's web/Dockerfile pins (its scripts/check_tool_versions.py checks both; keep them equal on
 # purpose, see docs/UPDATES.md "Pinned tools" in that repository), so a Sentinel's results are never skewed by running a different
 # nmap/naabu/nuclei/testssl/wpscan than the instance it reports to would have run locally. The OpenVAS (GVM) stack
@@ -66,6 +66,12 @@ ARG TESTSSL_SHA256=98528f8a0ac07f1e226efaa8ead438247df8efcb8fee4e056a937ab82a305
 ARG KINGFISHER_VERSION=2.16.0
 ARG KINGFISHER_SHA256_AMD64=97cdbe7706a722ea085d1e83a00a98b0e9432fc58b21c9a3e36f591b5c1446d7
 ARG KINGFISHER_SHA256_ARM64=fece052a018c127f664e96f76c1ad6be39fe3d4df71db91caaa462e92a99aed1
+# sshamble (BSD-2-Clause, runZero; run as a separate program) reads an SSH service's own handshake for the ssh_probe kind: the banner, host keys,
+# algorithms, offered authentication methods and the badkeys blocklist check. Release tarball per architecture, pinned by sha256. The library's
+# cvengine_scanner/probes/ssh_probe.py SSHAMBLE_VERSION is the same pin (a test holds them together). Only the host key check is ever run.
+ARG SSHAMBLE_VERSION=0.5.1
+ARG SSHAMBLE_SHA256_AMD64=38ba26a606ca51c3a974b91dd599717c3e21ac6720dc9bc4f4598d014793410e
+ARG SSHAMBLE_SHA256_ARM64=2335aceee86e860524fdd42decf02b6db12b18ce2f3e4a5be923902bb14d809a
 ARG NUCLEI_TEMPLATES_VERSION=v10.5.1
 ARG NUCLEI_TEMPLATES_SHA256=30fe1cfaced4635f886e4a2673641bba86998dceec28e468274524e789aa56eb
 
@@ -193,6 +199,20 @@ RUN ARCH=$(dpkg --print-architecture) \
     && rm -rf /tmp/kingfisher /tmp/kingfisher.tgz \
     && kingfisher --version | grep -q "${KINGFISHER_VERSION}"
 
+# sshamble: the checksum-verified release tarball; its licence is kept with the binary. The client runs only "sshamble scan" with the one fixed
+# --checks badkeys-blocklist (cvengine_scanner/probes/ssh_probe.py check_argv refuses any other command line). The binary has no version flag, so
+# the build check is that the scan command runs and knows the check. The badkeys blocklist data is not baked in (a rolling download): the client
+# reports "not checked" when it is absent.
+RUN ARCH=$(dpkg --print-architecture) \
+    && if [ "${ARCH}" = "arm64" ]; then SSH_SHA="${SSHAMBLE_SHA256_ARM64}"; else SSH_SHA="${SSHAMBLE_SHA256_AMD64}"; fi \
+    && curl -fsSLo /tmp/sshamble.tgz "https://github.com/runZeroInc/sshamble/releases/download/v${SSHAMBLE_VERSION}/sshamble-v${SSHAMBLE_VERSION}-linux-${ARCH}.tar.gz" \
+    && echo "${SSH_SHA}  /tmp/sshamble.tgz" | sha256sum -c - \
+    && mkdir -p /tmp/sshamble-src && tar -xzf /tmp/sshamble.tgz -C /tmp/sshamble-src \
+    && install -m 0755 /tmp/sshamble-src/sshamble/sshamble /usr/local/bin/sshamble \
+    && mkdir -p /usr/share/doc/sshamble && cp /tmp/sshamble-src/sshamble/LICENSE.md /usr/share/doc/sshamble/LICENSE.md \
+    && rm -rf /tmp/sshamble-src /tmp/sshamble.tgz \
+    && sshamble scan --help 2>&1 | grep -q -- '--checks'
+
 WORKDIR /opt/sentinel
 
 RUN python3 -m venv /opt/venv
@@ -292,7 +312,7 @@ ENV NMAP_PRIVILEGED=1 \
 # Last on purpose: a label change must not invalidate the build layers above it.
 LABEL \
     name="CVEngine Sentinel" \
-    description="Downloadable scan-stage agent for CVEngine: runs nmap, naabu, nuclei, testssl.sh, WPScan, wafw00f, Kingfisher and OpenVAS work on your own network and reports typed results back." \
+    description="Downloadable scan-stage agent for CVEngine: runs nmap, naabu, nuclei, testssl.sh, WPScan, wafw00f, Kingfisher, sshamble and OpenVAS work on your own network and reports typed results back." \
     org.opencontainers.image.source="https://github.com/hevnsnt/cvENGINE-sentinel" \
     org.opencontainers.image.licenses="GPL-3.0-only"
 

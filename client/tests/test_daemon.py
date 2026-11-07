@@ -146,7 +146,8 @@ class RegisterTests(unittest.TestCase):
         fresh_tool_probe(self)
         server_speaks(self, config.CONTRACT_VERSION)
         with mock.patch('client.tools.detect_tools', return_value=['nmap', 'naabu', 'bbot']), mock.patch('client.tools.gvm_ready', return_value=True), \
-                mock.patch('client.tools.kingfisher_ready', return_value=True), mock.patch('client.shot.available', return_value=True):
+                mock.patch('client.tools.kingfisher_ready', return_value=True), mock.patch('client.tools.sshamble_ready', return_value=True), \
+                mock.patch('client.shot.available', return_value=True):
             daemon.register(fc, 'my-sentinel', 5)
         self.assertEqual(fc.paths(), [('PUT', 'sentinel')])
         body = fc.body_for('sentinel')
@@ -155,6 +156,16 @@ class RegisterTests(unittest.TestCase):
         self.assertEqual(body['tools'], ['nmap', 'naabu', 'bbot'])
         self.assertEqual(sorted(body['capabilities']), sorted(k for k in config.CAPABILITIES if k != 'route_probe_signed'))  # the built-in scanner's kind: no other Sentinel declares it
         self.assertNotIn('scope', body)
+
+    def test_ssh_probe_is_declared_only_with_the_sshamble_binary(self):
+        for ready in (True, False):
+            fc = FakeClient()
+            fresh_tool_probe(self)
+            server_speaks(self, config.CONTRACT_VERSION)
+            with mock.patch('client.tools.detect_tools', return_value=['nmap']), mock.patch('client.tools.gvm_ready', return_value=True), \
+                    mock.patch('client.tools.sshamble_ready', return_value=ready):
+                daemon.register(fc, 'my-sentinel', 5)
+            self.assertEqual('ssh_probe' in fc.body_for('sentinel')['capabilities'], ready)
 
     def test_bbot_discovery_is_declared_only_with_bbot_installed_and_a_server_that_knows_it(self):
         for found, speaks, expected in ((['nmap'], config.CONTRACT_VERSION, False), (['nmap', 'bbot'], config.CONTRACT_VERSION, True),
@@ -338,6 +349,7 @@ class PollAndExecuteTests(unittest.TestCase):
             ('hygiene_check', HYGIENE_TARGET, {'certs': [], 'mail': [], 'touched': [], 'refused': []}, ((HYGIENE_TARGET,), {})),
             ('dangling_dns_check', DANGLING_TARGET, {'ratings': [], 'touched': [], 'refused': []}, ((DANGLING_TARGET,), {})),
             ('identity_check', IDENTITY_TARGET, {'dns': [], 'certs': [], 'touched': [], 'refused': []}, ((IDENTITY_TARGET,), {})),
+            ('ssh_probe', SSH_PROBE_TARGET, {'hosts': [], 'touched': [], 'refused': []}, ((SSH_PROBE_TARGET,), {})),
             ('page_read', PAGE_READ_TARGET, {'reads': [], 'touched': [], 'refused': []}, ((PAGE_READ_TARGET,), {})),
             ('openvas', {'hosts': {'192.0.2.10': 'www.example.test'}, 'excluded_families': [], 'max_hours': 24, 'preferences': {'max_checks': 3}},
              {'results': [], 'scanned_addresses': [], 'without_cve': 0, 'unusable': 0, 'partial': True},
@@ -349,7 +361,7 @@ class PollAndExecuteTests(unittest.TestCase):
                 fc.next_responses = [{'task': {'id': 100, 'kind': kind, 'target': target}}]
                 d = daemon.Daemon('https://cve.example.test', 'tok', client=fc)
                 fake_runner = mock.Mock(return_value=fake_result)
-                with mock.patch.dict(tools.RUNNERS, {kind: fake_runner}), mock.patch('client.tools.gvm_ready', return_value=True), \
+                with mock.patch.dict(tools.RUNNERS, {kind: fake_runner}), mock.patch('client.tools.gvm_ready', return_value=True), mock.patch('client.tools.sshamble_ready', return_value=True), \
                         mock.patch.dict('os.environ', {'CVENGINE_SENTINEL_NETWORK': 'internal'}):
                     d._poll_once()
                     self._wait_idle(d)
@@ -951,6 +963,7 @@ HYGIENE_TARGET = {'tls': [{'host': 'www.example.test', 'port': 443}], 'mail': [{
                   'scope': {**HTTP_PROBE_TARGET['scope'], 'hosts': ['www.example.test']}}
 DANGLING_TARGET = {'checks': [{'id': '0', 'host': 'old.example.test', 'kind': 'ns', 'triggers': ['old.example.test']}],
                    'providers': {'cname': [], 'nameservers': []}, 'scope': {**HTTP_PROBE_TARGET['scope'], 'hosts': ['old.example.test']}}
+SSH_PROBE_TARGET = {'targets': [{'address': '93.184.215.14', 'port': 22}], 'scope': {}}
 PAGE_READ_TARGET = {'reads': [{'id': 'h1', 'op': 'head', 'host': 'www.example.test', 'url': 'https://www.example.test/'}],
                     'scope': {**HTTP_PROBE_TARGET['scope'], 'hosts': ['www.example.test']}}
 IDENTITY_TARGET = {'dns': [{'id': 'd1', 'name': 'www.example.test', 'type': 'CNAME'}], 'certs': [{'id': 'c1', 'host': '192.0.2.10', 'port': 443}],

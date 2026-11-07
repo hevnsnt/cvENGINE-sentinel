@@ -98,6 +98,11 @@ jobs:
           docker run --rm --entrypoint kingfisher cvengine-sentinel-local:ci --version
           docker run --rm --entrypoint test cvengine-sentinel-local:ci -f /usr/share/doc/kingfisher/NOTICE
           docker run --rm --entrypoint python3 cvengine-sentinel-local:ci -c "from client import tools; assert tools.kingfisher_ready(); assert 'secrets_scan' in tools.RUNNERS"
+      - name: sshamble runs as the image's unprivileged user, with its licence, and the client declares ssh_probe
+        run: |
+          docker run --rm --entrypoint sh cvengine-sentinel-local:ci -c "sshamble scan --help 2>&1 | grep -q -- --checks"
+          docker run --rm --entrypoint test cvengine-sentinel-local:ci -f /usr/share/doc/sshamble/LICENSE.md
+          docker run --rm --entrypoint python3 cvengine-sentinel-local:ci -c "from client import tools; assert tools.sshamble_ready(); assert 'ssh_probe' in tools.RUNNERS"
       - name: Chromium is the pinned build, runs as the image's unprivileged user, and the client declares web_screenshot
         run: |
           docker run --rm --entrypoint python3 cvengine-sentinel-local:ci -c "
