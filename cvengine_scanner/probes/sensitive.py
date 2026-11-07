@@ -169,3 +169,26 @@ def sensitive_score(found):
     if count('email') or count('phone') or any(t in found for t in INTERNAL_TYPES):
         return 5
     return 0
+
+
+MAX_CREDENTIAL_VALUES = 20  # raw credentials handed back per body
+
+
+def credential_values(text):
+    """``[(type, value)]``: the distinct credentials in ``text``, for cvENGINE's secrets inventory (the ``route_probe`` kind reports them over the
+    authenticated channel only; the server fingerprints and masks them at once and never stores the value). The only function here that returns a
+    value. A private key is returned as its whole PEM block when the block is complete, else as its header. Copied from cvENGINE's
+    ``cveFeed.sensitive.credential_values``."""
+    text = text or ''
+    out = []
+    for name in CREDENTIAL_TYPES:
+        for value in _distinct(name, text):
+            if name == 'private_key':
+                start = text.find(value)
+                end = text.find('-----END', start)
+                close = text.find('-----', end + 8) if end >= 0 else -1
+                value = text[start:close + 5] if 0 <= end and close >= 0 and close - start <= 8192 else value
+            out.append((name, value))
+            if len(out) >= MAX_CREDENTIAL_VALUES:
+                return out
+    return out

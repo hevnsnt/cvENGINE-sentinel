@@ -11,3 +11,8 @@ Pillow>=13.0.0,<14
 redis==8.1.0
 PyMySQL==1.2.3
 pymongo==4.19.0
+# The supplier_check kind (client/tools.py run_supplier_check) and the hygiene_check and dangling_dns_check kinds (cvengine_scanner.probes.hygiene, mailfail, dangling_dns): dnspython for the DNS
+# questions, cryptography to read a certificate, tldextract for the registrable domain of a mail name; the same pins as the server's web/requirements.txt. The library imports them only when a lookup or a certificate is read.
+dnspython==2.9.0
+cryptography==50.0.2
+tldextract==5.4.0
