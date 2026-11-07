@@ -3,6 +3,7 @@ import json
 import os
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -50,11 +51,12 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(out['refused'], [])
         self.assertTrue(out['hosts'][0]['reached'])
 
-    def test_badkeys_data_is_linked_for_the_tool_only_when_both_files_are_there(self):
+    def test_badkeys_data_is_linked_for_the_tool_only_when_all_three_files_are_there(self):
         with tempfile.TemporaryDirectory() as data:
             (Path(data) / 'blocklist.dat').write_bytes(b'x')
-            self.assertFalse(tools.badkeys_ready(data))
             (Path(data) / 'badkeysdata.json').write_text('{}')
+            self.assertFalse(tools.badkeys_ready(data))
+            (Path(data) / 'lookup.txt').write_text('1;a')
             self.assertTrue(tools.badkeys_ready(data))
             seen = {}
 
@@ -68,6 +70,8 @@ class RunnerTests(unittest.TestCase):
         ids = {o['id'] for o in got['hosts'][0]['observations']}
         self.assertIn('badkeys_blocklist_clear', ids)
         self.assertNotIn('badkeys_not_checked', ids)
+        clear = [o for o in got['hosts'][0]['observations'] if o['id'] == 'badkeys_blocklist_clear'][0]
+        self.assertIn('host key blocklist data: 0 hours old', clear['evidence'])
 
     def test_without_badkeys_data_the_result_says_not_checked(self):
         with self.fake(), tempfile.TemporaryDirectory() as empty:
@@ -75,6 +79,21 @@ class RunnerTests(unittest.TestCase):
         ids = {o['id']: o for o in got['hosts'][0]['observations']}
         self.assertFalse(ids['badkeys_not_checked']['verified'])
         self.assertNotIn('badkeys_blocklist_clear', ids)
+        self.assertIn('host key blocklist data: not present', ids['badkeys_not_checked']['evidence'])
+
+    def test_the_refreshed_data_is_what_a_scan_reads(self):
+        from client import badkeys
+        with tempfile.TemporaryDirectory() as root:
+            version = Path(root) / 'data-1'
+            version.mkdir()
+            for name in badkeys.FILES:
+                (version / name).write_text('x')
+            (version / badkeys.STAMP).write_text(f'{time.time() - 5 * 3600 - 60:.0f}\n')
+            os.symlink('data-1', os.path.join(root, 'current'))
+            with mock.patch('client.tools.BADKEYS_DIR', root), self.fake():
+                got = tools.run_ssh_probe(task(('93.184.215.14', 22)))
+        clear = [o for o in got['hosts'][0]['observations'] if o['id'] == 'badkeys_blocklist_clear'][0]
+        self.assertIn('host key blocklist data: 5 hours old', clear['evidence'])
 
     def test_a_timeout_is_unverified(self):
         with self.fake(raises=subprocess.TimeoutExpired('sshamble', 30)):

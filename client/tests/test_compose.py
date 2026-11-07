@@ -60,9 +60,21 @@ class ComposeTests(unittest.TestCase):
             self.assertEqual(init['entrypoint'], ['chown', '-R', '10001:10001', '/var/lib/cvengine-sentinel'])
             self.assertEqual(sorted(init['cap_add']), ['CHOWN', 'DAC_OVERRIDE', 'FOWNER'])
             self.assertEqual(init['cap_drop'], ['ALL'])
-            self.assertEqual([v['target'] for v in init['volumes']], ['/var/lib/cvengine-sentinel'])  # nothing else is mounted
+            # nothing else is mounted but the state volume and the badkeys volume nested in it (so an older badkeys volume is handed over too)
+            self.assertEqual(sorted(v['target'] for v in init['volumes']), ['/var/lib/cvengine-sentinel', '/var/lib/cvengine-sentinel/badkeys'])
             self.assertEqual(sentinel['depends_on']['sentinel-init']['condition'], 'service_completed_successfully')
             self.assertNotIn('user', sentinel)  # the image's own USER applies, so docker compose exec runs as the unprivileged user too
+
+    def test_the_badkeys_data_has_a_named_volume_the_unprivileged_user_owns(self):
+        for config in (self.light, self.full):
+            mounts = {v['target']: v.get('source') for v in config['services']['sentinel']['volumes']}
+            self.assertEqual(mounts['/var/lib/cvengine-sentinel/badkeys'], 'sentinel-badkeys')
+            self.assertIn('sentinel-badkeys', config['volumes'])
+            self.assertIn('CVENGINE_BADKEYS_REFRESH', config['services']['sentinel']['environment'])
+            self.assertNotIn('CVENGINE_BADKEYS_URL', json.dumps(config))  # the source is fixed inside the tool: not configurable
+        with open(os.path.join(ROOT, 'Dockerfile')) as handle:
+            text = handle.read()
+        self.assertRegex(text, r'(?m)^\s*&& chown sentinel:sentinel /var/lib/cvengine-sentinel /var/lib/cvengine-sentinel/badkeys$')
 
     def test_the_image_runs_unprivileged_with_capabilities_on_the_two_raw_socket_tools_only(self):
         with open(os.path.join(ROOT, 'Dockerfile')) as handle:

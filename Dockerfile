@@ -103,8 +103,8 @@ RUN apt-get update -y && \
 # Everything at run time is an unprivileged user; raw sockets come from file capabilities on nmap and naabu only (see the end of the image), and
 # the state volume is created owned by this user (docker-compose.yml's sentinel-init repairs the ownership of a volume made by an older image).
 RUN useradd --system --uid 10001 --create-home --home-dir /home/sentinel --shell /usr/sbin/nologin sentinel \
-    && mkdir -p /var/lib/cvengine-sentinel \
-    && chown sentinel:sentinel /var/lib/cvengine-sentinel
+    && mkdir -p /var/lib/cvengine-sentinel /var/lib/cvengine-sentinel/badkeys \
+    && chown sentinel:sentinel /var/lib/cvengine-sentinel /var/lib/cvengine-sentinel/badkeys
 
 # nmap, checksum verified, same pin and install method as the server repository's web/Dockerfile (see its own comment for why the two paths).
 RUN set -e; cd /tmp \
@@ -201,8 +201,10 @@ RUN ARCH=$(dpkg --print-architecture) \
 
 # sshamble: the checksum-verified release tarball; its licence is kept with the binary. The client runs only "sshamble scan" with the one fixed
 # --checks badkeys-blocklist (cvengine_scanner/probes/ssh_probe.py check_argv refuses any other command line). The binary has no version flag, so
-# the build check is that the scan command runs and knows the check. The badkeys blocklist data is not baked in (a rolling download): the client
-# reports "not checked" when it is absent.
+# the build check is that the scan command runs and knows the check. The badkeys blocklist data is not baked in (a rolling download): the daemon
+# refreshes it itself with "sshamble badkeys-update" (client/badkeys.py) into /var/lib/cvengine-sentinel/badkeys, a directory the unprivileged user
+# owns (made above; docker-compose.yml mounts a named volume there so the data survives restarts). The client reports "not checked" while it is absent
+# or when CVENGINE_BADKEYS_REFRESH=0 (air-gapped Sentinels).
 RUN ARCH=$(dpkg --print-architecture) \
     && if [ "${ARCH}" = "arm64" ]; then SSH_SHA="${SSHAMBLE_SHA256_ARM64}"; else SSH_SHA="${SSHAMBLE_SHA256_AMD64}"; fi \
     && curl -fsSLo /tmp/sshamble.tgz "https://github.com/runZeroInc/sshamble/releases/download/v${SSHAMBLE_VERSION}/sshamble-v${SSHAMBLE_VERSION}-linux-${ARCH}.tar.gz" \

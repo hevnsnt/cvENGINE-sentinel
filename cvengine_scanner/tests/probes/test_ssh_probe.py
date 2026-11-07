@@ -62,6 +62,13 @@ class SampleTests(unittest.TestCase):
         self.assertTrue(obs['badkeys_blocklist_clear']['verified'])
         self.assertNotIn('badkeys_not_checked', obs)
 
+    def test_the_age_of_the_blocklist_data_is_in_the_evidence(self):
+        for hours, text in ((0, '0 hours old'), (1, '1 hour old'), (30, '30 hours old'), (None, 'age unknown')):
+            obs = by_id(ssh_probe.parse_host(ADDRESS, PORT, SAMPLE, True, hours))
+            self.assertIn(f'host key blocklist data: {text}', obs['badkeys_blocklist_clear']['evidence'])
+        obs = by_id(ssh_probe.parse_host(ADDRESS, PORT, SAMPLE, False))
+        self.assertIn('host key blocklist data: not present', obs['badkeys_not_checked']['evidence'])
+
     def test_a_blocklisted_host_key_is_a_check_hit_and_a_critical_observation(self):
         doc = json.loads(SAMPLE)
         doc['vulns'] = [{'id': 'badkeys-git-example-keys-abc', 'ref': 'https://badkeys.info/', 'proof': 'https://example.com/keys/1'},
