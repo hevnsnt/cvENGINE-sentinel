@@ -188,7 +188,19 @@ def _version():
         return ''
 
 
-def _report(path, manifest, keep_validation):
+def _body_reader(directory):
+    """``name -> text`` of a file this task fetched, for the masked context of a finding (``cvengine_scanner.secrets.read_report``); the files are
+    this task's own, in its temporary directory, and are read with the size the fetch already allowed."""
+    def read(name):
+        try:
+            with open(os.path.join(directory, os.path.basename(name)), encoding='utf-8', errors='replace') as handle:
+                return handle.read(kf.MAX_FILE_MB * 1024 * 1024 + 1)
+        except OSError:
+            return None
+    return read
+
+
+def _report(path, manifest, keep_validation, directory=None):
     try:
         with open(path, encoding='utf-8', errors='replace') as handle:
             text = handle.read(kf.MAX_REPORT_BYTES + 1)
@@ -196,7 +208,7 @@ def _report(path, manifest, keep_validation):
         return [], False  # exit 3, no inputs: nothing to report
     if len(text) > kf.MAX_REPORT_BYTES:
         raise tools.ToolOutputError('the Kingfisher report is larger than this Sentinel reads')
-    return kf.read_report(text, manifest, keep_validation=keep_validation)
+    return kf.read_report(text, manifest, keep_validation=keep_validation, body_of=_body_reader(directory) if directory else None)
 
 
 def _clean_words(values, most, length):
@@ -237,7 +249,7 @@ def run(target, register=None, rules=None, fetcher=fetch, resolver=None, sleep=t
             argv = kf.scan_argv(tools.KINGFISHER_BIN, reader.dir, out, rules_path=rules_path,
                                 skip_words=_clean_words(target.get('skip_words'), 100, 100), skip_regex=_clean_words(target.get('skip_regex'), 50, 200))
             _kingfisher(argv, register, env=kf.env_without_egress(os.environ))
-            findings, truncated = _report(out, reader.manifest, keep_validation=False)
+            findings, truncated = _report(out, reader.manifest, keep_validation=False, directory=reader.dir)
             stats['truncated'] = truncated
             version = _version()
             stats['kingfisher_version'] = version

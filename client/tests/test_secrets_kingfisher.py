@@ -2,6 +2,7 @@
 detection pass over synthetic pages finds the planted secrets. The CI job ``kingfisher`` downloads the attested binary and runs this module, once
 normally and once (``DetectionTests``) inside a network namespace with no route, which proves the detection pass needs no network at all. Without
 ``CVENGINE_KINGFISHER_REAL`` (every other job) the module is skipped."""
+import json
 import os
 import re
 import subprocess
@@ -54,6 +55,7 @@ class DetectionTests(unittest.TestCase):
             done = subprocess.run(argv, capture_output=True, timeout=kf.WALL_SECONDS, env=kf.env_without_egress(os.environ))
             self.assertIn(done.returncode, kf.SUCCESS_CODES, done.stderr[-500:])
             findings, truncated = kf.read_report(out.read_text(), manifest)
+            with_context, _ = kf.read_report(out.read_text(), manifest, body_of=lambda name: (inputs / name).read_text())
         found = {(f['rule_id'], f['url']) for f in findings}
         self.assertFalse(truncated)
         self.assertIn(('betterleaks.gcp-api-key', 'https://www.example.test/'), found)
@@ -61,3 +63,11 @@ class DetectionTests(unittest.TestCase):
         self.assertIn(('betterleaks.aws-secret-access-key', 'https://www.example.test/app.js'), found)  # the pair's secret half
         self.assertIn(('betterleaks.github-pat', 'https://www.example.test/app.js'), found)
         self.assertEqual({f['validation']['outcome'] for f in findings}, {'not_attempted'})
+        # the masked context of what the real Kingfisher reported: the line it is on, the value hidden, the whole value nowhere in what is sent
+        pat = next(f for f in with_context if f['rule_id'] == 'betterleaks.github-pat')
+        self.assertEqual(pat['context'], 'const token = \"ghp_…aBcD\";')
+        aws = next(f for f in with_context if f['rule_id'] == 'betterleaks.aws-secret-access-key')
+        self.assertTrue(aws['context'].startswith('const aws_access_key_id = ') and aws['line'] == 1)  # the pair is filed at the key ID's place, its context shows both masked
+        sent = json.dumps([{k: v for k, v in f.items() if k != 'secret'} for f in with_context])  # ``secret`` is the contract's value field
+        for whole in (AWS_ID, AWS_SECRET):
+            self.assertNotIn(whole, sent)
