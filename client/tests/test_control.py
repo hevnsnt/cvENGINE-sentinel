@@ -100,7 +100,7 @@ class UpdateReportTests(Base):
             info = daemon.info()
             info.pop('openvas', None)  # the GVM readiness has its own test (test_daemon)
             self.assertEqual(info, {'contract_version': config.CONTRACT_VERSION, 'version': 'abc123def456', 'update': control.read_update(),
-                                    'updater': {'installed': False, 'running': False}})
+                                    'updater': {'installed': False, 'running': False}, 'waiting': []})
             fc = FakeClient()
             with mock.patch('client.tools.detect_tools', return_value=[]):
                 daemon.register(fc, 'x', 1)
