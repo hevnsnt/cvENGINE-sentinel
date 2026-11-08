@@ -102,7 +102,11 @@ class Policy:
     def blacklist(self):
         """What bbot must never touch: the denied ranges, the excluded names (each with what is under it) and this Sentinel's floor."""
         nets = [*self.denied, *floor.ALWAYS_DENIED, *(() if self.internal else floor.PRIVATE)]
-        return sorted({str(n) for n in nets}) + sorted(self.excluded) + sorted(floor.DENIED_NAMES)
+        # A single address is written bare, never as a /32 or /128. bbot sorts its blacklist by a (size, text) key, and a one-address network sorts
+        # as size 0: it ties with the (0, 0) key of the regex entry the kitchen-sink preset adds to the blacklist (``RE:/.*(sign|log)[_-]?out``), the
+        # tie falls through to comparing the text with the 0, and bbot dies at start with ``TypeError: '<' not supported between 'int' and 'str'``
+        # (bbot/scanner/target.py, Target.add) before it scans anything. The bare address is the same host and sorts as size -1.
+        return sorted({str(n.network_address) if n.prefixlen == n.max_prefixlen else str(n) for n in nets}) + sorted(self.excluded) + sorted(floor.DENIED_NAMES)
 
     def address(self, value):
         try:
@@ -458,6 +462,29 @@ def start_failure(lines):
     return ''
 
 
+_EXC_LINE = re.compile(r'^(?:[A-Za-z_][\w.]*\.)?[A-Za-z_]\w*(?:Error|Exception|Exit|Interrupt|Warning)\b: .+|^\[(?:ERRR|CRIT)\] Unhandled exception: .+')
+_FRAME = re.compile(r'File "[^"]*?/site-packages/([^"]+)", line (\d+), in (\w+)')
+_MODULE_ERROR = re.compile(r'Error in (\w+)\.(\w+)')
+
+
+def crash_summary(lines):
+    """What a bbot that died says it died of, from the tail of its error stream: the exception line, and where (the last bbot or library frame of
+    the traceback, or the module bbot names in ``Error in <module>.<hook>``). bbot's own last line is often only a log line, so the cause is looked
+    up in the whole tail. '' when the tail holds no exception."""
+    exception = next((ln.strip() for ln in reversed(lines) if _EXC_LINE.match(ln.strip())), '')
+    if not exception:
+        return ''
+    exception = re.sub(r'^\[(?:ERRR|CRIT)\] Unhandled exception: ', 'Unhandled exception: ', exception)
+    where = ''
+    for ln in reversed(lines):
+        found = _FRAME.search(ln)
+        if found:
+            where = f'{found.group(1)}:{found.group(2)} in {found.group(3)}'
+            break
+    module = next((f'{m.group(1)}.{m.group(2)}' for ln in reversed(lines) for m in [_MODULE_ERROR.search(ln)] if m), '')
+    return exception[:150] + (f' [at {where}]' if where else '') + (f' [module {module}]' if module and not where else '')
+
+
 def _stop(proc):
     try:
         os.killpg(proc.pid, 15)
@@ -498,7 +525,7 @@ def run_bbot_discovery(target, client, task_id, register=None, internal=False, h
     secrets += [proxy[0]] if proxy else []
     work = tempfile.mkdtemp(prefix='cvengine-bbot-')  # 0700: the key file and bbot's scan output live here and go with it
     sender = Sender(client, task_id, halted=halted)
-    problems, hard_failures, stderr_tail = [], [], collections.deque(maxlen=40)
+    problems, hard_failures, stderr_tail = [], [], collections.deque(maxlen=200)
     try:
         blacklist_file = os.path.join(work, 'blacklist.txt')
         with open(blacklist_file, 'w', encoding='utf-8') as handle:
@@ -564,7 +591,8 @@ def run_bbot_discovery(target, client, task_id, register=None, internal=False, h
         if timed_out.is_set():
             incomplete = f'bbot reached its time limit of {timeout} seconds'
         elif proc.returncode not in (0, None):
-            reason = next((ln for ln in reversed(stderr_tail) if ln.strip()), 'no error output')
+            reason = crash_summary(stderr_tail) or next((ln for ln in reversed(stderr_tail) if ln.strip()), 'no error output')
+            logger.error('bbot of task %s exited with status %s; the end of its error stream:\n%s', task_id, proc.returncode, '\n'.join(stderr_tail))
             incomplete = ('bbot was killed, almost always for lack of memory' if proc.returncode in (-9, 137)
                           else start_failure(stderr_tail) or f'bbot exited with status {proc.returncode}: {reason}')[:300]
         elif not collector.found_any and any(_CONFIG_REJECTED.search(ln) for ln in stderr_tail):
