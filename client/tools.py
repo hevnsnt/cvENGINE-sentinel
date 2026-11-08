@@ -245,6 +245,14 @@ class _ProcessGroup:
     def poll(self):
         return self.proc.poll()
 
+    def terminate(self):
+        """SIGTERM to the whole group: a polite stop; ``kill()`` is the SIGKILL that follows when it is ignored."""
+        self.proc.stopped_by_sentinel = True
+        try:
+            os.killpg(self.proc.pid, signal.SIGTERM)
+        except OSError:
+            pass
+
     def kill(self):
         self.proc.stopped_by_sentinel = True  # a -9 after this was the daemon's own stop, not the kernel's out-of-memory killer
         _kill_group(self.proc)
