@@ -266,6 +266,8 @@ def check_host(value, internal=None, resolve=True, resolver=socket.getaddrinfo):
         for address in _resolved(lowered, resolver):
             try:
                 _judge(ipaddress.ip_address(address), internal)
+            except Denied as exc:  # stays a deny-list refusal: it is reported as refused, not failed
+                raise Denied(f'the name resolves to a refused address ({exc})') from None
             except ScopeError as exc:
                 raise ScopeError(f'the name resolves to a refused address ({exc})') from None
             except ValueError:

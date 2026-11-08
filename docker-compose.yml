@@ -86,6 +86,8 @@ services:
       CVENGINE_SENTINEL_NETWORK: "${CVENGINE_SENTINEL_NETWORK:-}"
       CVENGINE_SENTINEL_DISABLE: "${CVENGINE_SENTINEL_DISABLE:-}"
       CVENGINE_SENTINEL_PROFILE: "${CVENGINE_SENTINEL_PROFILE:-}"
+      # Optional: comma separated CIDRs (or single addresses) this Sentinel never connects to, whatever a task or cvENGINE says (README.md, "Addresses this Sentinel never touches").
+      CVENGINE_SENTINEL_DENY_RANGES: "${CVENGINE_SENTINEL_DENY_RANGES:-}"
       # "installed" once scripts/install-updater.sh has set up the host updater (it writes this into .env), so cvENGINE can show it before the first run.
       CVENGINE_SENTINEL_UPDATER: "${CVENGINE_SENTINEL_UPDATER:-}"
       # Only for a lab server on plain http: the Sentinel refuses any server address that is not https unless this is 1.
