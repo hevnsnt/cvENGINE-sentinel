@@ -12,7 +12,7 @@ from client import secrets_scan
 from client.tests.test_secrets_scan import setUpModule, target  # noqa: F401 - setUpModule patches the resolver and the scope for this module too
 from cvengine_scanner import contract
 
-CANARY = 'AIza' + 'SyD-CANARYfakeLABkey0123456789Zq9w'
+CANARY = 'AIza' + 'SyD-CANARYfakeLABkey01234567890Zq9w'
 PAGE = (f'<!doctype html><html><head><title>Lab</title></head><body>\n<script>\nfetch("https://weather.example.test/v1", {{headers: {{\n'
         f'  "x-api-key": "{CANARY}",\n  "accept": "application/json"\n}}}});\n</script>\n<script src="/app.js"></script>\n</body></html>\n').encode()
 SCRIPT = ('/* bundle */\nvar cfg = {region: "eu"};\n'

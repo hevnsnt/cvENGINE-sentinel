@@ -18,6 +18,7 @@ snippet from here through the server's own masking to check it is left as it is 
 HTML is not escaped here: the server escapes it when it shows it.
 """
 import re
+import unicodedata
 
 MASK_LEN = 80
 TAIL = 4
@@ -25,7 +26,12 @@ MIN_TAIL_LENGTH = 16  # a value shorter than this shows no character of its own,
 MAX_CONTEXT = 200  # a snippet is at most this long (the contract allows 400: the server's own limit is looser than a correct Sentinel's)
 WIDTH = 80  # characters kept either side of the value
 MIN_VALUE = 8
-_CONTROL = re.compile(r'[\x00-\x08\x0b-\x1f\x7f]')
+_NOT_TEXT = frozenset({'Cc', 'Cf', 'Cs', 'Co', 'Cn'})  # control, format (a right-to-left override, a zero-width joiner), surrogate, private use, unassigned
+
+
+def _chars(text):
+    """``text`` with its control and format characters as spaces (a tab and a line break stay, so a value of several lines is still found in it)."""
+    return ''.join(' ' if unicodedata.category(c) in _NOT_TEXT and c not in '\t\n' else c for c in text)
 _ELLIPSIS = '…'
 
 # ----------------------------------------------------------------------------- the mask of one value (``cveFeed.secrets_catalog``)
@@ -172,7 +178,7 @@ def mask_runs(text):
 def mask_context(context, value, kind='', others=()):
     """``context`` (text around a secret) with ``value`` replaced by its mask, every other secret-looking token masked, control characters removed
     and the length clipped. ``''`` when ``value`` could still be read in the result: a snippet that cannot be proved clean is not sent."""
-    text = _CONTROL.sub(' ', str(context or ''))
+    text = _chars(str(context or ''))
     values = [(normalise(v), kind if v is value else '') for v in (value, *others)]
     for needle, k in values:
         if needle:

@@ -8,7 +8,7 @@ from cvengine_scanner import context, contract
 from cvengine_scanner import secrets as kf
 
 # A made-up key that only looks like one (assembled here so the repository holds no string a secret scanner takes for a real key).
-CANARY = 'AIza' + 'SyD-CANARYfakeLABkey0123456789Zq9w'
+CANARY = 'AIza' + 'SyD-CANARYfakeLABkey01234567890Zq9w'
 OTHER = 'ghp_' + 'Fak3Canary0ther' + 'TokenAbCdEfGhIjKlMnOpQrSt'
 HEX_KEY = 'f4k3canary' + '0123456789abcdef0123456789'
 
@@ -34,6 +34,7 @@ class MaskTests(unittest.TestCase):
     def test_control_characters_go_and_white_space_collapses(self):
         got = context.mask_context('x\x00y\x1b[31m  red\x07 \t\n z', 'AIza' + 'q' * 35)
         self.assertEqual(got, 'x y [31m red z')
+        self.assertEqual(context.mask_context('a\u202eb\u200bc', 'AIza' + 'q' * 35), 'a b c')  # a right-to-left override, a zero-width space
 
     def test_another_secret_in_the_snippet_is_masked_too(self):
         text = f'const a = "{CANARY}", b = "{OTHER}", url = "postgres://app:s3cretPass@db.example.com/x";'
