@@ -133,6 +133,10 @@ jobs:
         # The command is the one a bbot_discovery task builds (client/bbot.py), plus --dry-run: the modules load and set up, nothing is scanned.
         # A fresh hostname matters: bbot's record of installed dependencies is keyed by it, and a start that consults the record wants sudo.
         run: docker run --rm --hostname ci-bbot-start --user 10001 --entrypoint python3 cvengine-sentinel-local:ci /opt/sentinel/scripts/ci_bbot_start.py
+      - name: A deep bbot discovery (kitchen-sink) starts as the unprivileged user, three at once, and none dies in its first 10 seconds
+        # What the UI's "run deep discovery" starts. kitchen-sink adds a regex entry to bbot's blacklist; a one-address network in the same blacklist made
+        # bbot die in under a second with a TypeError (bbot/scanner/target.py). Not a dry run: the scan really starts, against example.com, for 10 seconds.
+        run: docker run --rm --hostname ci-bbot-deep --user 10001 --entrypoint python3 cvengine-sentinel-local:ci /opt/sentinel/scripts/ci_bbot_deep_start.py
       - name: The OpenVAS bootstrap check is in the image
         run: docker run --rm --entrypoint test cvengine-sentinel-local:ci -f /opt/sentinel/scripts/ci_openvas_bootstrap.py
       - name: WPScan is the pinned version, from the locked gems, and its database is not baked in

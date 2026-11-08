@@ -1,6 +1,7 @@
 """bbot discovery as a streamed task (client/bbot.py): the command, the scope, the batches and how the run ends."""
 import base64
 import io
+import ipaddress
 import json
 import os
 import tempfile
@@ -71,10 +72,24 @@ class PolicyTests(unittest.TestCase):
 
     def test_bbots_blacklist_holds_the_denied_ranges_every_exclusion_and_the_floor(self):
         external, internal = bbot.Policy(TARGET['scope']).blacklist(), bbot.Policy(TARGET['scope'], internal=True).blacklist()
-        for entry in ('10.20.0.0/16', '198.51.100.7/32', 'intranet.example.com', 'old.example.com', '127.0.0.0/8', '169.254.0.0/16', 'localhost'):
+        for entry in ('10.20.0.0/16', '198.51.100.7', 'intranet.example.com', 'old.example.com', '127.0.0.0/8', '169.254.0.0/16', 'localhost'):
             self.assertIn(entry, external)
         self.assertIn('192.168.0.0/16', external)
         self.assertNotIn('192.168.0.0/16', internal)  # private space only for an internal Sentinel
+
+    def test_no_single_address_is_written_as_a_slash_32_or_slash_128(self):
+        # bbot sorts its blacklist by (size, text); a one-address network has size 0, the same as the (0, 0) of the regex entry the kitchen-sink preset
+        # adds, and the tie compares text with 0: ``TypeError: '<' not supported between instances of 'int' and 'str'`` before anything is scanned (a
+        # deep discovery, which always runs kitchen-sink, died in under a second). Bare addresses sort as size -1.
+        for internal in (False, True):
+            for entry in bbot.Policy({**TARGET['scope'], 'deny_ranges': ['203.0.113.9/32', '2001:db8:1::5/128']}, internal=internal).blacklist():
+                if '/' in entry:
+                    net = ipaddress.ip_network(entry)
+                    self.assertLess(net.prefixlen, net.max_prefixlen, entry)
+        entries = bbot.Policy({'in_scope_domains': ['example.com'], 'deny_ranges': ['203.0.113.9/32']}).blacklist()
+        for entry in ('::1', '::', '203.0.113.9'):
+            self.assertIn(entry, entries)
+        self.assertIn('fe80::/10', entries)  # a real range stays a range
 
     def test_a_task_with_no_domain_in_scope_is_refused(self):
         with self.assertRaises(bbot.RunError):
@@ -242,6 +257,22 @@ class RunTests(unittest.TestCase):
         self.assertNotIn('Permission denied', message)
         self.assertLessEqual(len(message), 300)
         self.assertEqual(bbot.start_failure(['ValueError: boom']), '')
+
+    def test_a_bbot_that_dies_at_start_names_the_exception_and_where_it_came_from(self):
+        traceback = ('[INFO] Reading blacklist from file: /tmp/b.txt\n[ERRR] Unhandled exception: \'<\' not supported between instances of \'str\' and \'int\'\n'
+                     '[CRIT] Unhandled exception: \'<\' not supported between instances of \'str\' and \'int\'\n[DBUG] Traceback (most recent call last):\n'
+                     '  File "/opt/bbot-venv/lib/python3.14/site-packages/bbot/cli.py", line 429, in main\n'
+                     '  File "/opt/bbot-venv/lib/python3.14/site-packages/bbot/scanner/target.py", line 117, in add\n'
+                     "TypeError: '<' not supported between instances of 'str' and 'int'\n")
+        with self.assertLogs('sentinel.bbot', 'ERROR') as logged, self.assertRaises(bbot.RunError) as caught:
+            self.run_with(FakeProc([], code=1, stderr=traceback))
+        message = str(caught.exception)
+        self.assertIn("TypeError: '<' not supported", message)
+        self.assertIn('bbot/scanner/target.py:117 in add', message)
+        self.assertLessEqual(len(message), 300)
+        self.assertIn('Reading blacklist from file', logged.output[0])  # the whole tail is in the log, not only its last line
+        self.assertIn('[module paramminer_headers.handle_event]', bbot.crash_summary(['[ERRR] Error in paramminer_headers.handle_event', 'ValueError: x']))
+        self.assertEqual(bbot.crash_summary(['just a log line']), '')
 
     def test_a_stop_from_the_server_ends_the_run(self):
         client = FakeClient([httpclient.ApiError(409, 'the scan was stopped')])

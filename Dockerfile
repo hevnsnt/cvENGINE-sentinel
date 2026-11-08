@@ -301,6 +301,7 @@ COPY docker-entrypoint.sh /opt/sentinel/docker-entrypoint.sh
 COPY scripts/ci_openvas_bootstrap.py /opt/sentinel/scripts/ci_openvas_bootstrap.py
 # The bbot start check (client/bbot.py's own command, --dry-run), as the run-time user: run here at build and again by CI under another hostname.
 COPY scripts/ci_bbot_start.py /opt/sentinel/scripts/ci_bbot_start.py
+COPY scripts/ci_bbot_deep_start.py /opt/sentinel/scripts/ci_bbot_deep_start.py
 RUN chmod +x /opt/sentinel/docker-entrypoint.sh && \
     runuser -u sentinel -- env HOME=/home/sentinel python3 /opt/sentinel/scripts/ci_bbot_start.py
 
