@@ -1,7 +1,9 @@
 """The deny list of the scope floor: ranges this Sentinel never touches, whatever a task asks (``scope.denied_ranges``, ``scope.denied_by``,
 ``scope._judge``). The same function judges every address a tool or a probe is about to connect to, so these cases are the contract of all of them."""
 import ipaddress
+import os
 import unittest
+from unittest import mock
 
 from cvengine_scanner import scope
 from cvengine_scanner.probes import policy
@@ -194,10 +196,19 @@ class BrokenListTests(DenyTestCase):
 
 
 class NothingRegisteredTests(unittest.TestCase):
-    def test_without_a_setting_nothing_extra_is_denied(self):
+    def setUp(self):
         scope.use_denied_ranges(None)
-        self.assertEqual(scope.denied_ranges(), ())
-        self.assertEqual(scope.check_ip('93.184.216.9', internal=True), '93.184.216.9')
+
+    def test_without_a_variable_nothing_extra_is_denied(self):
+        with mock.patch.dict(os.environ):
+            os.environ.pop(scope.DENY_ENV, None)
+            self.assertEqual(scope.denied_ranges(), ())
+            self.assertEqual(scope.check_ip('93.184.216.9', internal=True), '93.184.216.9')
+
+    def test_without_a_registered_reader_the_environment_variable_itself_is_read(self):
+        with mock.patch.dict(os.environ, {scope.DENY_ENV: '93.184.216.0/24'}):
+            with self.assertRaises(scope.Denied):
+                scope.check_ip('93.184.216.9', internal=True)
 
 
 if __name__ == '__main__':

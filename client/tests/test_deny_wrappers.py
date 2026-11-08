@@ -340,6 +340,18 @@ class BbotTests(unittest.TestCase):
         for entry in ('93.184.216.0/24', '2001:4860::/32', '203.0.114.7'):
             self.assertIn(entry, listed)
 
+    def test_a_process_that_imports_only_bbot_still_holds_the_operators_list(self):
+        """The first run of this fix missed it: bbot imported alone never loaded the client's configuration, so the list was never read."""
+        import subprocess
+        import sys
+        code = ("from client import bbot\n"
+                "p = bbot.Policy({'in_scope_domains': ['example.com'], 'exact_host': False, 'exclusions': [], 'deny_ranges': [], 'bounty': False})\n"
+                "print(' '.join(p.blacklist()))")
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        out = subprocess.run([sys.executable, '-c', code], cwd=root, capture_output=True, text=True, check=True,
+                             env={**os.environ, 'CVENGINE_SENTINEL_DENY_RANGES': '93.184.216.0/24'}).stdout.split()
+        self.assertIn('93.184.216.0/24', out)
+
     def test_a_bad_operator_list_refuses_the_task_before_bbot_starts(self):
         popen = mock.Mock()
         with mock.patch.dict(os.environ, {'CVENGINE_SENTINEL_DENY_RANGES': 'nonsense'}):

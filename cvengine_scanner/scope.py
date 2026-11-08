@@ -24,6 +24,7 @@ to. A tool resolves the name again when it runs, so a name that changes its answ
 address to the tool should do so.
 """
 import ipaddress
+import os
 import re
 import socket
 from urllib.parse import urlsplit
@@ -145,7 +146,7 @@ def internal_allowed():
     return bool(_internal_setting()) if _internal_setting is not None else False
 
 
-_deny_setting = None  # where the operator's deny list comes from; see ``use_denied_ranges``
+_deny_setting = None  # where the operator's deny list comes from; see ``use_denied_ranges`` (None: the environment variable itself)
 DENY_ENV = 'CVENGINE_SENTINEL_DENY_RANGES'
 
 
@@ -164,17 +165,22 @@ def parse_denied_ranges(text):
 
 
 def use_denied_ranges(setting):
-    """Say where this machine's own deny list comes from: ``setting()`` returns ``(networks, bad_entries)``. The Sentinel client registers its
-    environment variable here (``client.config``); until something does, no extra range is denied (the cvENGINE server judges by its own rules)."""
+    """Say where this machine's own deny list comes from: ``setting()`` returns ``(networks, bad_entries)``; ``None`` goes back to the environment
+    variable. The Sentinel client registers its own reader (``client.config``, which logs a bad entry once); with none registered the environment
+    variable is read directly, so nothing in this process can run without it."""
     global _deny_setting
     _deny_setting = setting
 
 
+def _from_environment():
+    return parse_denied_ranges(os.environ.get(DENY_ENV, ''))
+
+
 def denied_ranges():
-    """The networks this machine's own deny list names. An entry that is not a network refuses everything (fail closed): ``Denied``."""
-    if _deny_setting is None:
-        return ()
-    nets, bad = _deny_setting()
+    """The networks this machine's own deny list names: ``CVENGINE_SENTINEL_DENY_RANGES`` unless the client registered its own reader. Read from the
+    environment by default, so a caller that never imported the client's configuration (bbot, a probe) is held to it too. An entry that is not a network
+    refuses everything (fail closed): ``Denied``."""
+    nets, bad = (_deny_setting or _from_environment)()
     if bad:
         raise Denied(f'the deny list of this Sentinel ({DENY_ENV}) holds an entry that is not an address or a CIDR ({bad[0]!r}); nothing is scanned until it is fixed')
     return tuple(nets)
