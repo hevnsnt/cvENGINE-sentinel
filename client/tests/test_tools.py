@@ -453,6 +453,22 @@ class UdpRunnerTests(unittest.TestCase):
             tools.run_nmap_udp('8.8.8.8')
         self.assertNotIn('-6', v4.call_args[0][0])
 
+    def test_a_cloud_ipv6_literal_with_a_trailing_double_colon_is_scanned_with_dash_6_and_passed_through_as_written(self):
+        # seen on cvedemo: 2600:1900:4001:370:8000:1a0:: (a Google Cloud range). The literal reaches nmap unchanged, after -6 and the fixed flags.
+        with mock.patch('client.tools._run', return_value='<nmaprun/>') as fake_run:
+            tools.run_nmap_udp('2600:1900:4001:370:8000:1a0::')
+        argv = fake_run.call_args[0][0]
+        self.assertEqual(argv[:2], [tools.NMAP_BIN, '-6'])
+        self.assertEqual(argv[-3:], ['-oX', '-', '2600:1900:4001:370:8000:1a0::'])
+        self.assertEqual(argv.count('-6'), 1)
+
+    def test_a_report_that_scanned_no_host_is_returned_as_is_for_the_server_to_judge(self):
+        # nmap exits 0 with 0 hosts scanned when it has no route to the target (a Sentinel without IPv6). The wrapper must not turn that
+        # into a failure or an empty string: the server tells "host down" from "nothing was sent" by the report's own host counts.
+        xml = '<nmaprun><runstats><finished exit="success"/><hosts up="0" down="0" total="0"/></runstats></nmaprun>'
+        with mock.patch('client.tools._run', return_value=xml):
+            self.assertEqual(tools.run_nmap_udp('2600:1900:4001:370:8000:1a0::'), {'xml': xml})
+
     def test_a_name_stays_a_name_in_the_raw_report(self):
         with mock.patch('client.tools._run', return_value='<nmaprun/>') as fake_run:
             tools.run_nmap_udp('www.example.test')
