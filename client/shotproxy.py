@@ -32,6 +32,12 @@ IDLE_TIMEOUT = 40            # seconds a connection may sit without a byte befor
 MAX_LIFETIME = 150           # seconds one connection may live at all
 MAX_BYTES = 25 * 1024 * 1024  # a page and its sub-resources are far smaller; a media stream or a tarpit is cut off
 MAX_CONNECTIONS = 64
+# Every connection costs two threads (it is served, and its browser-to-site half is pumped on another). One proxy is held to MAX_CONNECTIONS, and all the
+# proxies of this process together to GLOBAL_THREADS connections, so a Sentinel running several screenshots beside nuclei and bbot never nears the
+# container's pids limit (512 threads and processes in all; Chromium alone peaks at about 110 in two pages, nuclei at about 40).
+GLOBAL_THREADS = 96
+_GLOBAL = threading.BoundedSemaphore(GLOBAL_THREADS)
+START_RETRY_SECONDS = 0.2     # after the system refused a new thread: wait, then go on accepting
 CONNECT_TIMEOUT = 12
 HOP_BY_HOP = {'proxy-authorization', 'proxy-connection', 'connection', 'keep-alive', 'proxy-authenticate', 'te', 'trailer', 'upgrade'}
 
@@ -98,12 +104,35 @@ class VettingProxy:
                 client, _ = self._listener.accept()
             except (OSError, AttributeError):
                 return
-            with self._lock:
-                if self._open >= MAX_CONNECTIONS:
-                    _close(client)
-                    continue
-                self._open += 1
-            threading.Thread(target=self._serve, args=(client,), name='shot-proxy-conn', daemon=True).start()
+            if not self._admit(client):
+                continue
+            try:
+                threading.Thread(target=self._serve, args=(client,), name='shot-proxy-conn', daemon=True).start()
+            except RuntimeError:
+                # "can't start new thread": the system refused (pids limit, memory). This connection is dropped (the browser retries it), what it counted
+                # is given back, and the accept loop goes on: it used to die here and leave the browser a proxy that never answered again.
+                logger.warning('screenshot proxy: could not start a thread for a connection; dropped it, going on')
+                self._release_slot()
+                _close(client)
+                self._stop.wait(START_RETRY_SECONDS)
+
+    def _admit(self, client):
+        """Count the connection against this proxy's and the process's limits; refuse (close) it when either is full."""
+        if not _GLOBAL.acquire(blocking=False):
+            _close(client)
+            return False
+        with self._lock:
+            if self._open >= MAX_CONNECTIONS:
+                _GLOBAL.release()
+                _close(client)
+                return False
+            self._open += 1
+        return True
+
+    def _release_slot(self):
+        with self._lock:
+            self._open -= 1
+        _GLOBAL.release()
 
     def _serve(self, client):
         upstream = None
@@ -153,8 +182,7 @@ class VettingProxy:
         finally:
             _close(client)
             _close(upstream)
-            with self._lock:
-                self._open -= 1
+            self._release_slot()
 
     def _authenticate(self, headers):
         for key, value in headers:

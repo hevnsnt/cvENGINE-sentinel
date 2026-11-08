@@ -167,6 +167,20 @@ def verify_sandbox(browser, inspect=lib.browser_processes):
         _quietly(context.close)
 
 
+APPARMOR = ("the host's AppArmor profile blocks Chromium's sandbox: run the scanner with an AppArmor profile that allows user namespaces "
+            "(config/apparmor/cvengine-scanner in the cvENGINE repository, docs/DEPLOYMENT.md \"Screenshots and AppArmor\")")
+
+
+def apparmor_words(message):
+    """The plain reason when Chromium's own log says the kernel refused it the user namespace its sandbox needs (``FATAL:credentials.cc ... Check failed:
+    Permission denied (13)``: Docker's ``docker-default`` AppArmor profile on a host that restricts unprivileged user namespaces), or ''. Playwright's own
+    message is only \"Target page, context or browser has been closed\", with the browser log after it; either form is recognised."""
+    low = str(message or '').lower()
+    if 'credentials.cc' in low or ('permission denied (13)' in low and ('check failed' in low or 'fatal' in low)):
+        return APPARMOR
+    return ''
+
+
 def launch(playwright, verify=verify_sandbox):
     """The browser, started with Chromium's sandbox (Playwright's own default is without it) and checked before it is used. There is no way to ask
     for it without the sandbox. Raises ``SandboxError`` when the sandbox could not start or did not engage; a browser that runs without it is closed,
@@ -175,13 +189,16 @@ def launch(playwright, verify=verify_sandbox):
         # 'per-context': every page's context names its own proxy (and credentials), see Capturer._context; nothing goes direct
         browser = playwright.chromium.launch(args=list(LAUNCH_ARGS), proxy={'server': 'per-context'}, chromium_sandbox=True)
     except Exception as exc:  # noqa: BLE001 - the sandbox's own failures are told apart from the rest
-        words = lib.sandbox_words(exc)
+        words = apparmor_words(exc) or lib.sandbox_words(exc)
         if words:
             raise SandboxError(words) from exc
         raise
     try:
         why = verify(browser)
     except Exception as exc:  # noqa: BLE001 - a check that could not run is not a pass
+        if apparmor_words(exc):
+            _quietly(browser.close)
+            raise SandboxError(APPARMOR) from exc
         detail = re.sub(r'\s+', ' ', str(exc))[:120] or type(exc).__name__
         why = f'the check could not run ({detail})'
     if why:
