@@ -23,7 +23,7 @@ import secrets
 import time
 from urllib.parse import urljoin, urlsplit, urlparse
 
-from .. import soft404
+from .. import context as masked_context, soft404
 from . import fingerprint, http, js_libraries, sensitive
 from .http import page_title  # noqa: F401 - the same title reader as the server's route_auth.page_title
 from .version_probes import challenge_of
@@ -216,7 +216,9 @@ def analyse(result):
     body = result.get('body') or ''
     found = sensitive.scan_text(body) if sensitive.is_text(content_type) else {}
     credentials = sensitive.credential_values(body) if any(t in found for t in sensitive.CREDENTIAL_TYPES) else []
-    return {'credentials': credentials, 'status': result.get('status'), 'title': (result.get('title') or '')[:300], 'content_type': content_type,
+    # per credential, its line and the text around it with the value (and any other secret in it) masked, cut here while the body is in hand
+    contexts = [masked_context.context_snippet(body, value) for _name, value in credentials]
+    return {'credentials': credentials, 'credential_context': contexts, 'status': result.get('status'), 'title': (result.get('title') or '')[:300], 'content_type': content_type,
             'state': state, 'evidence': evidence, 'sensitive': found, 'sensitive_score': sensitive.sensitive_score(found),
             # what the page was, for comparing it with the answer to a path that cannot exist; held here, never returned. The front page is never
             # compared with a path that cannot exist (_against_missing_page): no fingerprint, so a 300 KB page is not normalised for nothing
@@ -370,11 +372,26 @@ def _group(raw):
     return {'host': host, 'urls': urls}
 
 
+def _credential_rows(result):
+    """``[{type, value}]``, each with the optional ``line`` and masked ``context`` of where it was read (never the value inside it)."""
+    contexts = result.get('credential_context') or []
+    rows = []
+    for index, (kind, value) in enumerate(result.get('credentials') or []):
+        row = {'type': kind, 'value': value}
+        line, snippet = (contexts[index] if index < len(contexts) and contexts[index] else None) or (None, '')
+        if line:
+            row['line'] = line
+        if snippet:
+            row['context'] = snippet
+        rows.append(row)
+    return rows
+
+
 def _row(url, result):
     return {'id': url, 'status': result.get('status') if isinstance(result.get('status'), int) else None, 'title': result['title'],
             'content_type': result['content_type'], 'state': result['state'], 'evidence': result['evidence'], 'sensitive': result['sensitive'],
             'sensitive_score': result['sensitive_score'], 'bytes': int(result.get('bytes') or 0),
-            'credentials': [{'type': t, 'value': v} for t, v in result.get('credentials') or []]}
+            'credentials': _credential_rows(result)}
 
 
 def run_host(host, urls, policy, probe=None, reader=None, sleep=time.sleep, clock=time.monotonic, deadline=None):

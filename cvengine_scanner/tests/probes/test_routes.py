@@ -248,7 +248,9 @@ class RunBatchTests(unittest.TestCase):
         self.assertEqual(sorted(Draft202012Validator(schema).iter_errors(out), key=str), [])
         self.assertNotIn('qqqq', json.dumps(got))
         api = got['routes'][1]
-        self.assertEqual(api['credentials'], [{'type': 'aws_key', 'value': AWS_KEY}])
+        self.assertEqual([(c['type'], c['value']) for c in api['credentials']], [('aws_key', AWS_KEY)])
+        self.assertEqual((api['credentials'][0]['line'], api['credentials'][0]['context']), (1, '{"k": "AKIA…' + AWS_KEY[-4:] + '"}'))  # where it was, the value masked
+        self.assertNotIn(AWS_KEY, api['credentials'][0]['context'])
         self.assertEqual(api['sensitive_score'], 25)
 
     def test_a_script_of_the_front_page_is_read_and_its_library_recorded(self):

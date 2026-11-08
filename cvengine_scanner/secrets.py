@@ -18,6 +18,8 @@ import re
 from pathlib import PurePosixPath
 from urllib.parse import urljoin, urlsplit
 
+from cvengine_scanner import context as masked_context
+
 KINGFISHER_VERSION = '2.16.0'  # the Dockerfile pin (ARG KINGFISHER_VERSION); a test holds the two together
 WALL_SECONDS = 300
 MAX_REPORT_BYTES = 16 * 1024 * 1024
@@ -209,10 +211,17 @@ def _secret_ok(value):
     return MIN_SECRET <= len(value) <= limit
 
 
-def read_report(text, manifest, keep_validation=False):
+def read_report(text, manifest, keep_validation=False, body_of=None):
     """``(findings, truncated)`` from Kingfisher's JSON report: each finding mapped to the URL of its file (``manifest``: file name -> entry), with
     the contract's fields only. A pair's secret half (an AWS secret key in ``dependent_captures``) is a finding of its own at the same place.
-    ``keep_validation`` keeps Kingfisher's outcome (a validation pass); otherwise every outcome is ``not_attempted``."""
+    ``keep_validation`` keeps Kingfisher's outcome (a validation pass); otherwise every outcome is ``not_attempted``.
+
+    ``body_of(file name)`` returns the text of a file Kingfisher read (or ``None``): with it each finding also carries ``context``, the line of that
+    file around the match with the value and every other secret-looking token masked here (``cvengine_scanner.context``), so a person can see WHAT was
+    found. Kingfisher's ``snippet`` is the value itself and ``line`` and ``column_start`` say where it is: the file is read for the text around it.
+    A finding whose snippet cannot be proved clean, or whose value is not on its line, has no ``context`` (and keeps everything else).
+
+    ``secret`` stays what it always was (the value, over the authenticated channel, for the server to fingerprint); the masked ``context`` never holds it."""
     try:
         doc = json.loads(text)
     except (TypeError, ValueError):
@@ -221,6 +230,7 @@ def read_report(text, manifest, keep_validation=False):
     if not isinstance(records, list):
         raise ValueError('the Kingfisher report has no findings list')
     out, truncated = [], False
+    bodies = {}
     for record in records:
         rule = record.get('rule') if isinstance(record, dict) else None
         finding = record.get('finding') if isinstance(record, dict) else None
@@ -240,6 +250,14 @@ def read_report(text, manifest, keep_validation=False):
         meta = _meta(validation.get('response')) if keep_validation else {}
         if meta:
             row['validation_meta'] = meta
+        if body_of is not None and row['line']:
+            name = PurePosixPath(str(finding.get('path') or '')).name
+            if name not in bodies:
+                bodies[name] = body_of(name)
+            others = [v for v in (finding.get('dependent_captures') or {}).values() if isinstance(v, str)] if isinstance(finding.get('dependent_captures'), dict) else []
+            context = masked_context.finding_context(bodies[name], row['line'], finding['snippet'], finding.get('column_start'), others=others)
+            if context:
+                row['context'] = context
         rows = [row]
         component = COMPONENTS.get(rule_id)
         captures = finding.get('dependent_captures') if isinstance(finding.get('dependent_captures'), dict) else {}

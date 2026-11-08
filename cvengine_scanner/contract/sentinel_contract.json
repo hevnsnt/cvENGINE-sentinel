@@ -2422,6 +2422,11 @@
                       "maxLength": 8192,
                       "description": "the value itself, over the authenticated channel only: the server fingerprints and masks it and never stores it"
                     },
+                    "context": {
+                      "type": "string",
+                      "maxLength": 400,
+                      "description": "the line of the page or script around the value, trimmed to about 200 characters centred on the match, with the value and every other secret-looking token already masked by the Sentinel (the first characters of its format, an ellipsis, the last four); never the value. Optional: a server that does not read it ignores it, and a Sentinel that cannot cut one safely sends none. The server masks it again on receipt and escapes it when it shows it."
+                    },
                     "validation": {
                       "type": "object",
                       "additionalProperties": false,
@@ -3513,6 +3518,16 @@
                             "minLength": 1,
                             "maxLength": 8192,
                             "description": "the value itself, over the authenticated channel only: the server fingerprints and masks it for its secrets inventory and never stores it"
+                          },
+                          "line": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "optional: the 1-based line of the body the value was read on"
+                          },
+                          "context": {
+                            "type": "string",
+                            "maxLength": 400,
+                            "description": "the line of the page or script around the value, trimmed to about 200 characters centred on the match, with the value and every other secret-looking token already masked by the Sentinel (the first characters of its format, an ellipsis, the last four); never the value. Optional: a server that does not read it ignores it, and a Sentinel that cannot cut one safely sends none. The server masks it again on receipt and escapes it when it shows it."
                           }
                         }
                       }
