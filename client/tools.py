@@ -64,6 +64,18 @@ class TargetError(ValueError):
     Always reported back as ``{'outcome': 'error', ...}``, never retried blindly, and the raw target is never passed to a shell."""
 
 
+class Refused(TargetError):
+    """The target is inside a range this Sentinel never touches (the operator's deny list, ``scope.Denied``): refused here before anything connected. It
+    is reported as an error whose text starts ``refused:`` (the contract has no other outcome), so the server can tell a refusal from a failure."""
+
+
+def _scope_failure(message, exc):
+    """``TargetError(message)``, or ``Refused`` when ``exc`` is a deny-list refusal."""
+    if isinstance(exc, scope.Denied):
+        return Refused(f'refused: {message}')
+    return TargetError(message)
+
+
 def _proxy_args(tool, hosts):
     """The arguments that send ``tool`` through cvENGINE's egress proxy (a built-in scanner only, ``client.egress``), or ``TargetError`` when the proxy
     is on and none of its proxies suits the tool: the run never goes out directly then."""
@@ -115,8 +127,8 @@ def _resolver():
     return resolve
 
 
-def _refused(value, why):
-    return TargetError(f'not a usable target: {str(value)[:100]!r} ({why})')
+def _refused(value, why, exc=None):
+    return _scope_failure(f'not a usable target: {str(value)[:100]!r} ({why})', exc)
 
 
 def _port_text(port, value):
@@ -153,7 +165,7 @@ def _validate_one(value, endpoint, resolve):
             raise _refused(value, 'a bare address or host name, not a URL')
         return scope.check_target(text, resolve=True, resolver=resolve)  # a name that does not resolve is allowed: there is nothing to reach
     except scope.ScopeError as exc:
-        raise _refused(value, str(exc)) from None
+        raise _refused(value, str(exc), exc) from None
 
 
 def validate_targets(values, limit=MAX_TARGETS, endpoint=False, resolver=None):
@@ -376,6 +388,10 @@ def validate_cidr(value):
         raise TargetError('discover only sweeps a private IPv4 network')
     if net.num_addresses > MAX_DISCOVER_ADDRESSES:
         raise TargetError(f'discover target covers {net.num_addresses} addresses; the most one task may sweep is {MAX_DISCOVER_ADDRESSES}')
+    try:
+        scope.check_network(net)  # a sweep that touches any part of a denied range is refused whole
+    except scope.Denied as exc:
+        raise _scope_failure(f'discover target {str(net)!r} ({exc})', exc) from None
     return str(net)
 
 
@@ -488,7 +504,7 @@ def run_testssl(host, ip, port, starttls=None, timeout=900, register=None):
         ip = scope.check_ip(ip)
         host = scope.check_target(host, resolve=False)
     except scope.ScopeError as exc:
-        raise TargetError(f'not a usable testssl target: {str(host)[:100]!r} at {str(ip)[:50]!r} ({exc})') from None
+        raise _scope_failure(f'not a usable testssl target: {str(host)[:100]!r} at {str(ip)[:50]!r} ({exc})', exc) from None
     port = _validate_port(port)
     destination = f'[{host}]:{port}' if ':' in host else f'{host}:{port}'
     with tempfile.TemporaryDirectory(prefix='testssl-') as work:
@@ -576,7 +592,7 @@ def _wpscan(url, token, timeout, register, args):
     try:
         scope.check_url(url, resolver=_resolver())
     except scope.ScopeError as exc:
-        raise TargetError(f'not a usable url: {url[:100]!r} ({exc})') from None
+        raise _scope_failure(f'not a usable url: {url[:100]!r} ({exc})', exc) from None
     env = {k: os.environ[k] for k in ('PATH', 'HOME', 'LANG', 'LC_ALL', 'TZ', 'TMPDIR', 'GEM_HOME', 'GEM_PATH',
                                       'BUNDLE_PATH', 'RUBYLIB', 'RUBYOPT', 'SSL_CERT_FILE', 'SSL_CERT_DIR') if k in os.environ}
     if token:
@@ -619,7 +635,7 @@ def run_waf(host, ip, port, scheme, timeout=WAFW00F_TIMEOUT, register=None):
         ip = scope.check_ip(ip)
         host = scope.check_target(host, resolve=True, resolver=_resolver())
     except scope.ScopeError as exc:
-        raise TargetError(f'not a usable waf target: {str(host)[:100]!r} at {str(ip)[:50]!r} ({exc})') from None
+        raise _scope_failure(f'not a usable waf target: {str(host)[:100]!r} at {str(ip)[:50]!r} ({exc})', exc) from None
     netloc = f'[{host}]' if ':' in host else host
     if port != (443 if scheme == 'https' else 80):
         netloc += f':{port}'
@@ -771,7 +787,7 @@ def _one_address(value):
     try:
         return scope.check_ip(value)
     except scope.ScopeError as exc:
-        raise TargetError(f'not a usable address: {str(value)[:60]!r} ({exc})') from None
+        raise _scope_failure(f'not a usable address: {str(value)[:60]!r} ({exc})', exc) from None
 
 
 def _finished(xml):
@@ -830,7 +846,7 @@ def _checked_url(url):
     try:
         scope.check_url(url, resolver=_resolver())
     except scope.ScopeError as exc:
-        raise TargetError(f'not a usable url: {url[:100]!r} ({exc})') from None
+        raise _scope_failure(f'not a usable url: {url[:100]!r} ({exc})', exc) from None
     return url
 
 

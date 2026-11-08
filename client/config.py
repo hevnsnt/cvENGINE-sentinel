@@ -172,6 +172,23 @@ def private_ranges():
     return [ipaddress.ip_network(r) for r in vantage().get('private_ranges', [])]
 
 
+_deny_cache = {'text': None, 'value': ((), [])}
+
+
+def deny_ranges():
+    """``(networks, bad)``: this machine's own deny list, ``CVENGINE_SENTINEL_DENY_RANGES`` (comma separated CIDRs; a bare address is one host). It protects addresses
+    even when the server is old and sends no list of its own. Read at every call so an operator's change needs no restart of anything but the container's
+    environment; ``bad`` names entries that are not a network (they make every task refused, never silently ignored)."""
+    text = os.environ.get('CVENGINE_SENTINEL_DENY_RANGES', '')
+    if _deny_cache['text'] != text:
+        from cvengine_scanner import scope as _floor
+        _deny_cache['value'] = _floor.parse_denied_ranges(text)
+        _deny_cache['text'] = text
+        if _deny_cache['value'][1]:
+            logger.error('CVENGINE_SENTINEL_DENY_RANGES holds entries that are not networks (%s): every task is refused until it is fixed', ', '.join(_deny_cache['value'][1]))
+    return _deny_cache['value']
+
+
 def set_overrides(values):
     """Replace what the server told this Sentinel to run with. An empty dict means nothing: every setting is this machine's own again. The new dict
     is built first and swapped in with one assignment, so the poll thread never reads a half-replaced one (local values with the server's missing)."""
