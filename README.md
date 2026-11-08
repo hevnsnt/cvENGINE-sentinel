@@ -224,6 +224,7 @@ container. "Not passed by compose" below means a value in `.env` has no effect; 
 | `CVENGINE_SENTINEL_PROBE_PROXY`                                                                                 | No               | none                                                  | One proxy URL, or several separated by commas (`http://`, `socks5://` or `socks5h://`, a login in the URL if needed), that the in-process probes (`http_probe`) go through, round robin. The probe still vets every address itself and asks the proxy only for that numeric address; a proxy that fails fails the request, never a direct one. Loopback, private and tailnet addresses (unless `CVENGINE_PROXY_PRIVATE=1`) and anything in `CVENGINE_PROXY_BYPASS` or `NO_PROXY` go direct. cvENGINE never sends a proxy. | daemon (`cvengine_scanner/probes/egress_proxy.py`)                        |
 | `CVENGINE_SENTINEL_MAX_CONCURRENT`                                                                              | No               | detected from the CPUs the container may use          | How many tasks run at once, OpenVAS not counted (see [Concurrency](#concurrency)). Capped at 10; a value that is not a number means 1.                                                            | daemon                                                                    |
 | `CVENGINE_SENTINEL_UPDATE`                                                                                      | No               | unset (cvENGINE decides)                              | `off`, `manual` or `automatic`. A ceiling on the self-update setting (see [Updates](#updates)).                                                                                                   | daemon, and `scripts/update.sh` through it                                |
+| `CVENGINE_SENTINEL_UPDATE_EXIT`                                                                                 | No               | unset                                                 | `1`: when cvENGINE asks this Sentinel to update it takes no new work, finishes the tasks it has and exits with code 76 (see [Updates](#updates)). For a supervisor that replaces the image after the exit (`scripts/pull-on-exit.sh`). Unset: the host updater acts on the request. Never used by the built-in scanner. | daemon |
 | `CVENGINE_SENTINEL_UPDATER`                                                                                     | No               | unset                                                 | `installed` tells cvENGINE an updater exists before its first run. `install-updater.sh` writes it, and `--remove` deletes it. Do not set it by hand.                                              | daemon                                                                    |
 | `CVENGINE_SENTINEL_ALLOW_INSECURE`                                                                              | No               | unset                                                 | Exactly `1` allows a plain `http` server address (lab use only).                                                                                                                                  | daemon                                                                    |
 | `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY`                                                                         | No               | unset                                                 | A proxy for the Sentinel's connection to cvENGINE. testssl.sh and WPScan run with a minimal environment that leaves these out.                                                                    | daemon (through `requests`)                                               |
@@ -532,6 +533,27 @@ Sentinel never self-updates, whatever cvENGINE says and even when an administrat
 means it updates only when an administrator asks, even if cvENGINE says Automatic; `automatic` or unset lets
 cvENGINE's setting apply. `scripts/update.sh --now`, run by a person on this machine, updates whatever the setting
 says.
+
+### cvENGINE asks for the newest version
+
+By default cvENGINE keeps its Sentinels on the newest published build of this repository's `main` branch (Settings, Sentinels, **Keep Sentinels on the
+newest version**, on unless an administrator turns it off; per Sentinel, set its self-update to Off to opt out). When a Sentinel reports a commit that is
+behind the newest build, and that build speaks a contract version the server can run, cvENGINE asks it to update: the heartbeat answer's `update` object
+carries `requested: true`, `target` (the newest commit) and `reason`. A client that does not know `target` ignores it. The contract version is unchanged:
+this is an optional field of an object clients already read. At most one request per Sentinel every 6 hours, never while it holds a heavy task, never
+to a build older than the one it runs, and a Sentinel that has not come back on a new build within the grace period (90 minutes) is flagged on the
+Sentinels page and not asked again until an administrator presses **Update now**.
+
+Who acts on the request:
+
+| Setup | What happens |
+| --- | --- |
+| The host updater is installed (`scripts/install-updater.sh`, the default of `setup.sh`) | `scripts/update.sh` sees `requested` at its next run (hourly), builds, drains and swaps, exactly as for **Update now**. Nothing else to set. |
+| `CVENGINE_SENTINEL_UPDATE_EXIT=1` and a supervisor that replaces the image on exit | The daemon takes no new work, waits for the running tasks (up to `CVENGINE_SENTINEL_DRAIN_TIMEOUT`, 1800 s; past that it goes back to work and keeps every task), then exits with **code 76**. `scripts/pull-on-exit.sh` (run it in the checkout) fast-forwards, pulls, builds and recreates the container on exit code 76 and nothing else; a registry-image setup can use any puller instead. The same target is not acted on twice within 6 hours, so a supervisor that brings nothing newer is not a restart loop. |
+| The built-in scanner of a cvENGINE server | Not the daemon: the server asks its host (`scripts/update-watch.sh`, `scripts/scanner-update.sh`) to pull the newest image when the scanner is idle. |
+
+Exit codes of the daemon: `0` stopped on request, `1` token refused or fatal, `3` heartbeats stopped (restart), `75` re-enrol (built-in scanner), `76` drained to be updated.
+Command line equivalents (the interface is cvENGINE, these are the same actions): `scripts/update.sh --now` on this machine, `PATCH agents/{id}` with `{"update": "now"}` on the API, and `docker compose exec sentinel python3 -m client.control status` to see what the daemon was told.
 
 ### The updater
 

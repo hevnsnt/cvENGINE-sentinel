@@ -33,6 +33,7 @@ from . import config
 from . import control
 from . import httpclient
 from . import openvas
+from . import selfupdate
 from . import shot
 from . import signed_in
 from . import templates
@@ -79,6 +80,7 @@ MAX_RESULT_BYTES = 23 * 1024 * 1024  # the server's result route refuses a body 
 RELEASE_WAIT_SECONDS = 10.0  # after the grace period, how long shutdown waits for a task thread that is still delivering its result
 AUTH_STATUSES = (401, 403)  # the server no longer accepts this Sentinel's token
 REENROLL = 75  # exit code of a built-in scanner whose token the server no longer accepts: the entry point re-enrols it from the blob file
+UPDATE_EXIT = selfupdate.UPDATE_EXIT  # exit code of a Sentinel that drained because cvENGINE asked it to update and CVENGINE_SENTINEL_UPDATE_EXIT says a supervisor replaces the image (client/selfupdate.py)
 WEDGED = 3  # exit code of a built-in scanner whose heartbeats have not reached the server for ``control.HEARTBEAT_MAX_AGE``: compose restarts it
 WATCHDOG_EVERY = 30  # seconds between the built-in scanner's checks on its own heartbeats
 TAKEN_BACK_KILL_SECONDS = 10.0  # a task taken back by the server is asked to stop (SIGTERM to its process group); this long after, it is killed (SIGKILL)
@@ -312,6 +314,8 @@ class Daemon:
         self._held_logged = None  # (status, note) of the hold last logged, so a held Sentinel says why once, not at every poll
         self.started_at = time.time()
         self.heartbeat_ok_at = None  # when a heartbeat last reached the server and was answered (wall clock: control.json is read by another process)
+        self._update_exit_state = None  # None, 'draining' (a drain for an update request runs) or 'waiting' (it gave up; asks again after RETRY_AFTER)
+        self._update_exit_logged = None
         self.watchdog = config.builtin()  # the built-in scanner restarts itself when its heartbeats stop reaching the server
 
     # --- lifecycle --------------------------------------------------------------------------------------------
@@ -447,6 +451,7 @@ class Daemon:
             self.heartbeat_ok_at = time.time()
             update_reply = out.get('update')
             self._note_contract(out)
+            self._consider_update_exit(update_reply)
             self._reconcile(out.get('leases'), asked_at)
             self._reap_dropped()
             self.apply_settings(out.get('settings'))
@@ -456,6 +461,60 @@ class Daemon:
             logger.exception('heartbeat failed')
         finally:
             self._write_control(update_reply)
+
+    def _consider_update_exit(self, reply):
+        """cvENGINE asked this Sentinel to update (``update.requested`` with a ``target`` commit): when a supervisor replaces the image on exit
+        (CVENGINE_SENTINEL_UPDATE_EXIT) drain and leave with ``UPDATE_EXIT``. Everything else stays with the host-side updater."""
+        try:
+            if self._update_exit_state == 'draining' or self.stop_event.is_set():
+                return
+            ok, found = selfupdate.should_exit(reply, config.version())
+            if not ok:
+                if found != self._update_exit_logged and isinstance(reply, dict) and reply.get('requested') and selfupdate.enabled():
+                    logger.info('not leaving to update: %s', found)
+                self._update_exit_logged = found
+                return
+            self._update_exit_state = 'draining'
+            threading.Thread(target=self._drain_and_exit, args=(found,), name='sentinel-update-exit', daemon=True).start()
+        except Exception:  # noqa: BLE001 - an update request must never stop a heartbeat
+            logger.exception('could not act on the update request')
+
+    def _drain_and_exit(self, target, timeout=None):
+        """Stop claiming, wait for the tasks in flight (and for an outstanding poll that may still hand one over), then stop with ``UPDATE_EXIT``. Past the
+        drain limit the Sentinel goes back to work and keeps every task: nothing is interrupted for an update."""
+        previous = config.version() or ''
+        timeout = selfupdate.drain_seconds() if timeout is None else timeout
+        logger.info('cvENGINE asked this Sentinel to update to %s: no new work, waiting for %s running task(s) (up to %ss)', target[:12], self._active_count(), timeout)
+        control.set_draining(True)
+        try:
+            control.record_update('draining', 'draining', 'cvENGINE asked this Sentinel to update; it takes no new work', previous, target)
+        except (OSError, ValueError):
+            pass
+        deadline = time.monotonic() + timeout
+        while not self.stop_event.is_set():
+            if self._active_count() == 0 and not self._polling:
+                selfupdate.remember(target)
+                try:
+                    control.record_update('updating', 'exiting', f'idle: leaving with exit code {UPDATE_EXIT} so the supervisor brings the newest image', previous, target)
+                except (OSError, ValueError):
+                    pass
+                logger.info('idle: exiting with code %s so the supervisor brings the newest image (%s)', UPDATE_EXIT, target[:12])
+                self.exit_code = UPDATE_EXIT
+                self.stop_event.set()
+                return
+            if time.monotonic() >= deadline:
+                break
+            self.stop_event.wait(1.0)
+        if self.stop_event.is_set():
+            return
+        control.set_draining(False)
+        try:
+            control.record_update('waiting', 'drain', f'a task was still running after {timeout}s; this Sentinel went back to work and asks again later', previous, target)
+        except (OSError, ValueError):
+            pass
+        logger.warning('a task was still running after %ss: not leaving to update now, back to work', timeout)
+        selfupdate.remember(target)  # the same target is not tried again before RETRY_AFTER
+        self._update_exit_state = None
 
     def _watchdog_loop(self):
         """The built-in scanner's own watchdog: when no heartbeat has reached the server for ``control.HEARTBEAT_MAX_AGE`` seconds (a wedged daemon, a
