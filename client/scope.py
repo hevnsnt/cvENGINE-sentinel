@@ -9,6 +9,7 @@ from cvengine_scanner import scope as _scope
 from . import config
 
 _scope.use_internal_setting(lambda: config.is_internal())
+_scope.use_denied_ranges(config.deny_ranges)  # the operator's own deny list (CVENGINE_SENTINEL_DENY_RANGES): refused before any tool or probe connects
 _scope.use_private_ranges(config.private_ranges)  # the built-in scanner's vantage setting; empty on every other Sentinel
 
 sys.modules[__name__] = _scope

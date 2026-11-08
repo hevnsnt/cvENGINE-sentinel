@@ -811,6 +811,8 @@ class Daemon:
             outcome = 'stopped by the server'
             logger.info('task %s was ended by the server: %s', task_id, _clip(str(exc), 200))
         except (tools.TargetError, bbot.RunError) as exc:
+            if isinstance(exc, tools.Refused) or str(exc).startswith('refused:'):
+                logger.warning('task %s refused locally: %s', task_id, _clip(str(exc), 200))
             self._report_unless_dropped(task_id, state, {'outcome': 'error', 'error': str(exc)[:280]})
         except Exception as exc:  # noqa: BLE001 - one bad task must never take the daemon down
             if not state.get('dropped'):

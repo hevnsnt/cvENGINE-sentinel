@@ -97,6 +97,10 @@ class Policy:
                 self.denied.append(ipaddress.ip_network(str(cidr), strict=False))
             except ValueError:
                 continue
+        try:  # this machine's own deny list (CVENGINE_SENTINEL_DENY_RANGES) joins the task's: an old server that sends none still cannot aim bbot at them
+            self.denied.extend(n for n in floor.denied_ranges() if n not in self.denied)
+        except floor.Denied as exc:
+            raise RunError(f'refused: {exc}') from None
         self.internal = internal
 
     def blacklist(self):
@@ -113,7 +117,7 @@ class Policy:
             ip = ipaddress.ip_address(str(value).strip().strip('[]'))
         except ValueError:
             return None
-        if any(ip.version == net.version and ip in net for net in self.denied):
+        if floor.denied_by(ip, self.denied) is not None:  # also an IPv4 hidden in an IPv6 address (mapped, 6to4, NAT64)
             return None
         return ip.compressed
 
