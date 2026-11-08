@@ -594,7 +594,7 @@ class ReconcileAndLogTests(unittest.TestCase):
         self.assertFalse(mine['dropped'])
         mine_proc.kill.assert_not_called()
         self.assertTrue(gone['dropped'])
-        gone_proc.kill.assert_called_once()
+        gone_proc.terminate.assert_called_once()  # asked to stop first; the reaper kills it if it does not (test_stuck_and_starved)
         d._report_unless_dropped(2, gone, {'outcome': 'done'})
         self.assertEqual(d.client.paths(), [])  # nothing sent for a task the server took back
 

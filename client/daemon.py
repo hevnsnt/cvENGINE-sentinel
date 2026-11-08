@@ -83,6 +83,14 @@ REENROLL = 75  # exit code of a built-in scanner whose token the server no longe
 UPDATE_EXIT = selfupdate.UPDATE_EXIT  # exit code of a Sentinel that drained because cvENGINE asked it to update and CVENGINE_SENTINEL_UPDATE_EXIT says a supervisor replaces the image (client/selfupdate.py)
 WEDGED = 3  # exit code of a built-in scanner whose heartbeats have not reached the server for ``control.HEARTBEAT_MAX_AGE``: compose restarts it
 WATCHDOG_EVERY = 30  # seconds between the built-in scanner's checks on its own heartbeats
+TAKEN_BACK_KILL_SECONDS = 10.0  # a task taken back by the server is asked to stop (SIGTERM to its process group); this long after, it is killed (SIGKILL)
+TAKEN_BACK_EVICT_SECONDS = 30.0  # and this long after, a task whose thread still has not ended no longer holds its slot or its memory budget
+REAP_EVERY = 5.0  # seconds between the reaper's checks on stopping tasks
+STARVE_AFTER_SECONDS = 60.0  # a heavy kind (Chromium, nuclei) that has not fitted the memory budget for this long gets the next free room (reserved)
+RESERVE_SECONDS = 120.0  # how long the room is kept free for it before the wait starts over
+WAIT_LOG_SECONDS = 300.0  # a kind that waits for memory is named in the log this often
+WAIT_LOG_AFTER_SECONDS = 30.0  # ... once it has waited this long
+THREAD_FAILURE_PAUSE = 5.0  # seconds to wait after a task thread could not be started (the container is out of threads)
 HELD_STATUSES = ('pending', 'suspended')  # cvENGINE holds the Sentinel (approval, or an administrator's decision): its poll answers 403, its token still works
 _TASK_ID = re.compile(r'[A-Za-z0-9_-]{1,64}')  # an id goes into URL paths, thread names and log lines
 
@@ -235,6 +243,9 @@ def bootstrap(blob_raw, name, max_concurrent, client_factory=httpclient.Client):
     return token, server_url
 
 
+_waiting_report = []  # set by the daemon at every poll plan: [{kind, need_mb, free_mb, budget_mb, seconds, held_by: [{task, kind, mb, seconds}]}], or a stopping task
+
+
 def info():
     """What this Sentinel reports about itself: the result contract version it speaks, its client version (when known) and its host-side
     updater's last state."""
@@ -251,6 +262,7 @@ def info():
     if 'openvas' in config.registered_capabilities() and 'openvas' not in config.disabled_kinds():
         ready, why = tools.gvm_status()  # cached for a minute; lets cvENGINE say why a Sentinel is not scanning (still syncing feeds, no scan config)
         out['openvas'] = {'ready': bool(ready), 'reason': '' if ready else str(why or '')[:200]}
+    out['waiting'] = list(_waiting_report)[:6]  # heavy kinds that wait for memory, tasks taken back and still stopping: shown on the Sentinels page (empty says nothing waits now)
     if 'ssh_probe' in declared_kinds():
         try:
             out['badkeys'] = badkeys.status()  # {present, age_hours, refresh, last_ok}: a missing or stale host key blocklist is visible on the Sentinels page
@@ -294,6 +306,10 @@ class Daemon:
         self._polling = False  # a long poll is outstanding: it may return a task, so the updater must not see this Sentinel idle
         self._backoff = MIN_BACKOFF
         self.admission = admission.Admission()
+        self._blocked_since = {}  # heavy kind -> when it first did not fit the memory budget (monotonic), cleared when it fits
+        self._reserve = None  # (kind, since): the room that frees up next is kept for this kind
+        self._reserve_poll = None  # the kind the plan just made the only one to ask for
+        self._wait_logged = {}  # kind -> when its waiting line was last logged
         self.pacer = admission.ClaimPacer(config.claim_limit(self.max_concurrent), config.CLAIM_WINDOW)
         self._held_logged = None  # (status, note) of the hold last logged, so a held Sentinel says why once, not at every poll
         self.started_at = time.time()
@@ -311,6 +327,10 @@ class Daemon:
         hb.start()
         if self.watchdog:
             threading.Thread(target=self._watchdog_loop, name='sentinel-watchdog', daemon=True).start()
+        try:
+            threading.Thread(target=self._reaper_loop, name='sentinel-reaper', daemon=True).start()
+        except RuntimeError:  # out of threads: the poll loop and the heartbeat reap as well
+            logger.exception('the reaper thread could not be started')
         self._ensure_badkeys()
         if shot.available():  # the browser's sandbox is checked once at every start, as the server's celery container once did (never blocks a start)
             threading.Thread(target=self._check_screenshot_sandbox, name='sentinel-shot-sandbox', daemon=True).start()
@@ -433,6 +453,7 @@ class Daemon:
             self._note_contract(out)
             self._consider_update_exit(update_reply)
             self._reconcile(out.get('leases'), asked_at)
+            self._reap_dropped()
             self.apply_settings(out.get('settings'))
             self._refresh_registration()
             self._sweep_gvm_orphans()
@@ -619,15 +640,16 @@ class Daemon:
         stale = []
         with self._lock:
             for task_id, state in self._in_flight.items():
-                if task_id in held or state.get('finishing') or state['done'].is_set():
-                    continue
+                if task_id in held or state.get('finishing') or state['done'].is_set() or state.get('dropped'):
+                    continue  # (a task already told to stop is the reaper's: it is escalated there, not logged again at every heartbeat)
                 if state.get('started', asked_at) > asked_at - RECONCILE_GRACE_SECONDS:
                     continue
                 state['dropped'] = True
+                state['dropped_at'] = time.monotonic()
                 stale.append((task_id, state.get('proc')))
         for task_id, proc in stale:
             logger.warning('task %s is no longer assigned to this Sentinel (taken back by the server); stopping it', task_id)
-            self._kill(proc, background=True)
+            self._stop(proc)
         self._release_orphaned_leases(held)
 
     def _release_orphaned_leases(self, held):
@@ -676,15 +698,76 @@ class Daemon:
             kinds.remove('secrets_scan')
         if 'wpscan_thorough' in kinds and ('wpscan_thorough' in running or (self.max_concurrent > 1 and len(running) + 1 >= self.max_concurrent)):
             kinds.remove('wpscan_thorough')  # one thorough pass at a time (it runs for hours), and never the last free slot of a Sentinel with several
-        if sum(1 for kind in running if kind != 'openvas') >= self.max_concurrent:
+        candidates = list(kinds)
+        slots_full = sum(1 for kind in running if kind != 'openvas') >= self.max_concurrent
+        if slots_full:
             kinds = [k for k in kinds if k == 'openvas']
-        return self.admission.admissible(kinds, running)  # never a kind that would not fit in memory beside what runs (client.admission)
+        fit = self.admission.admissible(kinds, running)  # never a kind that would not fit in memory beside what runs (client.admission)
+        return self._fair(candidates, fit, running, slots_full)
+
+    def _fair(self, kinds, fit, running, slots_full=False):
+        """Memory admission lets a cheap kind in whenever it fits, so a steady stream of cheap tasks can keep the room a heavy kind (Chromium, 400 MB) needs
+        from ever being free: that kind would wait for ever while the others pass. Here a heavy kind that has not fitted for ``STARVE_AFTER_SECONDS`` is
+        reserved the next free room: nothing new is started (what runs finishes), and when it fits it is asked for alone and at once. Whether or not the
+        server had such a task, the wait then starts over. ``RESERVE_SECONDS`` bounds the hold. Each waiting kind is named in the log and in the heartbeat's
+        ``info.waiting`` (what it needs, what is free, which tasks hold the memory)."""
+        now = time.monotonic()
+        with self._lock:
+            held = sorted(((admission.weight(st.get('kind')), tid, st.get('kind'), now - st.get('started', now)) for tid, st in self._in_flight.items()
+                           if st.get('kind') != 'openvas'), key=lambda row: (-row[0], str(row[1])))
+        if slots_full:  # no slot is free, so memory is not what keeps a kind out right now: nobody's wait is judged (and none is forgotten), the clocks run on
+            blocked = [k for k in kinds if k in self._blocked_since]
+        else:
+            blocked = [k for k in kinds if k not in fit and admission.weight(k) > admission.DEFAULT_WEIGHT_MB]
+            for kind in list(self._blocked_since):
+                if kind not in blocked:
+                    del self._blocked_since[kind]
+            for kind in blocked:
+                self._blocked_since.setdefault(kind, now)
+        used, budget = self.admission.used(running), self.admission.budget
+        report = []
+        for kind in blocked:
+            waited = now - self._blocked_since[kind]
+            holders = [{'task': tid, 'kind': k, 'mb': mb, 'seconds': int(age)} for mb, tid, k, age in held[:3] if mb > 0]
+            report.append({'kind': kind, 'need_mb': admission.weight(kind), 'free_mb': max(0, budget - used), 'budget_mb': budget, 'seconds': int(waited), 'held_by': holders})
+            if waited >= WAIT_LOG_AFTER_SECONDS and now - self._wait_logged.get(kind, -WAIT_LOG_SECONDS) >= WAIT_LOG_SECONDS:
+                self._wait_logged[kind] = now
+                logger.warning('%s waiting: needs %s MB, %s MB free of %s; held by %s (for %.0fs)', kind, admission.weight(kind), max(0, budget - used), budget,
+                               ', '.join(f"task {h['task']} {h['kind']} {h['mb']} MB for {h['seconds']}s" for h in holders) or 'nothing it can name', waited)
+        with self._lock:
+            stopping = [{'kind': st.get('kind'), 'task': tid, 'seconds': int(now - st['dropped_at']), 'stopping': True}
+                        for tid, st in self._in_flight.items() if st.get('dropped') and not st['done'].is_set() and st.get('dropped_at') is not None]
+        _waiting_report[:] = report + stopping[:3]
+        reserve = self._reserve
+        if reserve and (reserve[0] not in kinds or now - reserve[1] > RESERVE_SECONDS):
+            logger.info('%s: the reserved room was not used within %.0fs; the wait starts over', reserve[0], RESERVE_SECONDS)
+            if reserve[0] in self._blocked_since:
+                self._blocked_since[reserve[0]] = now
+            self._reserve = reserve = None
+        if reserve:
+            if reserve[0] in fit:
+                self._reserve_poll = reserve[0]
+                return [reserve[0]]
+            return []  # keep the room: nothing new starts until it fits
+        # only a kind that WOULD fit once the cheap tasks have finished is worth keeping room for: a second nuclei beside two running ones never fits (they
+        # run for hours), and holding everything else for it would only stop the Sentinel
+        long_held = sum(w for w, _tid, _k, _age in held if w > admission.DEFAULT_WEIGHT_MB)
+        starving = sorted((k for k in blocked if now - self._blocked_since[k] >= STARVE_AFTER_SECONDS and long_held + admission.weight(k) <= budget),
+                          key=lambda k: self._blocked_since[k])
+        if starving:
+            self._reserve = (starving[0], now)
+            logger.warning('%s has waited %.0fs for memory beside cheaper work; starting nothing new until it fits (at most %.0fs)',
+                           starving[0], now - self._blocked_since[starving[0]], RESERVE_SECONDS)
+            return []
+        return fit
 
     def _poll_once(self):
         if control.is_draining():  # the host-side updater asked this Sentinel to finish what it has and take nothing new
             self.stop_event.wait(2)
             return
+        self._reap_dropped()
         kinds = self._poll_plan()
+        reserved, self._reserve_poll = self._reserve_poll, None
         if not kinds:  # every slot taken
             self.stop_event.wait(0.5)
             return
@@ -696,7 +779,7 @@ class Daemon:
         self._write_control()
         self.pacer.note()
         try:
-            out = self.client.call('POST', 'sentinel/tasks/next', {'wait': config.DEFAULT_POLL_WAIT, 'kinds': kinds})
+            out = self.client.call('POST', 'sentinel/tasks/next', {'wait': 0 if reserved else config.DEFAULT_POLL_WAIT, 'kinds': kinds})  # a reserved ask is a quick one: nothing else waits behind it
         except (httpclient.ApiError, requests.RequestException) as exc:
             self._polling = False
             self._write_control()
@@ -711,6 +794,9 @@ class Daemon:
             return
         finally:
             self._polling = False  # a task it returned is counted as running from here on (``_start_task``)
+            if reserved:  # asked for: the room did its job whether or not the server had such a task, the wait starts over
+                self._reserve = None
+                self._blocked_since.pop(reserved, None)
         self._backoff = MIN_BACKOFF
         if self._held_logged is not None:
             logger.info('cvENGINE no longer holds this Sentinel; taking work again')
@@ -802,7 +888,17 @@ class Daemon:
         self._write_control()
         logger.info('task %s accepted: %s (%s)', task_id, _clip(kind), _describe_target(task.get('target')))
         thread = threading.Thread(target=self._run_task, args=(task, state), name=f'sentinel-task-{task_id}', daemon=True)
-        thread.start()
+        state['thread'] = thread
+        try:
+            thread.start()
+        except RuntimeError as exc:  # "can't start new thread": nothing would ever run, report or finish the task, and it would hold its slot and memory for ever
+            with self._lock:
+                self._in_flight.pop(task_id, None)
+            state['done'].set()
+            logger.error('task %s could not be started: no thread for it (%s); giving it back to the server', task_id, exc)
+            self._release(task_id, 'this Sentinel could not start a worker for the task (out of threads), retry later')
+            self._write_control()
+            self.stop_event.wait(THREAD_FAILURE_PAUSE)
 
     ACCEPT_TRIES = 4
 
@@ -841,6 +937,64 @@ class Daemon:
                 self._kill(proc)
         return register
 
+    def _stop(self, proc):
+        """Ask a taken-back task to stop: SIGTERM to its whole process group (``terminate()``), when the handle has one, else the hard kill at once.
+        ``_reap_dropped`` follows with SIGKILL ``TAKEN_BACK_KILL_SECONDS`` later, and gives the slot back ``TAKEN_BACK_EVICT_SECONDS`` later, whatever the task does."""
+        if proc is None:
+            return
+        term = getattr(proc, 'terminate', None)
+        if term is None:
+            return self._kill(proc, background=True)
+        try:
+            term()
+        except Exception as exc:  # noqa: BLE001 - a process that is already gone must not stop the caller
+            logger.warning('could not ask a task process to stop: %s', exc)
+
+    def _reaper_loop(self):
+        while not self.stop_event.wait(REAP_EVERY):
+            self._reap_dropped()
+
+    def _reap_dropped(self, now=None):
+        """A task the server took back (or whose worker thread died) must not hold a slot and a share of the memory budget for ever, however it behaves:
+        a task still running ``TAKEN_BACK_KILL_SECONDS`` after it was told to stop has its process group killed, and one whose thread still has not
+        ended ``TAKEN_BACK_EVICT_SECONDS`` after is taken out of the in-flight list (its slot and weight are free again, the server already has the task
+        back). Idempotent and cheap: called by the reaper thread, the heartbeat and the poll loop."""
+        now = time.monotonic() if now is None else now
+        kill, evict = [], []
+        with self._lock:
+            for task_id, state in self._in_flight.items():
+                if state['done'].is_set() or state.get('finishing'):
+                    continue
+                thread = state.get('thread')
+                if thread is not None and thread.ident is not None and not thread.is_alive() and not state.get('dropped'):  # a worker that died without ending the task: nothing will ever finish it
+                    state['dropped'] = True
+                    state['dropped_at'] = now - TAKEN_BACK_EVICT_SECONDS
+                    state['dead_worker'] = True
+                if not state.get('dropped') or self._halted.is_set():
+                    continue
+                age = now - state.get('dropped_at', now)
+                if age >= TAKEN_BACK_EVICT_SECONDS:
+                    evict.append((task_id, state, age))
+                elif age >= TAKEN_BACK_KILL_SECONDS and not state.get('killed'):
+                    state['killed'] = True
+                    kill.append((task_id, state.get('proc'), age))
+        for task_id, proc, age in kill:
+            logger.warning('task %s did not stop %.0fs after it was taken back; killing its process group', task_id, age)
+            self._kill(proc, background=True)
+        for task_id, state, age in evict:
+            with self._lock:
+                if self._in_flight.get(task_id) is not state:
+                    continue
+                self._in_flight.pop(task_id, None)
+                proc = state.get('proc')
+            logger.error('task %s still has not ended %.0fs after it was %s; killing it and no longer counting it: its slot and memory budget are free',
+                         task_id, age, 'found without a worker' if state.get('dead_worker') else 'taken back')
+            self._kill(proc, background=True)
+            state['done'].set()
+            if state.get('dead_worker'):
+                self._release(task_id, 'the worker running the task ended without a result')
+            self._write_control()
+
     @staticmethod
     def _kill(proc, background=False):
         """Kill a subprocess, or anything with the same ``poll()``/``kill()`` (an OpenVAS run's handle), if it is still running. An OpenVAS handle's
@@ -849,8 +1003,11 @@ class Daemon:
         if proc is None:
             return
         if background:
-            threading.Thread(target=Daemon._kill, args=(proc,), name='task-kill', daemon=True).start()
-            return
+            try:
+                threading.Thread(target=Daemon._kill, args=(proc,), name='task-kill', daemon=True).start()
+                return
+            except RuntimeError:  # out of threads (the very state that leaves a task stuck): kill it here, a process group is quick
+                logger.warning('no thread to kill a task process in; killing it here')
         try:
             if proc.poll() is None:
                 proc.kill()
