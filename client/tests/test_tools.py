@@ -242,7 +242,7 @@ class RunnerArgvTests(unittest.TestCase):
 
     def test_nuclei_keeps_names_and_takes_urls_and_host_port(self):
         with mock.patch('client.tools._run', return_value='') as fake_run:
-            def capture(argv, timeout, register=None):
+            def capture(argv, timeout, register=None, env=None):
                 with open(argv[argv.index('-l') + 1], encoding='utf-8') as handle:
                     capture.text = handle.read()
                 return ''
@@ -776,9 +776,9 @@ class ToolExitTests(unittest.TestCase):
             tools._run(['sh', '-c', 'echo partial; exit 1'], 10)
 
     def test_a_killed_tool_is_an_error(self):
-        with self.assertRaises(tools.ToolExitError) as ctx:
+        with mock.patch('client.tools._oom_events', return_value=None), self.assertRaises(tools.ToolExitError) as ctx:  # a host that cannot count kills
             tools._run(['sh', '-c', 'kill -9 $$'], 10)
-        self.assertIn('-9', str(ctx.exception))
+        self.assertIn('out of memory, retry later', str(ctx.exception))  # a bare "status -9" told the operator nothing (client.tools.ToolOOMError)
 
     def test_a_clean_exit_returns_its_output(self):
         self.assertEqual(tools._run(['sh', '-c', 'echo ok'], 10).strip(), 'ok')

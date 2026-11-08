@@ -36,7 +36,7 @@ from cvengine_scanner.parsers import (MAX_FINDINGS, MAX_FINDINGS_BYTES, MAX_LIST
                                       parse_naabu_output, parse_nmap_xml, parse_nuclei_jsonl, parse_port_reasons, parse_testssl_report,
                                       parse_waf_output)
 
-from . import bbot, config, dbprobe, egress, openvas, rdp, scope
+from . import admission, bbot, config, dbprobe, egress, openvas, rdp, scope
 
 logger = logging.getLogger('sentinel.tools')
 
@@ -76,6 +76,25 @@ def _proxy_args(tool, hosts):
 class ToolExitError(RuntimeError):
     """A tool exited with a non-zero status or was killed. Its output, if any, is incomplete, so the run is reported as an error, never as an
     empty result ("no open ports", "no findings")."""
+
+
+class ToolOOMError(ToolExitError):
+    """A tool was killed by the system (SIGKILL nobody here sent): almost always the kernel's out-of-memory killer in this container's memory cgroup. It
+    says so in plain words, so the operator reads a capacity problem and the server leaves the work due to be run again, instead of a bare ``-9``."""
+
+    OOM_TEXT = 'out of memory, retry later'
+
+
+def _oom_events():
+    """The number of out-of-memory kills this container's memory cgroup has had (``memory.events``), or None when it cannot say."""
+    try:
+        with open('/sys/fs/cgroup/memory.events', encoding='ascii') as handle:
+            for line in handle:
+                if line.startswith('oom_kill '):
+                    return int(line.split()[1])
+    except (OSError, ValueError):
+        pass
+    return None
 
 
 # --- target validation ------------------------------------------------------------------------------------------------
@@ -214,6 +233,7 @@ class _ProcessGroup:
         return self.proc.poll()
 
     def kill(self):
+        self.proc.stopped_by_sentinel = True  # a -9 after this was the daemon's own stop, not the kernel's out-of-memory killer
         _kill_group(self.proc)
 
 
@@ -252,6 +272,7 @@ def _run(argv, timeout, register=None, max_bytes=None, env=None, ok_codes=(0,)):
     environment of the run (Kingfisher's detection pass points every proxy at a closed port); ``ok_codes`` are the exit codes that are not a
     failure (Kingfisher says "findings" with 200 and 205)."""
     max_bytes = max_bytes or MAX_TOOL_OUTPUT
+    oom_before = _oom_events()
     proc = _start(argv, register, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **({'env': env} if env is not None else {}))
     out, err, too_big = bytearray(), bytearray(), threading.Event()
 
@@ -276,6 +297,13 @@ def _run(argv, timeout, register=None, max_bytes=None, env=None, ok_codes=(0,)):
         # A crashed or killed tool leaves nothing, or something incomplete: returning that would read as "no open ports" or "no findings".
         tail = ''.join(ch for ch in err.decode('utf-8', errors='replace')[:300] if ch.isprintable() or ch == ' ').strip()
         logger.warning('%s exited %s: %s', os.path.basename(argv[0]), proc.returncode, tail)
+        if proc.returncode in (-9, 137) and not getattr(proc, 'stopped_by_sentinel', False):  # not this daemon's own stop (a timeout and an oversized output are handled above)
+            oom_after = _oom_events()
+            counted = None if oom_before is None or oom_after is None else oom_after - oom_before
+            if counted is None or counted > 0:  # the container's memory cgroup counted a kill during the run, or cannot say (cgroup v1): it was memory
+                logger.error('%s was killed by the system%s: out of memory in this container', os.path.basename(argv[0]),
+                             '' if counted is None else f' (the cgroup counted {counted} out-of-memory kills during the run)')
+                raise ToolOOMError(f'{ToolOOMError.OOM_TEXT} ({os.path.basename(argv[0])} was killed by the system)')
         raise ToolExitError(f'{os.path.basename(argv[0])} exited with status {proc.returncode}' + (f': {tail[:200]}' if tail else ''))
     return out.decode('utf-8', errors='replace')
 
@@ -386,6 +414,25 @@ def _clean_words(values, pattern):
     return sorted({v for v in values if isinstance(v, str) and pattern.fullmatch(v)})
 
 
+def nuclei_flags_for_budget(flags, budget=None):
+    """``flags`` with -c and -rl lowered to what this container's memory budget (``client.admission``) can carry; never raised above the flags' own values."""
+    conc, rate = admission.scaled_nuclei(admission.budget_mb() if budget is None else budget)
+    out = list(flags)
+    for flag, cap in (('-c', conc), ('-rl', rate)):
+        if flag in out and out.index(flag) + 1 < len(out):
+            i = out.index(flag) + 1
+            out[i] = str(min(int(out[i]), cap))
+    return out
+
+
+def nuclei_env():
+    """The environment of a nuclei run: this one, plus a soft Go memory limit so one run stays near ``admission.WEIGHTS_MB['nuclei_deep']`` (measured 500 MB
+    with it, 720-735 MB without)."""
+    env = dict(os.environ)
+    env.setdefault('GOMEMLIMIT', f'{admission.NUCLEI_GOMEMLIMIT_MB}MiB')
+    return env
+
+
 def run_nuclei(targets, tags=None, severities=None, timeout=3600, register=None, templates=None, secret_file=None):
     """Host names are passed to nuclei as names, because each finding reports the host it was given. They were judged by scope (and by
     every address they resolved to) just before; nuclei resolves them again, so a name whose DNS answer changes in between is the one gap.
@@ -393,7 +440,7 @@ def run_nuclei(targets, tags=None, severities=None, timeout=3600, register=None,
     nothing else; without it nuclei uses the templates baked into this image. ``secret_file`` is a signed-in run's nuclei secrets file
     (``client.signed_in``): passed with ``-sf`` and ``-dr`` (no redirects, so the sign-in is never carried to wherever one leads), as the server does."""
     targets = validate_targets(targets, endpoint=True)
-    flags = list(NUCLEI_FLAGS) + _proxy_args('nuclei', targets)
+    flags = nuclei_flags_for_budget(NUCLEI_FLAGS) + _proxy_args('nuclei', targets)
     if secret_file is not None:
         if not isinstance(secret_file, str) or not os.path.isabs(secret_file) or not os.path.isfile(secret_file):
             raise TargetError('the signed-in run has no usable secrets file')
@@ -413,7 +460,7 @@ def run_nuclei(targets, tags=None, severities=None, timeout=3600, register=None,
     path = _targets_file(targets)
     try:
         argv = [NUCLEI_BIN, '-l', path, *flags]
-        return {'findings': parse_nuclei_jsonl(_run(argv, timeout, register))}
+        return {'findings': parse_nuclei_jsonl(_run(argv, timeout, register, env=nuclei_env()))}
     finally:
         os.unlink(path)
 

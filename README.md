@@ -345,6 +345,21 @@ stack, `discover` on a non-internal Sentinel) is refused with an error result, e
 non-OpenVAS tasks run at once. OpenVAS has its own slot: it does not count against `max_concurrent`, and at most one
 OpenVAS task runs at a time. At most one `secrets_scan` task runs at a time, inside `max_concurrent`.
 
+**Memory admission.** `max_concurrent` counts slots, not memory, and one nuclei run alone holds 500-730 MB (it loads the whole template set whatever its tags),
+so a 2 GB container once ran its deep nuclei, several light ones and the screenshot browser together and the kernel killed them. The daemon now weighs each
+kind (`client/admission.py`: nuclei 520 MB, `web_screenshot` 400, `bbot_discovery` 250, Kingfisher 150, nmap 100, other probes 40, from measured peaks) against a
+budget taken from the container's own limit (cgroup `memory.max`, less 15% and 200 MB for the daemon; `CVENGINE_SENTINEL_MEMORY_MB` overrides it) and asks the
+server only for kinds that fit beside what is running. A task alone is always taken. nuclei also starts with a soft Go memory limit (`GOMEMLIMIT` 400 MiB; peak
+500 MB instead of 720-735 MB) and `-c`/`-rl` scaled down for a small budget. A tool the kernel killed reports `out of memory, retry later` (not a bare `-9`) and the
+work stays due.
+
+**Claim rate.** A poll and an accept each count against the server's claim limit (`max(60, 30 x max_concurrent)` calls a minute). The daemon keeps its own
+calls to 75% of that, honours `Retry-After` on a 429 (for the poll, the accept, which is retried so a claimed task is not left to expire, and the result), and
+releases a task it could not accept.
+
+**Screenshots and AppArmor.** If the browser's sandbox cannot start (Docker's AppArmor profile refusing user namespaces says so in plain words), `web_screenshot` is
+no longer declared, so the work stays due or goes to another Sentinel; the proof is tried again every ten minutes.
+
 ### Limits on output
 
 A tool that prints more than 64 MB is stopped and the task reported as an error. Nuclei findings have their fields

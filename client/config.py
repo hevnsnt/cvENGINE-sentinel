@@ -291,6 +291,14 @@ def poll_kinds(kinds=None):
     return CAPABILITIES + INTERNAL_KINDS if is_internal() else list(CAPABILITIES)
 
 
+CLAIM_BASE, CLAIM_PER_SLOT, CLAIM_WINDOW = 60, 30, 60  # mirrors agentapi.sentinel_broker.claim_limit: calls per window to the claim endpoint (poll and accept)
+
+
+def claim_limit(max_concurrent):
+    """How many claim-endpoint calls (a poll, an accept) the server allows one Sentinel of this concurrency per ``CLAIM_WINDOW`` seconds."""
+    return max(CLAIM_BASE, CLAIM_PER_SLOT * max(1, int(max_concurrent)))
+
+
 MAX_AUTO_CONCURRENT = 10  # mirrors agentapi.agent_broker.MAX_CONCURRENT_CAP: no point auto-detecting past what the server will ever grant
 
 

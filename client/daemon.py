@@ -25,6 +25,7 @@ import time
 
 import requests
 
+from . import admission
 from . import badkeys
 from . import bbot
 from . import blob as blob_mod
@@ -166,6 +167,8 @@ def runnable_kinds():
         kinds.remove('openvas')
     if 'bbot_discovery' in kinds and 'bbot' not in detected_tools():  # an image built without bbot (or a source checkout) never takes discovery work
         kinds.remove('bbot_discovery')
+    if 'web_screenshot' in kinds and shot_blocked_reason():  # the sandbox proof failed: tasks stay due (or go to another Sentinel) instead of failing one by one
+        kinds.remove('web_screenshot')
     if 'web_screenshot' in kinds and not shot.available():  # an image built without the browser (or a source checkout) never takes screenshot work
         kinds.remove('web_screenshot')
     if 'route_probe_signed' in kinds and not config.builtin():  # the stored sign-in is read by cvENGINE's own scanner only; no other Sentinel declares or takes the kind
@@ -175,6 +178,15 @@ def runnable_kinds():
     if 'ssh_probe' in kinds and not tools.sshamble_ready():  # the binary is in the image; a source checkout may have none
         kinds.remove('ssh_probe')
     return kinds
+
+
+_shot_state = {'blocked': None}
+SHOT_RECHECK_SECONDS = 600  # a failed sandbox proof is tried again this often, so a host fixed in the meantime takes screenshots again
+
+
+def shot_blocked_reason():
+    """Why this Sentinel takes no screenshot work (its browser sandbox could not start), or None."""
+    return _shot_state['blocked']
 
 
 def declared_kinds():
@@ -279,6 +291,8 @@ class Daemon:
         self._in_flight = {}  # task_id -> {'proc', 'done', 'started', 'dropped', 'finishing', 'kind', 'runnable'}
         self._polling = False  # a long poll is outstanding: it may return a task, so the updater must not see this Sentinel idle
         self._backoff = MIN_BACKOFF
+        self.admission = admission.Admission()
+        self.pacer = admission.ClaimPacer(config.claim_limit(self.max_concurrent), config.CLAIM_WINDOW)
         self._held_logged = None  # (status, note) of the hold last logged, so a held Sentinel says why once, not at every poll
         self.started_at = time.time()
         self.heartbeat_ok_at = None  # when a heartbeat last reached the server and was answered (wall clock: control.json is read by another process)
@@ -325,19 +339,30 @@ class Daemon:
             logger.exception('badkeys refresh could not be started')
 
     def _check_screenshot_sandbox(self):
-        """Start the screenshot browser once and log whether Chromium's sandbox engaged. A task proves it again before it opens any page; this only
-        says early, in the log, what that proof will find."""
-        try:
-            engaged, reason, version = shot.sandbox_probe()
-        except Exception:  # noqa: BLE001 - a log line must never stop a Sentinel
-            logger.exception('the screenshot sandbox check could not run')
-            return
-        if engaged is True:
-            logger.info("screenshots: Chromium %s runs inside its sandbox", version or '(version unknown)')
-        elif engaged is False:
-            logger.error('screenshots stay off on this Sentinel until its sandbox can start: %s', reason)
-        else:
-            logger.warning('the screenshot sandbox check did not finish: %s', reason)
+        """Start the screenshot browser once and say whether Chromium's sandbox engaged. A task proves it again before it opens any page; this says early,
+        in the log, what that proof will find, and while it fails ``web_screenshot`` is neither declared nor polled for (``runnable_kinds``): the work stays
+        due or goes to another Sentinel. A failing proof is repeated every ``SHOT_RECHECK_SECONDS``, so fixing the host brings screenshots back."""
+        while not self.stop_event.is_set():
+            try:
+                engaged, reason, version = shot.sandbox_probe()
+            except Exception:  # noqa: BLE001 - a log line must never stop a Sentinel
+                logger.exception('the screenshot sandbox check could not run')
+                return
+            if engaged is True:
+                if _shot_state['blocked']:
+                    logger.info('screenshots: the sandbox starts now; taking screenshot work again')
+                _shot_state['blocked'] = None
+                logger.info("screenshots: Chromium %s runs inside its sandbox", version or '(version unknown)')
+                return
+            if engaged is False:
+                _shot_state['blocked'] = reason or "Chromium's sandbox could not start"
+                logger.error('screenshots stay off on this Sentinel until its sandbox can start: %s', reason)
+            else:
+                logger.warning('the screenshot sandbox check did not finish: %s', reason)
+                return
+            self._register_pending = True  # the next heartbeat tells the server web_screenshot is no longer declared
+            if self.stop_event.wait(SHOT_RECHECK_SECONDS):
+                return
 
     def request_stop(self):
         self.stop_event.set()
@@ -483,6 +508,7 @@ class Daemon:
         config.set_overrides(reply['values'])
         after = config.overrides()
         self.max_concurrent = _cap_concurrency(config.max_concurrent())
+        self.pacer.limit = config.claim_limit(self.max_concurrent)
         self._settings_rev = rev
         if after.get('network') == 'internal' and not config._local_internal() and not self._warned_internal:
             self._warned_internal = True
@@ -593,7 +619,7 @@ class Daemon:
             kinds.remove('wpscan_thorough')  # one thorough pass at a time (it runs for hours), and never the last free slot of a Sentinel with several
         if sum(1 for kind in running if kind != 'openvas') >= self.max_concurrent:
             kinds = [k for k in kinds if k == 'openvas']
-        return kinds
+        return self.admission.admissible(kinds, running)  # never a kind that would not fit in memory beside what runs (client.admission)
 
     def _poll_once(self):
         if control.is_draining():  # the host-side updater asked this Sentinel to finish what it has and take nothing new
@@ -603,14 +629,22 @@ class Daemon:
         if not kinds:  # every slot taken
             self.stop_event.wait(0.5)
             return
+        pause = self.pacer.wait_needed()
+        if pause > 0:  # this Sentinel's own calls to the claim endpoint are near what the server allows per minute: wait instead of being refused
+            self.stop_event.wait(min(pause, 5.0))
+            return
         self._polling = True
         self._write_control()
+        self.pacer.note()
         try:
             out = self.client.call('POST', 'sentinel/tasks/next', {'wait': config.DEFAULT_POLL_WAIT, 'kinds': kinds})
         except (httpclient.ApiError, requests.RequestException) as exc:
             self._polling = False
             self._write_control()
             if getattr(exc, 'status', None) == 403 and self._wait_while_held():
+                return
+            if getattr(exc, 'status', None) == 429:
+                self._wait_rate_limited(exc)
                 return
             if not self._auth_failed(exc):
                 logger.warning('poll failed: %s', exc)
@@ -673,6 +707,19 @@ class Daemon:
             return
         self.stop_event.wait(min(MAX_RETRY_AFTER, min(seconds, MAX_RETRY_AFTER) * random.uniform(1.0, 1.2)))
 
+    def _wait_rate_limited(self, exc):
+        """The server refused a claim-endpoint call with 429: wait as long as its Retry-After says (jittered a little, at most ``MAX_RETRY_AFTER`` wide), or
+        by the usual backoff when it said nothing. A refusal is never a reason to give up on the task, only on asking again at once."""
+        seconds = getattr(exc, 'retry_after', None)
+        if seconds is None:
+            return self._sleep_backoff_logged(exc)
+        logger.warning('the server is rate limiting this Sentinel (%s); waiting %.0f s as it asked', exc, seconds)
+        self.stop_event.wait(min(MAX_BACKOFF, seconds) * random.uniform(1.0, 1.2) + 0.1)
+
+    def _sleep_backoff_logged(self, exc):
+        logger.warning('the server is rate limiting this Sentinel (%s); backing off', exc)
+        self._sleep_backoff()
+
     def _sleep_backoff(self):
         self.stop_event.wait(min(MAX_BACKOFF, self._backoff) * random.uniform(0.5, 1.0))
         self._backoff = min(MAX_BACKOFF, self._backoff * 2)
@@ -682,11 +729,12 @@ class Daemon:
         if self.stop_event.is_set() or control.is_draining():  # set while the poll was outstanding: the updater may already have seen this Sentinel idle
             self._release(task_id, 'Sentinel shutting down' if self.stop_event.is_set() else 'Sentinel is draining')
             return
-        try:
-            self.client.call('POST', f'sentinel/tasks/{task_id}/accept')
-        except (httpclient.ApiError, requests.RequestException) as exc:
-            if not self._auth_failed(exc):
-                logger.warning('could not accept task %s: %s', task_id, exc)
+        with self._lock:
+            running = [st.get('kind') for st in self._in_flight.values()]
+        if not self.admission.can_start(kind, running):  # the plan said it fit; a task that does not any more goes back, never into an out-of-memory kill
+            self._release(task_id, 'out of memory budget on this Sentinel, retry later')
+            return
+        if not self._accept(task_id):
             return
         state = {'proc': None, 'done': threading.Event(), 'started': time.monotonic(), 'dropped': False, 'finishing': False,
                  'kind': kind, 'runnable': kind in kinds}
@@ -696,6 +744,32 @@ class Daemon:
         logger.info('task %s accepted: %s (%s)', task_id, _clip(kind), _describe_target(task.get('target')))
         thread = threading.Thread(target=self._run_task, args=(task, state), name=f'sentinel-task-{task_id}', daemon=True)
         thread.start()
+
+    ACCEPT_TRIES = 4
+
+    def _accept(self, task_id):
+        """Accept a claimed task. A 429 or a server error is waited out (Retry-After) and tried again a few times, because a claimed task nobody accepts runs out
+        its lease and expires; only a refusal that is final (409: no longer ours) or a lease that cannot be kept ends it, by releasing the task so another Sentinel
+        (or this one, later) takes it. Returns whether the task is accepted."""
+        for attempt in range(self.ACCEPT_TRIES):
+            pause = self.pacer.wait_needed()
+            if pause > 0 and not self.stop_event.is_set():
+                self.stop_event.wait(min(pause, 10.0))
+            self.pacer.note()
+            try:
+                self.client.call('POST', f'sentinel/tasks/{task_id}/accept')
+                return True
+            except (httpclient.ApiError, requests.RequestException) as exc:
+                if self._auth_failed(exc):
+                    return False
+                logger.warning('could not accept task %s: %s', task_id, exc)
+                if not _retryable(exc) or attempt + 1 == self.ACCEPT_TRIES or self.stop_event.is_set():
+                    break
+                wait = getattr(exc, 'retry_after', None)
+                self.stop_event.wait(min(15.0, wait if wait is not None else 1.0 + attempt) * random.uniform(1.0, 1.2))
+        if not self.stop_event.is_set():
+            self._release(task_id, 'could not accept the task in time (the server was busy); it is due again')
+        return False
 
     def _register_proc(self, state):
         """The ``register`` callback a runner calls with each process (or OpenVAS handle) it starts. A task already dropped, or a daemon past
@@ -882,6 +956,9 @@ class Daemon:
                     return
                 error = exc
             delay = min(REPORT_MAX_DELAY, REPORT_BACKOFF * 2 ** attempt) * random.uniform(0.5, 1.0)
+            asked = getattr(error, 'retry_after', None)
+            if asked is not None:  # the server said when to come back: never earlier
+                delay = max(delay, min(asked, REPORT_MAX_DELAY))
             if attempt == REPORT_ATTEMPTS - 1 or time.monotonic() + delay > give_up_at:
                 break
             logger.warning('could not report the result for task %s (%s); retrying in %.1fs', task_id, error, delay)

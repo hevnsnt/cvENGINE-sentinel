@@ -22,15 +22,30 @@ logger = logging.getLogger('sentinel.http')
 DEFAULT_TIMEOUT = 30  # seconds per call; the long poll's own wait (config.DEFAULT_POLL_WAIT) fits well inside it
 
 
+MAX_RETRY_AFTER = 120.0
+
+
+def parse_retry_after(value):
+    """The seconds in a ``Retry-After`` header (delta-seconds; an HTTP date is not used by this server), at most ``MAX_RETRY_AFTER``, or None."""
+    try:
+        seconds = float(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    if seconds != seconds or seconds < 0 or seconds == float('inf'):
+        return None
+    return min(seconds, MAX_RETRY_AFTER)
+
+
 class ApiError(Exception):
     """The server answered with a 3xx/4xx/5xx. ``status`` and ``message`` are set; the message is already a short string
     the server chose to show (or one this client wrote), never a raw response body (which could be arbitrarily large or
     not be JSON at all)."""
 
-    def __init__(self, status, message):
+    def __init__(self, status, message, retry_after=None):
         super().__init__(f'{status}: {message}')
         self.status = status
         self.message = message
+        self.retry_after = retry_after  # seconds the server asked to wait (Retry-After on a 429 or 503), or None
 
 
 class ServerURLError(ValueError):
@@ -99,7 +114,7 @@ class Client:
             payload = {}
         if response.status_code >= 400:
             message = (payload.get('error') if isinstance(payload, dict) else None) or f'HTTP {response.status_code}'
-            raise ApiError(response.status_code, str(message)[:300])
+            raise ApiError(response.status_code, str(message)[:300], retry_after=parse_retry_after(response.headers.get('Retry-After')))
         return payload if isinstance(payload, dict) else {}
 
     def download(self, path, destination, max_bytes, timeout=None):
