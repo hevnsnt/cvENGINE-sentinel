@@ -43,7 +43,7 @@ class Recorder:
     """Everything that would have touched the network: a process started, a socket connected or written to, an HTTP request made, a name looked up.
     Each entry is ``(what, destination)``. A name lookup and a datagram to this machine's own resolver are not contact with a target: they are
     recorded (so a control can see a case run) but ignored in the verdict (``contact``)."""
-    RESOLVER = '127.0.0.53'
+    RESOLVER = '127.0.0.53'  # systemd-resolved's stub, and the one this test always allowed; a runner that is not set up that way names others (``resolvers``)
 
     def __init__(self):
         self.attempts = []
@@ -53,13 +53,31 @@ class Recorder:
 
     @property
     def contact(self):
-        return [(w, d) for w, d in self.attempts if w != 'resolve' and not (w == 'sendto' and d in (self.RESOLVER, None))]
+        own = resolvers()
+        return [(w, d) for w, d in self.attempts if w != 'resolve' and not (w == 'sendto' and (d is None or d in own))]
 
     def stop(self, what):
         def refuse(*args, **kwargs):
             self.note(what, _destination(what, args))
             raise Attempt(f'recorded, not sent: {what}')
         return refuse
+
+
+def resolvers():
+    """The addresses this machine sends its name lookups to: the stub every Linux with systemd-resolved has, and whatever /etc/resolv.conf names. A CI runner image
+    names others (an Azure resolver, a loopback address of its own) and which one it has changes from one runner to the next, so a datagram to any of them is the
+    machine's own lookup (the probes that read TXT records use dnspython, which sends it), never contact with a target. The test used to allow only 127.0.0.53,
+    and failed on the runners that name another."""
+    found = {Recorder.RESOLVER}
+    try:
+        with open('/etc/resolv.conf', encoding='utf-8') as handle:
+            for line in handle:
+                parts = line.split()
+                if len(parts) >= 2 and parts[0] == 'nameserver':
+                    found.add(parts[1].split('%')[0])
+    except OSError:
+        pass
+    return found
 
 
 def _destination(what, args):

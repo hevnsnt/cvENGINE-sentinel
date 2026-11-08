@@ -36,7 +36,7 @@ class NmapKindsTests(unittest.TestCase):
         argv = run.call_args[0][0]
         self.assertIn('-p-', argv)
         self.assertEqual(argv[-1], '93.184.215.14')
-        self.assertEqual(run.call_args.kwargs['max_bytes'], tools.MAX_NMAP_REPORT)
+        self.assertEqual(run.call_args.kwargs['max_bytes'], tools.MAX_FULL_READ)  # read more than the server accepts: a long report is cut to 100 ports, not refused
 
     def test_a_cut_off_report_is_an_error_never_nothing_open(self):
         with mock.patch.object(tools, '_run', return_value='<nmaprun><host/></nmaprun>'), self.assertRaises(tools.ToolOutputError):

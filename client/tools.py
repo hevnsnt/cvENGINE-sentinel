@@ -26,6 +26,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import xml.etree.ElementTree as ET
 
 from cvengine_scanner.flags import (DISCOVER_FLAGS, KERNEL_MARKERS, MAX_DISCOVER_ADDRESSES, MAX_DISCOVER_HOSTS, MAX_OPEN_PER_IP,  # noqa: F401
                                     MAX_PATH_TARGETS, MAX_TARGETS, MAX_TEMPLATE_BYTES, MAX_VERIFY_PORTS, NAABU_FLAGS, NMAP_FLAGS, NMAP_FULL_FLAGS,
@@ -284,13 +285,14 @@ def _join(proc, readers):
             reader.join(5)
 
 
-def _run(argv, timeout, register=None, max_bytes=None, env=None, ok_codes=(0,)):
+def _run(argv, timeout, register=None, max_bytes=None, env=None, ok_codes=(0,), cut=None):
     """Run ``argv`` (a fixed list, never a string, never ``shell=True``) in its own session and return its stdout, at most
     ``max_bytes`` of it (``MAX_TOOL_OUTPUT`` by default): more stops the run and raises ``ToolOutputError``. ``register``, if given, is called with a handle
     (``poll()``, ``kill()``) right after it starts, so a caller (the daemon's SIGTERM handler) can stop the whole process
     group without waiting out the full timeout. A timeout kills the group and raises ``subprocess.TimeoutExpired``. ``env`` replaces the
     environment of the run (Kingfisher's detection pass points every proxy at a closed port); ``ok_codes`` are the exit codes that are not a
-    failure (Kingfisher says "findings" with 200 and 205)."""
+    failure (Kingfisher says "findings" with 200 and 205). ``cut``, a list, makes an oversized output a result instead of an error: the run is
+    still stopped, ``True`` is appended to it and what was read so far is returned (the nmap_full sweep, ``run_nmap_full``)."""
     max_bytes = max_bytes or MAX_TOOL_OUTPUT
     oom_before = _oom_events()
     proc = _start(argv, register, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **({'env': env} if env is not None else {}))
@@ -312,7 +314,10 @@ def _run(argv, timeout, register=None, max_bytes=None, env=None, ok_codes=(0,)):
         raise
     _join(proc, readers)
     if too_big.is_set():
-        raise ToolOutputError(f'{os.path.basename(argv[0])} wrote more than {max_bytes} bytes of output; the run was stopped')
+        if cut is None:
+            raise ToolOutputError(f'{os.path.basename(argv[0])} wrote more than {max_bytes} bytes of output; the run was stopped')
+        cut.append(True)
+        return out.decode('utf-8', errors='replace')
     if proc.returncode not in (*ok_codes, None):
         # A crashed or killed tool leaves nothing, or something incomplete: returning that would read as "no open ports" or "no findings".
         tail = ''.join(ch for ch in err.decode('utf-8', errors='replace')[:300] if ch.isprintable() or ch == ' ').strip()
@@ -804,12 +809,52 @@ def _finished(xml):
     return xml
 
 
+MAX_FULL_READ = 32 * 1024 * 1024  # what nmap_full reads of one report: all 65,535 ports open is about 10 MiB, so only a runaway reaches this
+TARPIT_PORTS = 100  # an address with more open ports than this is a tarpit or a filtering device: its list is kept to this many
+TARPIT_NOTE = 'port list truncated: this host answers on an unusually large number of ports (tarpit or filtering device)'
+_OPEN_PORT = re.compile(r'<port protocol="tcp" portid="([0-9]{1,5})"><state state="open"')
+
+
+def _tarpit_xml(address, numbers, seen, exact):
+    """A finished nmap report of ``address`` with the first ``TARPIT_PORTS`` of ``numbers`` open and a ``cvengine-note`` element that says the list was cut
+    (``seen`` open ports were counted, at least that many when not ``exact``). The server reads it with the same parser as any report: the element is
+    one it does not know, so a server that predates it still gets a normal report of the ports kept."""
+    kept = ''.join(f'<port protocol="tcp" portid="{n}"><state state="open" reason="syn-ack" reason_ttl="0"/></port>'
+                   for n in numbers[:TARPIT_PORTS])
+    return ('<?xml version="1.0"?><nmaprun scanner="nmap"><host><status state="up" reason="user-set"/>'
+            f'<address addr="{address}" addrtype="{"ipv6" if _is_ipv6(address) else "ipv4"}"/><ports>{kept}</ports></host>'
+            f'<cvengine-note kind="port-list-truncated" open-ports="{seen}" kept="{min(len(numbers), TARPIT_PORTS)}" exact="{"1" if exact else "0"}">{TARPIT_NOTE}</cvengine-note>'
+            '<runstats><finished exit="success"/></runstats></nmaprun>')
+
+
+def limit_open_ports(xml, address, cut=False):
+    """``xml``, an nmap_full report of ``address``, unchanged when it names at most ``TARPIT_PORTS`` open TCP ports. More is a host that answers on
+    nearly every port (a tarpit, a firewall that accepts everything, a filtering device): that is a normal, useful result, never a failure, and it
+    comes back as a report of the first ``TARPIT_PORTS`` ports with the ``cvengine-note`` element (``_tarpit_xml``). ``cut`` is a report the size
+    cap stopped: the ports read so far are the answer (nmap writes a host's ports after the sweep, so this is a runaway, not the usual case)."""
+    if cut:
+        numbers = sorted({int(n) for n in _OPEN_PORT.findall(xml)})
+        return _tarpit_xml(address, numbers, len(numbers), False)
+    parse_nmap_xml(xml, strict=True)
+    root = ET.fromstring(xml)  # parse_nmap_xml has just read it: our own nmap's report
+    numbers = sorted({int(p.get('portid')) for p in root.findall('host/ports/port')
+                      if p.get('protocol') == 'tcp' and p.get('portid', '').isdigit() and p.find('state') is not None and p.find('state').get('state') == 'open'})
+    if len(numbers) <= TARPIT_PORTS:
+        return xml
+    return _tarpit_xml(address, numbers, len(numbers), True)
+
+
 def run_nmap_full(address, timeout=1500, register=None):
     """Every TCP port of one address, open ports only (the server's background full sweep), as the raw ``-oX`` report: the server reads it with the
-    same parser as a local sweep and keeps only the address it asked about."""
+    same parser as a local sweep and keeps only the address it asked about. A host that answers on more than ``TARPIT_PORTS`` ports (``limit_open_ports``),
+    or whose report is larger than ``MAX_FULL_READ``, is reported as its first ports with a note that the list was cut, never as a failed task."""
     address = _one_address(address)
     argv = [NMAP_BIN, *(['-6'] if _is_ipv6(address) else []), *NMAP_FULL_FLAGS, '-oX', '-', address]
-    return {'xml': _finished(_run(argv, timeout, register, max_bytes=MAX_NMAP_REPORT))}
+    cut = []
+    xml = _run(argv, timeout, register, max_bytes=MAX_FULL_READ, cut=cut)
+    if cut:
+        logger.warning('nmap_full: the report of %s passed %s bytes; the ports read so far are the result', address, MAX_FULL_READ)
+    return {'xml': limit_open_ports(xml, address, cut=bool(cut))}
 
 
 def run_nmap_verify(address, ports, version_all=False, version_intensity=None, scripts=None, host_timeout=None, timeout=280, register=None):
