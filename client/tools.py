@@ -48,6 +48,8 @@ _BRACKETED = re.compile(r'\[([0-9A-Fa-f:.]+)\]:([0-9]{1,5})')
 NMAP_BIN = os.environ.get('CVENGINE_NMAP_BIN', 'nmap')
 NAABU_BIN = os.environ.get('CVENGINE_NAABU_BIN', 'naabu')
 NUCLEI_BIN = os.environ.get('CVENGINE_NUCLEI_BIN', 'nuclei')
+# The release of the nuclei templates baked into this image (the Dockerfile sets it): reported with every run that used them.
+IMAGE_TEMPLATES_VERSION = (os.environ.get('CVENGINE_NUCLEI_TEMPLATES_VERSION') or 'unknown')[:40]
 
 _TAG = re.compile(r'[a-z0-9][a-z0-9-]{0,39}')
 _SEVERITY = re.compile(r'info|low|medium|high|critical|unknown')
@@ -488,10 +490,12 @@ def run_nuclei(targets, tags=None, severities=None, timeout=3600, register=None,
     clean_severities = _clean_words(severities, _SEVERITY)
     if clean_severities:
         flags += ['-severity', ','.join(clean_severities)]
+    # the release a run used: the approved bundle is stored under its sha256 (client.templates.bundle_path), the baked set is the image's
+    release = f'approved:{os.path.basename(os.path.normpath(templates))}' if templates is not None else f'image:{IMAGE_TEMPLATES_VERSION}'
     path = _targets_file(targets)
     try:
         argv = [NUCLEI_BIN, '-l', path, *flags]
-        return {'findings': parse_nuclei_jsonl(_run(argv, timeout, register, env=nuclei_env()))}
+        return {'findings': parse_nuclei_jsonl(_run(argv, timeout, register, env=nuclei_env())), 'templates_release': release}
     finally:
         os.unlink(path)
 

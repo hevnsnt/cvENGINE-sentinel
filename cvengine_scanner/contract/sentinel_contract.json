@@ -176,6 +176,10 @@
                       "items": {
                         "$ref": "#/$defs/port"
                       }
+                    },
+                    "timed_out": {
+                      "type": "boolean",
+                      "description": "Optional: true when nmap gave up on this host (its host timeout). The host was not fingerprinted and is not a clean host."
                     }
                   }
                 }
@@ -209,6 +213,18 @@
                     "minimum": 1,
                     "maximum": 65535
                   }
+                }
+              },
+              "incomplete": {
+                "type": "boolean",
+                "description": "Optional: true when naabu ran out of its time limit. Then ports holds what was read, and unfinished lists the addresses not known complete."
+              },
+              "unfinished": {
+                "type": "array",
+                "maxItems": 64,
+                "items": {
+                  "type": "string",
+                  "maxLength": 60
                 }
               }
             }
@@ -303,9 +319,43 @@
                     "response": {
                       "description": "Optional (1.3.5): the answer that matched. The server keeps the first 4096 characters, control bytes but not newlines removed.",
                       "type": "string"
+                    },
+                    "cvss_score": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 10,
+                      "description": "Optional: the CVSS base score the template names (info.classification.cvss-score)."
+                    },
+                    "references": {
+                      "type": "array",
+                      "maxItems": 20,
+                      "items": {
+                        "type": "string",
+                        "maxLength": 500
+                      },
+                      "description": "Optional: the reference URLs the template names (info.reference)."
+                    },
+                    "remediation": {
+                      "type": "string",
+                      "maxLength": 500,
+                      "description": "Optional: the remediation text the template gives (info.remediation)."
                     }
                   }
                 }
+              },
+              "unreachable": {
+                "type": "array",
+                "maxItems": 64,
+                "items": {
+                  "type": "string",
+                  "maxLength": 260
+                },
+                "description": "Optional: the targets nuclei could not reach (no answer, refused, no such host, or a timeout on every request). They were not scanned: the server records them as failed, not done."
+              },
+              "templates_release": {
+                "type": "string",
+                "maxLength": 80,
+                "description": "Optional: the template set this run used: approved:<bundle sha256> for an approved bundle, image:<release> for the templates baked into the Sentinel image."
               }
             }
           }
@@ -399,9 +449,43 @@
                     "response": {
                       "description": "Optional (1.3.5): the answer that matched. The server keeps the first 4096 characters, control bytes but not newlines removed.",
                       "type": "string"
+                    },
+                    "cvss_score": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 10,
+                      "description": "Optional: the CVSS base score the template names (info.classification.cvss-score)."
+                    },
+                    "references": {
+                      "type": "array",
+                      "maxItems": 20,
+                      "items": {
+                        "type": "string",
+                        "maxLength": 500
+                      },
+                      "description": "Optional: the reference URLs the template names (info.reference)."
+                    },
+                    "remediation": {
+                      "type": "string",
+                      "maxLength": 500,
+                      "description": "Optional: the remediation text the template gives (info.remediation)."
                     }
                   }
                 }
+              },
+              "unreachable": {
+                "type": "array",
+                "maxItems": 64,
+                "items": {
+                  "type": "string",
+                  "maxLength": 260
+                },
+                "description": "Optional: the targets nuclei could not reach (no answer, refused, no such host, or a timeout on every request). They were not scanned: the server records them as failed, not done."
+              },
+              "templates_release": {
+                "type": "string",
+                "maxLength": 80,
+                "description": "Optional: the template set this run used: approved:<bundle sha256> for an approved bundle, image:<release> for the templates baked into the Sentinel image."
               }
             }
           }
@@ -495,9 +579,43 @@
                     "response": {
                       "description": "Optional (1.3.5): the answer that matched. The server keeps the first 4096 characters, control bytes but not newlines removed.",
                       "type": "string"
+                    },
+                    "cvss_score": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 10,
+                      "description": "Optional: the CVSS base score the template names (info.classification.cvss-score)."
+                    },
+                    "references": {
+                      "type": "array",
+                      "maxItems": 20,
+                      "items": {
+                        "type": "string",
+                        "maxLength": 500
+                      },
+                      "description": "Optional: the reference URLs the template names (info.reference)."
+                    },
+                    "remediation": {
+                      "type": "string",
+                      "maxLength": 500,
+                      "description": "Optional: the remediation text the template gives (info.remediation)."
                     }
                   }
                 }
+              },
+              "unreachable": {
+                "type": "array",
+                "maxItems": 64,
+                "items": {
+                  "type": "string",
+                  "maxLength": 260
+                },
+                "description": "Optional: the targets nuclei could not reach (no answer, refused, no such host, or a timeout on every request). They were not scanned: the server records them as failed, not done."
+              },
+              "templates_release": {
+                "type": "string",
+                "maxLength": 80,
+                "description": "Optional: the template set this run used: approved:<bundle sha256> for an approved bundle, image:<release> for the templates baked into the Sentinel image."
               }
             }
           }
@@ -549,6 +667,16 @@
                     }
                   }
                 }
+              },
+              "returncode": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 255,
+                "description": "Optional: the exit code of testssl.sh. A non-zero code with no handshake means the endpoint was not tested."
+              },
+              "handshake": {
+                "type": "boolean",
+                "description": "Optional: false when no protocol completed a handshake (every protocol not offered) or testssl reported a scan problem. Vulnerability tests of a run with no handshake are not sent."
               }
             }
           }
@@ -3300,6 +3428,16 @@
                   "minLength": 1,
                   "maxLength": 260
                 }
+              },
+              "unknown_names": {
+                "type": "array",
+                "maxItems": 101,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 253
+                },
+                "description": "Optional: the mail names whose MX or CNAME lookup failed (a resolver timeout). They were not reviewed: cvENGINE reads them as unknown, never as having no mail records."
               }
             },
             "if": {
@@ -4512,6 +4650,22 @@
               "type": "string",
               "maxLength": 60
             }
+          },
+          "ports": {
+            "type": "array",
+            "maxItems": 4096,
+            "description": "Optional: the ports the run scans (naabu open ports plus cvengine_scanner.flags.EXTRA_PORTS and CLOSED_PROBE_PORTS). Without it the run scans nmap's top 1000 ports.",
+            "items": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535
+            }
+          },
+          "timeout": {
+            "type": "integer",
+            "minimum": 600,
+            "maximum": 3600,
+            "description": "Optional: the seconds this run may take (cvengine_scanner.flags.nmap_seconds). A Sentinel uses it only inside its own range."
           }
         }
       },
@@ -4530,6 +4684,12 @@
               "type": "string",
               "maxLength": 60
             }
+          },
+          "timeout": {
+            "type": "integer",
+            "minimum": 900,
+            "maximum": 3600,
+            "description": "Optional: the seconds this run may take (cvengine_scanner.flags.naabu_seconds). A Sentinel uses it only inside its own range."
           }
         }
       },

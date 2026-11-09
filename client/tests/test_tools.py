@@ -257,6 +257,27 @@ class RunnerArgvTests(unittest.TestCase):
         fake_run.assert_not_called()
 
 
+class NucleiTemplateReleaseTests(unittest.TestCase):
+    """The result names the template set the run used, so a stale run is visible in the result (review L5)."""
+
+    def test_a_run_on_an_approved_bundle_names_that_bundle(self):
+        bundle = '/state/templates/' + 'e' * 64
+        with mock.patch('client.tools.os.path.isdir', return_value=True), mock.patch('client.tools._run', return_value=''):
+            result = tools.run_nuclei(['www.example.test'], templates=bundle)
+        self.assertEqual(result['templates_release'], 'approved:' + 'e' * 64)
+
+    def test_a_run_on_the_image_templates_names_the_image_release(self):
+        with mock.patch.object(tools, 'IMAGE_TEMPLATES_VERSION', 'v10.5.1'), mock.patch('client.tools._run', return_value=''):
+            result = tools.run_nuclei(['www.example.test'])
+        self.assertEqual(result['templates_release'], 'image:v10.5.1')
+
+    def test_a_release_is_always_a_short_plain_string(self):
+        self.assertLessEqual(len(tools.IMAGE_TEMPLATES_VERSION), 40)
+        with mock.patch('client.tools._run', return_value=''):
+            release = tools.run_nuclei(['www.example.test'])['templates_release']
+        self.assertRegex(release, r'^[A-Za-z0-9:._-]{1,80}$')
+
+
 class RunTests(unittest.TestCase):
     """``_run`` itself, with real (harmless) child processes: bounded output, the whole process group killed on timeout."""
 
