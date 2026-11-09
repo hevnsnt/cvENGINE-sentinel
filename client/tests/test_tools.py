@@ -128,6 +128,7 @@ class RunnerArgvTests(unittest.TestCase):
         self.assertIn('-n', captured['argv'])  # no reverse DNS: parse_nmap_xml never reads host names
         self.assertEqual(captured['targets_file_contents'], '8.8.8.8\n1.1.1.1\n')
         self.assertEqual(captured['timeout'], tools.NMAP_MIN_TIMEOUT)
+        self.assertIn('--top-ports', captured['argv'])  # no task ports: the fingerprint pass scans the top thousand
         # the sample report's two hosts; an address the report does not mention gets no row (it was not scanned: review H3)
         self.assertEqual(sorted(h['ip'] for h in result['hosts']), ['192.0.2.10', '198.51.100.20'])
 
@@ -204,7 +205,7 @@ class RunnerArgvTests(unittest.TestCase):
         self.assertEqual(len(runs), 2)
         self.assertNotIn('-6', runs[0][0])
         self.assertEqual(runs[0][1], '8.8.8.8\n')
-        self.assertEqual(runs[1][0][:3], [tools.NMAP_BIN, '-6', *tools.NMAP_FLAGS[:1]])
+        self.assertEqual(runs[1][0][:3], [tools.NMAP_BIN, '-6', *tools.nmap_pass_flags()[:1]])
         self.assertEqual(runs[1][1], '2606:4700:4700::1111\n')
         self.assertEqual(sorted(h['ip'] for h in result['hosts']), ['192.0.2.10', '198.51.100.20'])  # the IPv6 run reported nothing: no row, not scanned
         with mock.patch('client.tools._run', return_value=FINISHED_REPORT) as only_v6:
@@ -219,6 +220,29 @@ class RunnerArgvTests(unittest.TestCase):
         self.assertEqual(argv[0], tools.NAABU_BIN)
         self.assertIn('-json', argv)
         self.assertEqual(result['ports']['192.0.2.10'], [22, 80])  # whatever naabu printed is parsed as it is
+
+    def test_naabu_gets_a_time_limit_sized_from_its_hosts_and_a_timeout_is_partial_not_an_error(self):
+        with mock.patch('client.tools._run', return_value='') as fake_run:
+            tools.run_naabu(['8.8.8.8'])
+        self.assertEqual(fake_run.call_args[0][1], 900)  # one host: the floor of the naabu range
+        partial = '{"ip":"8.8.8.8","port":22}\n'
+
+        def runs_out(argv, timeout, register=None):
+            err = subprocess.TimeoutExpired(argv, timeout)
+            err.partial = partial
+            raise err
+        with mock.patch('client.tools._run', side_effect=runs_out):
+            result = tools.run_naabu(['8.8.8.8', '1.1.1.1'])
+        self.assertIs(result['incomplete'], True)
+        self.assertEqual(result['unfinished'], ['8.8.8.8', '1.1.1.1'])
+        self.assertEqual(result['ports'], {'8.8.8.8': [22]})  # the ports it read are kept
+
+    def test_a_naabu_run_that_fits_its_chunk_gets_the_limit_of_its_hosts_and_is_complete(self):
+        hosts = [f'8.8.{i // 256}.{i % 256}' for i in range(1, 25)]
+        with mock.patch('client.tools._run', return_value='') as fake_run:
+            result = tools.run_naabu(hosts)
+        self.assertNotIn('incomplete', result)
+        self.assertEqual(fake_run.call_args[0][1], tools.task_seconds('naabu', 24))
 
     def test_run_nuclei_adds_clean_tags_and_severities_only(self):
         with mock.patch('client.tools._run', return_value=_read('sample_nuclei.jsonl')) as fake_run:
@@ -288,6 +312,58 @@ class NucleiTemplateReleaseTests(unittest.TestCase):
         with mock.patch('client.tools._run', return_value=''):
             release = tools.run_nuclei(['www.example.test'])['templates_release']
         self.assertRegex(release, r'^[A-Za-z0-9:._-]{1,80}$')
+
+
+class NmapPassWiringTests(unittest.TestCase):
+    """Review M1 and M7 on the wire: the task's ports reach the fingerprint pass, the task's own time limit is used inside its range, and a
+    port the server did not send right is a refusal, not a scan of something else."""
+
+    def test_the_task_ports_replace_the_top_thousand_and_keep_the_extra_ports(self):
+        with mock.patch('client.tools._run', return_value=FINISHED_REPORT) as fake_run:
+            tools.run_nmap(['8.8.8.8'], ports=[22, 80])
+        argv = fake_run.call_args[0][0]
+        self.assertNotIn('--top-ports', argv)
+        covered = set()
+        for part in argv[argv.index('-p') + 1].split(','):
+            low, _, high = part.partition('-')
+            covered.update(range(int(low), int(high or low) + 1))
+        self.assertTrue({22, 80, 6379, 6380, 1, 3} <= covered)  # the task's ports, a Redis pair outside nmap's top thousand, the closed probes
+        self.assertIn('--script', argv)
+
+    def test_a_task_without_ports_scans_the_top_thousand(self):
+        with mock.patch('client.tools._run', return_value=FINISHED_REPORT) as fake_run:
+            tools.run_nmap(['8.8.8.8'])
+        argv = fake_run.call_args[0][0]
+        self.assertEqual(argv[argv.index('--top-ports') + 1], '1000')
+        self.assertNotIn('-p', argv)
+
+    def test_ports_that_are_not_ports_are_refused_before_anything_runs(self):
+        for bad in (['22; id'], [0], [70000], 'x', [True]):
+            with self.subTest(bad=bad), mock.patch('client.tools._run') as fake_run:
+                with self.assertRaises(tools.TargetError):
+                    tools.run_nmap(['8.8.8.8'], ports=bad)
+            fake_run.assert_not_called()
+
+    def test_the_daemon_sends_the_task_ports_and_its_time_limit_to_nmap(self):
+        from client import daemon
+        from client.tests.test_daemon import FakeClient
+        d = daemon.Daemon('https://x.example', 'tok', client=FakeClient())
+        runner = mock.Mock(return_value={'hosts': []})
+        with mock.patch.dict(tools.RUNNERS, {'nmap': runner}):
+            d._execute({'kind': 'nmap', 'target': {'addresses': ['8.8.8.8'], 'ports': [22, 80], 'timeout': 1800}}, None)
+        self.assertEqual(runner.call_args.kwargs['ports'], [22, 80])
+        self.assertEqual(runner.call_args.kwargs['timeout'], 1800)
+
+    def test_the_daemon_sizes_a_naabu_task_from_its_hosts_unless_the_task_names_a_limit(self):
+        from client import daemon
+        from client.tests.test_daemon import FakeClient
+        d = daemon.Daemon('https://x.example', 'tok', client=FakeClient())
+        runner = mock.Mock(return_value={'ports': {}})
+        with mock.patch.dict(tools.RUNNERS, {'naabu': runner}):
+            d._execute({'kind': 'naabu', 'target': {'addresses': ['8.8.8.8']}}, None)
+            self.assertEqual(runner.call_args.kwargs['timeout'], tools.task_seconds('naabu', 1))
+            d._execute({'kind': 'naabu', 'target': {'addresses': ['8.8.8.8'], 'timeout': 2400}}, None)
+            self.assertEqual(runner.call_args.kwargs['timeout'], 2400)
 
 
 class RunTests(unittest.TestCase):

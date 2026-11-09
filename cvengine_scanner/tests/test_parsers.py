@@ -199,7 +199,7 @@ class FlagsTests(unittest.TestCase):
         self.assertEqual(flags.NUCLEI_FLAGS[flags.NUCLEI_FLAGS.index('-etags') + 1], 'dos')
 
     def test_every_flag_list_is_plain_strings(self):
-        for name in ('NMAP_FLAGS', 'NAABU_FLAGS', 'NUCLEI_FLAGS', 'TESTSSL_FLAGS', 'WPSCAN_ARGS', 'WPSCAN_THOROUGH_ARGS', 'DISCOVER_FLAGS'):
+        for name in ('NMAP_FAST_FLAGS', 'NAABU_FLAGS', 'NUCLEI_FLAGS', 'TESTSSL_FLAGS', 'WPSCAN_ARGS', 'WPSCAN_THOROUGH_ARGS', 'DISCOVER_FLAGS'):
             with self.subTest(name=name):
                 self.assertTrue(all(isinstance(item, str) for item in getattr(flags, name)))
 

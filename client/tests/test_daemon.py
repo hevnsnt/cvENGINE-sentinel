@@ -632,7 +632,7 @@ def wait_for(predicate, timeout=3.0):
 
 def blocking_runner(procs):
     """A runner that starts one process and blocks until it is killed, then returns the killed run's (empty) output, as nmap would."""
-    def run(addresses, register=None):
+    def run(addresses, register=None, timeout=None, ports=None):
         proc = FakeProc()
         procs.append(proc)
         register(proc)
@@ -701,7 +701,7 @@ class ShutdownRaceTests(DaemonTestCase):
                 super().set()
         gate = threading.Event()
 
-        def runner(addresses, register=None):
+        def runner(addresses, register=None, timeout=None, ports=None):
             gate.wait(5)
             return {'hosts': []}
         with mock.patch.dict(tools.RUNNERS, {'nmap': runner}):
@@ -1372,7 +1372,7 @@ class KillTests(DaemonTestCase):
         d = self.make()
         procs = []
 
-        def two_groups(addresses, register=None):
+        def two_groups(addresses, register=None, timeout=None, ports=None):
             for _ in range(2):
                 proc = FakeProc()
                 procs.append(proc)

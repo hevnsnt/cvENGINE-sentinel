@@ -108,5 +108,66 @@ class NmapFlagTests(unittest.TestCase):
         self.assertFalse(any(marker in '6.8.0-45-generic' for marker in flags.KERNEL_MARKERS))
 
 
+
+class TaskLimitTests(unittest.TestCase):
+    """Review H5 and M7: the time a nmap or naabu task may take, and how many hosts one naabu task carries, come from one function that the
+    Sentinel and the server both use, so neither gives up a task the other is still running."""
+
+    def test_nmap_keeps_the_limit_the_sentinel_has_always_used(self):
+        self.assertEqual([flags.task_seconds('nmap', n) for n in (1, 10, 64)], [600, 900, 3600])
+
+    def test_a_naabu_run_of_one_host_gets_the_full_sweep_budget(self):
+        self.assertEqual(flags.task_seconds('naabu', 1), 900)
+        self.assertEqual(flags.task_seconds('naabu', 12), 1800)
+
+    def test_the_host_count_of_a_naabu_task_fits_its_time_limit(self):
+        per_task = flags.hosts_per_task('naabu')
+        self.assertGreaterEqual(per_task, 6)  # 138 s measured for one loopback host: the old 900 s held about six
+        self.assertLessEqual(flags.task_seconds('naabu', per_task), flags.NAABU_MAX_SECONDS)
+        self.assertLess(per_task, flags.MAX_TARGETS)  # a task of the largest chunk does not fit: the server splits it
+
+    def test_a_time_the_task_names_is_used_inside_the_kinds_range_only(self):
+        self.assertEqual(flags.task_seconds('naabu', 5, requested=1800), 1800)
+        self.assertEqual(flags.task_seconds('naabu', 5, requested=10 ** 6), flags.NAABU_MAX_SECONDS)
+        self.assertEqual(flags.task_seconds('naabu', 5, requested=3), 900)
+        self.assertEqual(flags.task_seconds('nmap', 5, requested=True), 600)  # a boolean is not a time
+        self.assertEqual(flags.task_seconds('nmap', 5, requested='1800'), 600)
+
+    def test_an_unknown_kind_has_no_limit_here(self):
+        with self.assertRaises(KeyError):
+            flags.task_seconds('bbot_discovery', 1)
+
+
+class NmapPassFlagsTests(unittest.TestCase):
+    """Review M1: the fingerprint pass scans the ports naabu found plus the extended and closed probe ports, with the reviewed scripts and
+    intensity 7 (NMAP_FAST_FLAGS), and keeps the host timeout that makes a timed-out host visible (H3)."""
+
+    def test_the_task_ports_are_the_ones_scanned_with_the_extra_and_closed_probe_ports(self):
+        argv = flags.nmap_pass_flags([22, 80, 8000, 8001])
+        self.assertNotIn('--top-ports', argv)
+        covered = set()
+        for part in argv[argv.index('-p') + 1].split(','):
+            low, _, high = part.partition('-')
+            covered.update(range(int(low), int(high or low) + 1))
+        self.assertTrue({22, 80, 8000, 8001, 6379, 27017, *flags.CLOSED_PROBE_PORTS} <= covered)
+
+    def test_a_task_that_names_no_ports_scans_the_top_thousand(self):
+        argv = flags.nmap_pass_flags(None)
+        self.assertEqual(argv[argv.index('--top-ports') + 1], '1000')
+        self.assertNotIn('-p', argv)
+
+    def test_the_pass_keeps_the_reviewed_scripts_and_the_host_timeout(self):
+        argv = flags.nmap_pass_flags([22])
+        self.assertEqual(argv[argv.index('--version-intensity') + 1], '7')
+        self.assertEqual(argv[argv.index('--script') + 1], ','.join(flags.NSE_SCRIPTS))
+        self.assertEqual(argv[argv.index('--host-timeout') + 1], '8m')
+        self.assertIn('-n', argv)
+
+    def test_a_port_that_is_not_a_port_is_refused(self):
+        for bad in ([0], [65536], ['22'], [True], [22, 'x'], list(range(1, flags.MAX_NMAP_PORTS + 2))):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                flags.nmap_pass_flags(bad)
+
+
 if __name__ == '__main__':
     unittest.main()

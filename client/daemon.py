@@ -1175,7 +1175,13 @@ class Daemon:
         if not isinstance(target, dict):
             raise tools.TargetError('the task target is not an object')
         if kind in ('nmap', 'naabu'):
-            out = runner(target.get('addresses') or [], register=register)
+            addresses = target.get('addresses') or []
+            # the time limit: the task's own when the server sends one, else sized from the host count (cvengine_scanner.flags.task_seconds)
+            seconds = tools.task_seconds(kind, len(addresses) if isinstance(addresses, list) else 1, target.get('timeout'))
+            if kind == 'nmap':  # ``ports``: what the fingerprint pass scans (the server's naabu result plus the extended set); absent means the top thousand
+                out = runner(addresses, timeout=seconds, ports=target.get('ports'), register=register)
+            else:
+                out = runner(addresses, timeout=seconds, register=register)
         elif kind in ('nuclei_light', 'nuclei_targeted', 'nuclei_deep'):
             targets = target.get('targets') or []
 

@@ -29,7 +29,8 @@ import time
 import xml.etree.ElementTree as ET
 
 from cvengine_scanner.flags import (DISCOVER_FLAGS, KERNEL_MARKERS, MAX_DISCOVER_ADDRESSES, MAX_DISCOVER_HOSTS, MAX_OPEN_PER_IP,  # noqa: F401
-                                    MAX_PATH_TARGETS, MAX_TARGETS, MAX_TEMPLATE_BYTES, MAX_VERIFY_PORTS, NAABU_FLAGS, NMAP_FLAGS, NMAP_FULL_FLAGS,
+                                    MAX_PATH_TARGETS, MAX_TARGETS, MAX_TEMPLATE_BYTES, MAX_VERIFY_PORTS, NAABU_FLAGS, NMAP_FULL_FLAGS, TASK_LIMITS,
+                                    nmap_pass_flags, task_seconds,
                                     NMAP_VERIFY_FLAGS, NSE_SCRIPT_TIMEOUT, NSE_SCRIPTS, NUCLEI_FIXTURE_FLAGS, NUCLEI_FLAGS, NUCLEI_TEMPLATE_FLAGS,
                                     NUCLEI_VALIDATE_FLAGS, PATH_PROBE_ODD, PATH_PROBE_PLAIN, TESTSSL_FLAGS, UDP_NSE_SCRIPTS, UDP_PORTS, WAFW00F_TIMEOUT,
                                     WPSCAN_ARGS, WPSCAN_THOROUGH_ARGS, host_of, thorough_timeout, udp_nmap_flags, wafw00f_flags)
@@ -58,8 +59,8 @@ MAX_TOOL_OUTPUT = 64 * 1024 * 1024  # bytes of stdout kept from nmap, naabu or n
 _STDERR_KEPT = 4096
 _CHUNK = 64 * 1024
 
-# nmap runs up to MAX_TARGETS hosts with -sV -O and an 8 minute per-host timeout: the run's own cap grows with the host count.
-NMAP_MIN_TIMEOUT, NMAP_SECONDS_PER_TARGET, NMAP_MAX_TIMEOUT = 600, 90, 3600
+# The time a nmap or naabu run may take comes from cvengine_scanner.flags.task_seconds, the function the server reads too (review M7).
+NMAP_MIN_TIMEOUT = TASK_LIMITS['nmap'][0]
 
 
 class TargetError(ValueError):
@@ -309,10 +310,11 @@ def _run(argv, timeout, register=None, max_bytes=None, env=None, ok_codes=(0,), 
         reader.start()
     try:
         proc.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as exc:
         _kill_group(proc)
         proc.wait()
         _join(proc, readers)
+        exc.partial = out.decode('utf-8', errors='replace')  # what it printed before it was stopped: a naabu run keeps what it found
         raise
     _join(proc, readers)
     if too_big.is_set():
@@ -355,13 +357,18 @@ def os_guess_reliable():
 
 def nmap_timeout(count):
     """Seconds one nmap run over ``count`` hosts may take before it is killed."""
-    return min(NMAP_MAX_TIMEOUT, max(NMAP_MIN_TIMEOUT, NMAP_SECONDS_PER_TARGET * count))
+    return task_seconds('nmap', count)
 
 
-def run_nmap(addresses, timeout=None, register=None):
+def run_nmap(addresses, timeout=None, register=None, ports=None):
     """nmap scans one address family per run and needs ``-6`` for IPv6 (without it the address is "failed to resolve" and the report has no host),
     so the IPv4 and IPv6 addresses of the task run separately and their hosts are returned together. Host names are replaced by the address
-    they were judged by (the result is keyed by IP either way). ``timeout`` defaults to one sized from the number of hosts."""
+    they were judged by (the result is keyed by IP either way). ``timeout`` defaults to one sized from the number of hosts. ``ports`` (the
+    task's, from the naabu result) are the ports the fingerprint pass scans; without them it scans the top thousand (``flags.nmap_pass_flags``)."""
+    try:
+        pass_flags = nmap_pass_flags(ports)
+    except ValueError as exc:
+        raise TargetError(str(exc)) from None
     resolve = _resolver()
     addresses = _pinned(validate_targets(addresses, resolver=resolve), resolve)
     out = []
@@ -370,7 +377,7 @@ def run_nmap(addresses, timeout=None, register=None):
             continue
         path = _targets_file(group)
         try:
-            argv = [NMAP_BIN, *flags, *NMAP_FLAGS, '-oX', '-', '-iL', path]
+            argv = [NMAP_BIN, *flags, *pass_flags, '-oX', '-', '-iL', path]
             out.extend(parse_nmap_xml(_run(argv, timeout or nmap_timeout(len(group)), register), strict=True)['hosts'])
         finally:
             os.unlink(path)
@@ -415,16 +422,23 @@ def run_discover(cidr, timeout=900, register=None):
 
 # --- naabu ----------------------------------------------------------------------------------------------------------
 
-def run_naabu(addresses, timeout=900, register=None):
-    """Host names are replaced by the address they were judged by: naabu's result is keyed by IP either way."""
+def run_naabu(addresses, timeout=None, register=None):
+    """Host names are replaced by the address they were judged by: naabu's result is keyed by IP either way. A run that runs out of time is not
+    an error (review H5: a whole chunk was lost and its addresses stayed due for ever): it returns the ports read so far with ``incomplete``
+    and ``unfinished``. naabu says nothing about a host it finished, so every address of such a run is unfinished and stays due."""
     resolve = _resolver()
     addresses = _pinned(validate_targets(addresses, resolver=resolve), resolve)
     if not addresses:
         return {'ports': {}}
+    seconds = timeout or task_seconds('naabu', len(addresses))
     path = _targets_file(addresses)
     try:
         argv = [NAABU_BIN, '-list', path, *NAABU_FLAGS]
-        return {'ports': parse_naabu_output(_run(argv, timeout, register))}
+        try:
+            return {'ports': parse_naabu_output(_run(argv, seconds, register))}
+        except subprocess.TimeoutExpired as exc:
+            logger.warning('naabu ran out of its %s s for %d address(es); they stay due', seconds, len(addresses))
+            return {'ports': parse_naabu_output(getattr(exc, 'partial', '')), 'incomplete': True, 'unfinished': addresses}
     finally:
         os.unlink(path)
 
