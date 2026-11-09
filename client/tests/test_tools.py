@@ -255,13 +255,13 @@ class RunnerArgvTests(unittest.TestCase):
         self.assertEqual(argv[argv.index('-severity') + 1], 'high')
         self.assertEqual(len(result['findings']), 2)
 
-    def test_nuclei_always_excludes_dos_templates_and_omits_raw_traffic(self):
+    def test_nuclei_always_excludes_dos_templates_and_keeps_the_raw_evidence(self):
         for tags in (None, [], ['cve'], ['dos', 'cve']):
             with self.subTest(tags=tags), mock.patch('client.tools._run', return_value='') as fake_run:
                 tools.run_nuclei(['www.example.test'], tags=tags)
                 argv = fake_run.call_args[0][0]
                 self.assertEqual(argv[argv.index('-etags') + 1], 'dos')
-                self.assertIn('-omit-raw', argv)
+                self.assertNotIn('-omit-raw', argv)  # the request and response are the finding's evidence (review M2)
                 self.assertEqual('-tags' in argv, bool(tags))
 
     def test_a_tag_filter_with_nothing_usable_fails_closed(self):
@@ -312,6 +312,75 @@ class NucleiTemplateReleaseTests(unittest.TestCase):
         with mock.patch('client.tools._run', return_value=''):
             release = tools.run_nuclei(['www.example.test'])['templates_release']
         self.assertRegex(release, r'^[A-Za-z0-9:._-]{1,80}$')
+
+
+def _nuclei_run(stdout, errors):
+    """A fake nuclei run: ``stdout`` is its JSONL findings and ``errors`` (a list of dicts) is what it writes to the -elog file it is given."""
+    def fake(argv, timeout, register=None, env=None):
+        if '-elog' in argv:
+            with open(argv[argv.index('-elog') + 1], 'w', encoding='utf-8') as handle:
+                handle.write(''.join(json.dumps(row) + '\n' for row in errors))
+        return stdout
+    return fake
+
+
+REFUSED = {'input': 'closed.example.test:8080', 'error': 'Get "http://closed.example.test:8080": dial tcp 192.0.2.7:8080: connect: connection refused'}
+
+
+class NucleiReachTests(unittest.TestCase):
+    """Review H4: nuclei exits 0 with no output when nothing answered. The targets it never reached are listed as unreachable, never as scanned
+    with no findings."""
+
+    def test_a_closed_port_run_that_exits_clean_names_its_targets_as_unreachable(self):
+        errors = [dict(REFUSED, input='www.example.test:8080', error='dial tcp: connect: connection refused'), dict(REFUSED)]
+        with mock.patch('client.tools._run', side_effect=_nuclei_run('', errors)):
+            result = tools.run_nuclei(['www.example.test:8080', 'closed.example.test:8080'])
+        self.assertEqual(result['findings'], [])
+        self.assertEqual(result['unreachable'], ['www.example.test:8080', 'closed.example.test:8080'])
+
+    def test_a_host_that_gave_a_finding_is_reached_even_when_some_requests_failed(self):
+        finding = json.dumps({'template-id': 'tech-detect', 'host': 'www.example.test', 'matched-at': 'https://www.example.test/', 'info': {'name': 'n', 'severity': 'info'}})
+        errors = [{'input': 'https://www.example.test/x', 'error': 'context deadline exceeded (Client.Timeout exceeded)'}]
+        with mock.patch('client.tools._run', side_effect=_nuclei_run(finding, errors)):
+            result = tools.run_nuclei(['https://www.example.test/'])
+        self.assertEqual(result['unreachable'], [])
+        self.assertEqual(len(result['findings']), 1)
+
+    def test_an_error_that_is_not_a_connection_failure_leaves_the_host_reached(self):
+        errors = [{'input': 'www.example.test', 'error': 'unexpected EOF in template response parser: bad json body'}, {'input': 'www.example.test', 'error': 'read tcp: broken pipe'}]
+        with mock.patch('client.tools._run', side_effect=_nuclei_run('', errors)):
+            result = tools.run_nuclei(['www.example.test'])
+        # a host with an answer-level error (not a connection failure) is reached: only a connection-class error on every request counts
+        self.assertEqual(result['unreachable'], [])
+
+    def test_a_run_with_no_error_log_names_nothing_unreachable(self):
+        with mock.patch('client.tools._run', return_value=''):
+            self.assertEqual(tools.run_nuclei(['www.example.test'])['unreachable'], [])
+
+    def test_the_error_log_is_requested_and_removed_with_the_run(self):
+        seen = {}
+
+        def capture(argv, timeout, register=None, env=None):
+            seen['log'] = argv[argv.index('-elog') + 1]
+            return ''
+        with mock.patch('client.tools._run', side_effect=capture):
+            tools.run_nuclei(['www.example.test'])
+        self.assertFalse(os.path.exists(seen['log']))
+
+    def test_a_template_test_host_nuclei_never_reached_is_an_error_not_a_negative(self):
+        template = 'id: t\ninfo:\n  name: t\n  severity: info\nhttp:\n  - method: GET\n    path:\n      - "{{BaseURL}}/"\n    matchers:\n      - type: status\n        status:\n          - 200\n'
+        errors = [{'input': 'closed.example.test', 'error': 'dial tcp: connect: connection refused'}]
+
+        def status(argv, timeout, register=None):
+            if '-elog' in argv:
+                with open(argv[argv.index('-elog') + 1], 'w', encoding='utf-8') as handle:
+                    handle.write(json.dumps(errors[0]) + '\n')
+            return 0, '', ''
+        with mock.patch('client.tools._run_status', side_effect=status):
+            outcomes = tools.run_nuclei_validate('test', template, ['closed.example.test', 'www.example.test'])['outcomes']
+        by_host = {o['host']: o for o in outcomes}
+        self.assertIn('never reached', by_host['closed.example.test']['error'])
+        self.assertEqual(by_host['www.example.test'].get('error', ''), '')
 
 
 class NmapPassWiringTests(unittest.TestCase):
@@ -1106,3 +1175,23 @@ class WafResultContractTests(unittest.TestCase):
             with self.subTest(text=text):
                 reported = {'outcome': 'done', **tools.parse_waf_output(text, strict=True)}
                 self.assertEqual(list(check.iter_errors(reported)), [])
+
+
+class SignedInEvidenceTests(unittest.TestCase):
+    """Review M2 and the signed-in run: a signed-in nuclei run keeps no request or response, even when the watchdog stops it and delivers the
+    findings it had printed (their requests carry the sign-in)."""
+
+    def test_a_stopped_signed_in_run_delivers_its_findings_without_their_requests(self):
+        from client import daemon
+        from client.tests.test_daemon import FakeClient
+        d = daemon.Daemon('https://x.example', 'tok', client=FakeClient())
+        d.guard = mock.Mock(cfg={'partial': True})
+        row = json.dumps({'template-id': 't', 'host': 'www.example.test', 'request': 'GET / HTTP/1.1\nCookie: session=abc\n',
+                          'info': {'name': 'n', 'severity': 'info'}})
+        exc = tools.ToolExitError('nuclei stopped')
+        exc.partial = row + '\n'
+        state = {'wd': {'text': 'stopped'}, 'kind': 'nuclei_light', 'signed_in': True}
+        result = d._watchdog_result(state, exc)
+        self.assertEqual(result['outcome'], 'done')
+        self.assertEqual(len(result['findings']), 1)
+        self.assertNotIn('request', result['findings'][0])

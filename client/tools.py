@@ -35,7 +35,8 @@ from cvengine_scanner.flags import (DISCOVER_FLAGS, KERNEL_MARKERS, MAX_DISCOVER
                                     NUCLEI_VALIDATE_FLAGS, PATH_PROBE_ODD, PATH_PROBE_PLAIN, TESTSSL_FLAGS, UDP_NSE_SCRIPTS, UDP_PORTS, WAFW00F_TIMEOUT,
                                     WPSCAN_ARGS, WPSCAN_THOROUGH_ARGS, host_of, thorough_timeout, udp_nmap_flags, wafw00f_flags)
 from cvengine_scanner.parsers import (MAX_FINDINGS, MAX_FINDINGS_BYTES, MAX_LIST_ITEMS, ToolOutputError, parse_discover_xml,  # noqa: F401
-                                      parse_naabu_output, parse_nmap_xml, parse_nuclei_jsonl, parse_port_reasons, parse_testssl_report, testssl_result,
+                                      parse_naabu_output, parse_nmap_xml, parse_nuclei_errors, parse_nuclei_jsonl, parse_port_reasons, parse_testssl_report,
+                                      testssl_result, unreached_targets,
                                       parse_waf_output)
 
 from . import admission, bbot, config, dbprobe, egress, openvas, rdp, scope
@@ -55,6 +56,7 @@ IMAGE_TEMPLATES_VERSION = (os.environ.get('CVENGINE_NUCLEI_TEMPLATES_VERSION') o
 _TAG = re.compile(r'[a-z0-9][a-z0-9-]{0,39}')
 _SEVERITY = re.compile(r'info|low|medium|high|critical|unknown')
 
+MAX_ERROR_LOG_BYTES = 8 * 1024 * 1024  # bytes of a nuclei error log read: more is a runaway log, the rest is not needed to tell reached from not
 MAX_TOOL_OUTPUT = 64 * 1024 * 1024  # bytes of stdout kept from nmap, naabu or nuclei: more than this stops the run
 _STDERR_KEPT = 4096
 _CHUNK = 64 * 1024
@@ -497,11 +499,27 @@ def run_nuclei(targets, tags=None, severities=None, timeout=3600, register=None,
     # the release a run used: the approved bundle is stored under its sha256 (client.templates.bundle_path), the baked set is the image's
     release = f'approved:{os.path.basename(os.path.normpath(templates))}' if templates is not None else f'image:{IMAGE_TEMPLATES_VERSION}'
     path = _targets_file(targets)
+    with tempfile.TemporaryDirectory(prefix='nuclei-run-') as work:
+        errlog = os.path.join(work, 'errors.jsonl')
+        try:
+            # -elog: nuclei logs every request that failed, with its input. A run that exits 0 with no findings says nothing about a target
+            # nothing answered, so the error log is what tells the two apart (review H4).
+            output = _run([NUCLEI_BIN, '-l', path, *flags, '-elog', errlog], timeout, register, env=nuclei_env())
+        finally:
+            os.unlink(path)
+        findings = parse_nuclei_jsonl(output, evidence=secret_file is None)  # a signed-in run keeps no request or response (its sign-in is in them)
+        errors = parse_nuclei_errors(_read_error_log(errlog))
+    return {'findings': findings, 'templates_release': release,
+            'unreachable': unreached_targets(targets, errors, {f['host'] for f in findings})}
+
+
+def _read_error_log(path):
+    """The text of a nuclei error log, bounded; a run that logged nothing leaves no file (nothing failed)."""
     try:
-        argv = [NUCLEI_BIN, '-l', path, *flags]
-        return {'findings': parse_nuclei_jsonl(_run(argv, timeout, register, env=nuclei_env())), 'templates_release': release}
-    finally:
-        os.unlink(path)
+        with open(path, encoding='utf-8', errors='replace') as handle:
+            return handle.read(MAX_ERROR_LOG_BYTES)
+    except OSError:
+        return ''
 
 
 # --- testssl.sh: one host:port at a time, raw report items, server-side evaluate() reads them ------------------------
@@ -1104,14 +1122,18 @@ def _template_test(path, hosts, register):
             allowed.append(host)
         except TargetError as exc:
             refused[host] = str(exc)[:300]
-    rows, hits, error = {}, {}, ''
+    rows, hits, error, unreached = {}, {}, '', set()
     if allowed:
         proxy = _proxy_args('nuclei', allowed)  # cvENGINE's egress proxy, as the server's own template test (cveFeed.templategen._run_template) takes it
         host_path = _targets_file(allowed)
-        try:
-            code, out, err = _run_status([NUCLEI_BIN, '-t', path, '-l', host_path, *NUCLEI_TEMPLATE_FLAGS, *proxy], NUCLEI_TEMPLATE_TIMEOUT, register)
-        finally:
-            os.unlink(host_path)
+        with tempfile.TemporaryDirectory(prefix='nuclei-test-') as work:
+            errlog = os.path.join(work, 'errors.jsonl')
+            try:
+                code, out, err = _run_status([NUCLEI_BIN, '-t', path, '-l', host_path, *NUCLEI_TEMPLATE_FLAGS, '-elog', errlog, *proxy],
+                                             NUCLEI_TEMPLATE_TIMEOUT, register)
+            finally:
+                os.unlink(host_path)
+            errors = parse_nuclei_errors(_read_error_log(errlog))
         if code != 0:
             error = (err or f'nuclei exited with status {code}').strip()[-300:]
         for line in out.splitlines() if not error else []:
@@ -1129,12 +1151,16 @@ def _template_test(path, hosts, register):
                 key = _host_key(row.get('host') or row.get('matched-at') or row.get('ip'))
                 hits.setdefault(key, []).append(line)
                 rows.setdefault(key, row)
+        if not error:  # a host nothing answered is an error, never a negative test (review H4)
+            unreached = set(unreached_targets(allowed, errors, set(hits)))
     outcomes = []
     for host in hosts:
         if host in refused:
             outcomes.append({'host': host, 'vulnerable': False, 'output': '', 'error': refused[host]})
         elif error:
             outcomes.append({'host': host, 'vulnerable': False, 'output': '', 'error': error})
+        elif host in unreached:
+            outcomes.append({'host': host, 'vulnerable': False, 'output': '', 'error': 'nuclei never reached this host (no answer to any request)'})
         else:
             key = _host_key(host)
             outcomes.append({'host': host, 'vulnerable': bool(hits.get(key)), 'output': '\n'.join(hits.get(key, []))[-2000:],

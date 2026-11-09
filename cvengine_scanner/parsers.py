@@ -4,6 +4,7 @@ network, so the Sentinel and the cvENGINE server run the same code over the same
 """
 import json
 import logging
+import re
 from xml.etree import ElementTree as ET
 
 from .flags import GENERIC_WAF_NAMES, MAX_DISCOVER_HOSTS, MAX_OPEN_PER_IP, MAX_WAF_PRODUCTS, WAF_NAME_LEN, host_of
@@ -137,7 +138,7 @@ MAX_FINDINGS = 5000
 MAX_FINDINGS_BYTES = 20 * 1024 * 1024  # the server's result route takes 24 MB; the findings stay well under it
 MAX_LIST_ITEMS = 20  # tags and extracted results kept per finding
 _LIMITS = {'template_id': 200, 'name': 500, 'severity': 20, 'host': 255, 'matched_at': 500, 'description': 4000, 'matcher_name': 200,
-           'extracted': 500, 'tag': 100}
+           'extracted': 500, 'tag': 100, 'reference': 500, 'remediation': 500, 'type': 40}
 
 
 def _clip(value, limit):
@@ -153,9 +154,40 @@ def _strings(value, limit, split=False):
     return [v[:limit] for v in value if isinstance(v, str) and v][:MAX_LIST_ITEMS]
 
 
-def parse_nuclei_jsonl(text):
+# The request and the response a finding keeps: the first characters, as the server keeps them (contract: finding.request/response).
+EVIDENCE_LIMIT = 4096
+# A header whose name says it carries a credential: its value is never kept (review M2). The name is matched as a whole word fragment so
+# Authorization, Proxy-Authorization, Cookie, Set-Cookie, X-Api-Key, X-Auth-Token and the like are all covered.
+_SECRET_HEADER = re.compile(r'^([A-Za-z0-9-]*(?:auth|cookie|token|secret|password|passwd|api-?key|session|csrf)[A-Za-z0-9-]*)[ \t]*:.*$',
+                            re.IGNORECASE | re.MULTILINE)
+_BEARER = re.compile(r'\b(bearer|basic)[ \t]+[A-Za-z0-9._~+/=-]{4,}', re.IGNORECASE)
+
+
+def redact_evidence(text):
+    """``text`` (a request or response) with every credential-bearing header's value and every bearer or basic token replaced by
+    ``[REDACTED]``. What was matched stays readable: only the secret goes."""
+    text = _SECRET_HEADER.sub(lambda m: f'{m.group(1)}: [REDACTED]', text)
+    return _BEARER.sub(lambda m: f'{m.group(1)} [REDACTED]', text)
+
+
+def _cve_ids(value):
+    values = value if isinstance(value, list) else [value]
+    return sorted({v.upper() for v in values if isinstance(v, str) and _CVE_ID.fullmatch(v)})[:MAX_LIST_ITEMS]
+
+
+def _cvss(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 10:
+        return None
+    return float(value)
+
+
+_CVE_ID = re.compile(r'CVE-[0-9]{4}-[0-9]{4,7}', re.IGNORECASE)
+
+
+def parse_nuclei_jsonl(text, evidence=True):
     """Findings from nuclei's JSONL output. A line that is not an object is skipped and a field of the wrong type is read as empty, so one
-    odd line never fails the task; every field is clipped and at most ``MAX_FINDINGS`` are kept."""
+    odd line never fails the task; every field is clipped and at most ``MAX_FINDINGS`` are kept. ``evidence=False`` (a signed-in run, whose
+    requests carry a sign-in) keeps no request or response at all; otherwise they are kept clipped and redacted."""
     findings, size = [], 0
     for line in (text or '').splitlines():
         line = line.strip()
@@ -180,12 +212,68 @@ def parse_nuclei_jsonl(text):
                    'matcher_name': _clip(row.get('matcher-name'), _LIMITS['matcher_name']),
                    'extracted_results': _strings(row.get('extracted-results'), _LIMITS['extracted']),
                    'tags': _strings(info.get('tags'), _LIMITS['tag'], split=True)}
+        classification = info.get('classification') if isinstance(info.get('classification'), dict) else {}
+        cve_ids = _cve_ids(classification.get('cve-id'))
+        if cve_ids:
+            finding['cve_ids'] = cve_ids
+        cvss = _cvss(classification.get('cvss-score'))
+        if cvss is not None:
+            finding['cvss_score'] = cvss
+        references = _strings(info.get('reference'), _LIMITS['reference'])
+        if references:
+            finding['references'] = references
+        remediation = _clip(info.get('remediation'), _LIMITS['remediation'])
+        if remediation:
+            finding['remediation'] = remediation
+        kind = _clip(row.get('type'), _LIMITS['type']).lower()
+        if kind:
+            finding['type'] = kind
+        if evidence:
+            for key in ('request', 'response'):
+                text_value = _clip(row.get(key), EVIDENCE_LIMIT)
+                if text_value:
+                    finding[key] = redact_evidence(text_value)
         size += len(json.dumps(finding))
         if size > MAX_FINDINGS_BYTES:
             logger.warning('nuclei findings passed %s bytes; the rest were dropped so the result fits the server\'s limit', MAX_FINDINGS_BYTES)
             break
         findings.append(finding)
     return findings
+
+
+# The errors that mean nothing answered a request: nothing listens, the name does not resolve, the connection or the answer timed out.
+# A failure of another kind (a broken body, a bad header) means something answered, so the host is reached.
+NUCLEI_CONNECTION_ERRORS = re.compile(r'connection refused|no such host|timeout|deadline exceeded|no route to host|network is unreachable|'
+                                      r'connection reset|could not resolve|dial tcp|no address', re.IGNORECASE)
+
+
+def parse_nuclei_errors(text):
+    """``{host: [error text, ...]}`` from nuclei's error log (``-elog``): one JSON object per line, naming the input it failed on (``input``)
+    and the error. A line that is not an object, or names no input, is skipped."""
+    errors = {}
+    for line in (text or '').splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        target = next((row[k] for k in ('input', 'host', 'target', 'matched-at', 'url') if isinstance(row.get(k), str) and row[k]), '')
+        if target:
+            errors.setdefault(host_of({'host': target}), []).append(_clip(row.get('error'), 500))
+    return errors
+
+
+def unreached_targets(targets, errors, answered_hosts):
+    """The ``targets`` (as they were asked) that nuclei never reached: every request it logged for their host failed to connect, and no finding
+    names that host. A host with no logged error is not counted: nothing says it was not reached, so it is not reported as unreachable."""
+    out = []
+    for target in targets:
+        host = host_of({'host': target})
+        failed = errors.get(host)
+        if failed and host not in answered_hosts and all(NUCLEI_CONNECTION_ERRORS.search(text) for text in failed):
+            out.append(target)
+    return out
 
 
 def parse_testssl_report(raw):

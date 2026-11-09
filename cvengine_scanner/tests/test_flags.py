@@ -13,10 +13,12 @@ class NucleiFlagTests(unittest.TestCase):
             with self.subTest(argv=argv):
                 self.assertEqual(argv[argv.index('-etags') + 1], 'dos')
 
-    def test_the_sentinel_run_is_unchanged(self):
-        # what a Sentinel ran before the builders moved here: a 1.3 server's tasks must run exactly as before
+    def test_the_sentinel_run_keeps_the_raw_request_and_response(self):
+        # what a Sentinel ran before the builders moved here, less -omit-raw: a finding keeps its request and response (clipped, credentials redacted by
+        # parse_nuclei_jsonl) as the evidence a person can repeat (review M2). Every other flag is as it was.
         self.assertEqual(flags.NUCLEI_FLAGS, ['-jsonl', '-silent', '-duc', '-ni', '-nc', '-rl', '150', '-c', '40', '-timeout', '10', '-retries', '1',
-                                              '-omit-raw', '-etags', 'dos'])
+                                              '-etags', 'dos'])
+        self.assertNotIn('-omit-raw', flags.NUCLEI_FLAGS)
 
     def test_the_server_run_is_unchanged(self):
         self.assertEqual(flags.NUCLEI_BASE_FLAGS, ['-severity', 'info,low,medium,high,critical', '-jsonl', '-silent', '-duc', '-ni', '-nc', '-rl', '150',

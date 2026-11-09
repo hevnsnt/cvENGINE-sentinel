@@ -950,7 +950,7 @@ class Daemon:
         if not self._accept(task_id):
             return
         state = {'proc': None, 'done': threading.Event(), 'started': time.monotonic(), 'dropped': False, 'finishing': False,
-                 'kind': kind, 'runnable': kind in kinds, 'pgids': set()}
+                 'kind': kind, 'runnable': kind in kinds, 'pgids': set(), 'signed_in': bool(task.get('signed_in'))}
         limit = (task.get('target') or {}).get('timeout_seconds') if isinstance(task.get('target'), dict) else None
         if isinstance(limit, int) and not isinstance(limit, bool):
             state['budget_s'] = limit  # a time limit the task carries (bbot, thorough wpscan): the watchdog's deadline is never under it
@@ -1147,7 +1147,7 @@ class Daemon:
         partial = getattr(exc, 'partial', None)
         if self.guard and self.guard.cfg['partial'] and state.get('kind') in watchdog_mod.NUCLEI_KINDS and partial:
             try:
-                findings = tools.parse_nuclei_jsonl(partial)
+                findings = tools.parse_nuclei_jsonl(partial, evidence=not state.get('signed_in'))  # a signed-in run keeps no request or response
             except Exception:  # noqa: BLE001 - a cut last line, anything unreadable: the plain error
                 findings = []
             if findings:

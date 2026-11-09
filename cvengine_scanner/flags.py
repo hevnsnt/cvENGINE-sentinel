@@ -18,9 +18,9 @@ NUCLEI_SEVERITIES = 'info,low,medium,high,critical'  # what a run reports when t
 NUCLEI_EXCLUDED_TAGS = ('dos',)
 NUCLEI_EXCLUDE_FLAGS = ['-etags', ','.join(NUCLEI_EXCLUDED_TAGS)]
 _NUCLEI_RUN = ['-jsonl', '-silent', '-duc', '-ni', '-nc', '-rl', '150', '-c', '40', '-timeout', '10', '-retries', '1']
-# A Sentinel's run. -omit-raw: no raw request/response pairs in the output (parse_nuclei_jsonl never reads them, and they are most of its size).
-# The severity filter is the task's own (client.tools adds -severity only when the task names one).
-NUCLEI_FLAGS = [*_NUCLEI_RUN, '-omit-raw', *NUCLEI_EXCLUDE_FLAGS]
+# A Sentinel's run. The raw request and response are kept (no -omit-raw): parse_nuclei_jsonl keeps them, clipped and with credentials redacted,
+# as the evidence of a finding (review M2). The severity filter is the task's own (client.tools adds -severity only when the task names one).
+NUCLEI_FLAGS = [*_NUCLEI_RUN, *NUCLEI_EXCLUDE_FLAGS]
 # The server's local run: the default severities up front, raw pairs kept (it stores the matching request and response).
 NUCLEI_BASE_FLAGS = ['-severity', NUCLEI_SEVERITIES, *_NUCLEI_RUN, *NUCLEI_EXCLUDE_FLAGS]
 # A lighter run for when the normal one was stopped for lack of memory: fewer hosts in parallel, a gentler rate.
