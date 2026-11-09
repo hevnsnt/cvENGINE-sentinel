@@ -85,6 +85,9 @@ services:
       # 1: when cvENGINE asks this Sentinel to update (it keeps Sentinels on the newest version), drain and exit with code 76 so a supervisor that replaces the image
       # (scripts/pull-on-exit.sh, or any puller) brings the newest one. Unset: the host updater (scripts/update.sh) acts on the request instead (README.md, "Updates").
       CVENGINE_SENTINEL_UPDATE_EXIT: "${CVENGINE_SENTINEL_UPDATE_EXIT:-}"
+      # Optional: hours a finished result that cvENGINE did not take (an update, an outage) is held on disk and offered again (default 6; 0 turns the spool off), and the spool's size limit in MB (default 256).
+      CVENGINE_SENTINEL_SPOOL_HOURS: "${CVENGINE_SENTINEL_SPOOL_HOURS:-}"
+      CVENGINE_SENTINEL_SPOOL_MAX_MB: "${CVENGINE_SENTINEL_SPOOL_MAX_MB:-}"
       # Optional: network, profile and kinds to turn off can be set here or from cvENGINE; the network, the kinds turned off and self-update set here are limits cvENGINE can lower but never loosen (README.md).
       CVENGINE_SENTINEL_NETWORK: "${CVENGINE_SENTINEL_NETWORK:-}"
       CVENGINE_SENTINEL_DISABLE: "${CVENGINE_SENTINEL_DISABLE:-}"

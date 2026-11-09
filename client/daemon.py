@@ -34,6 +34,7 @@ from . import control
 from . import httpclient
 from . import openvas
 from . import selfupdate
+from . import spool as spool_mod
 from . import shot
 from . import signed_in
 from . import templates
@@ -72,10 +73,14 @@ MIN_BACKOFF = 1.0
 MAX_RETRY_AFTER = 30.0  # the longest this Sentinel waits when the server answers "no task" and says when to ask again (retry_after_seconds)
 IMMEDIATE_RETRY = 1.0  # a retry_after of this or less is the server's "ask again straight away", what it says after a full long poll: no extra wait
 MAX_BACKOFF = 60.0
-REPORT_ATTEMPTS = 5  # a result POST is tried this many times at most
+REPORT_ATTEMPTS = 4  # a result POST is tried this many times in a row before the result goes to the spool (a blip costs nothing on disk)
 REPORT_BACKOFF = 2.0  # seconds before the first retry, doubling each time
 REPORT_MAX_DELAY = 30.0
-REPORT_RETRY_SECONDS = 120.0  # and never for longer than this in all, so a dead server cannot hold a finished task forever
+REPORT_RETRY_SECONDS = 20.0  # the quick retries stop after this long; a server still unreachable then gets the result from the spool (client/spool.py), for hours
+SPOOL_MIN_BACKOFF = 2.0  # seconds between delivery passes while the server is unreachable, doubling to ...
+SPOOL_MAX_BACKOFF = 60.0  # ... this, forever within the spool window
+SPOOL_IDLE_SECONDS = 30.0  # how often an empty-handed spool thread looks again
+QUIET_LOG_SECONDS = 600.0  # the same outage is named in the log this often (the first failure at once)
 MAX_RESULT_BYTES = 23 * 1024 * 1024  # the server's result route refuses a body over 24 MB with a 400 that would end the task
 RELEASE_WAIT_SECONDS = 10.0  # after the grace period, how long shutdown waits for a task thread that is still delivering its result
 AUTH_STATUSES = (401, 403)  # the server no longer accepts this Sentinel's token
@@ -243,6 +248,7 @@ def bootstrap(blob_raw, name, max_concurrent, client_factory=httpclient.Client):
     return token, server_url
 
 
+_spool_report = {}  # set by the daemon: {count, oldest_seconds} while results are held for cvENGINE, empty otherwise (shown on the Sentinels page)
 _waiting_report = []  # set by the daemon at every poll plan: [{kind, need_mb, free_mb, budget_mb, seconds, held_by: [{task, kind, mb, seconds}]}], or a stopping task
 
 
@@ -262,6 +268,8 @@ def info():
     if 'openvas' in config.registered_capabilities() and 'openvas' not in config.disabled_kinds():
         ready, why = tools.gvm_status()  # cached for a minute; lets cvENGINE say why a Sentinel is not scanning (still syncing feeds, no scan config)
         out['openvas'] = {'ready': bool(ready), 'reason': '' if ready else str(why or '')[:200]}
+    if _spool_report.get('count'):
+        out['spool'] = dict(_spool_report)  # optional: a server that does not know the field ignores it
     out['waiting'] = list(_waiting_report)[:6]  # heavy kinds that wait for memory, tasks taken back and still stopping: shown on the Sentinels page (empty says nothing waits now)
     if 'ssh_probe' in declared_kinds():
         try:
@@ -316,6 +324,11 @@ class Daemon:
         self.heartbeat_ok_at = None  # when a heartbeat last reached the server and was answered (wall clock: control.json is read by another process)
         self._update_exit_state = None  # None, 'draining' (a drain for an update request runs) or 'waiting' (it gave up; asks again after RETRY_AFTER)
         self._update_exit_logged = None
+        self.spool = spool_mod.Spool()
+        self._spool_lock = threading.Lock()  # one delivery pass at a time: the spool thread, the heartbeat and startup share it
+        self._spool_wake = threading.Event()  # set when a result is added, so the spool thread delivers it without waiting
+        self._spool_backoff = SPOOL_MIN_BACKOFF
+        self._quiet = {}  # what -> [last logged (monotonic), suppressed count]: an outage is logged once, then rarely
         self.watchdog = config.builtin()  # the built-in scanner restarts itself when its heartbeats stop reaching the server
 
     # --- lifecycle --------------------------------------------------------------------------------------------
@@ -323,8 +336,13 @@ class Daemon:
     def run(self):
         control.set_draining(False)  # a fresh start is never drained, whatever an updater that died half way left behind
         self._write_control()
+        self._deliver_spool_at_start()  # held results go out before the first heartbeat: that heartbeat's list of running tasks must not make the server drop them
         hb = threading.Thread(target=self._heartbeat_loop, name='sentinel-heartbeat', daemon=True)
         hb.start()
+        try:
+            threading.Thread(target=self._spool_loop, name='sentinel-spool', daemon=True).start()
+        except RuntimeError:
+            logger.exception('the spool thread could not be started; the heartbeat delivers held results')
         if self.watchdog:
             threading.Thread(target=self._watchdog_loop, name='sentinel-watchdog', daemon=True).start()
         try:
@@ -438,15 +456,18 @@ class Daemon:
         update_reply = None
         try:
             self._retry_token_save()
+            self._flush_spool()  # held results first: a heartbeat that does not list them would let the server end their tasks as dropped
             asked_at = time.monotonic()
             try:
                 with self._lock:
                     running = sorted(self._in_flight, key=str)
-                out = self.client.call('POST', 'sentinel/heartbeat', {'info': info(), 'running': running})
+                held = [t for t in self.spool.task_ids() if t not in {str(r) for r in running}]
+                out = self.client.call('POST', 'sentinel/heartbeat', {'info': info(), 'running': running + held})  # a held result's task still counts as running here
             except (httpclient.ApiError, requests.RequestException) as exc:
                 if not self._auth_failed(exc):
-                    logger.warning('heartbeat failed: %s', exc)
+                    self._quiet_warning('heartbeat', 'heartbeat failed: %s', exc)
                 return
+            self._quiet_recovered('heartbeat', 'heartbeat reaches cvENGINE again')
             out = out if isinstance(out, dict) else {}
             self.heartbeat_ok_at = time.time()
             update_reply = out.get('update')
@@ -659,6 +680,7 @@ class Daemon:
         two consecutive heartbeats, so a task accepted a moment ago is never released."""
         with self._lock:
             running = {str(task_id) for task_id in self._in_flight}
+        running |= set(self.spool.task_ids())  # a result held for delivery is not an orphan: the server must keep its lease until it arrives
         orphans = {task_id for task_id in held if str(task_id) not in running}
         confirmed = [task_id for task_id in orphans if task_id in self._orphans_seen]
         self._orphans_seen = orphans  # a lease that went away, or is running here after all, is forgotten
@@ -789,7 +811,7 @@ class Daemon:
                 self._wait_rate_limited(exc)
                 return
             if not self._auth_failed(exc):
-                logger.warning('poll failed: %s', exc)
+                self._quiet_warning('poll', 'poll failed: %s', exc)
                 self._sleep_backoff()
             return
         finally:
@@ -798,6 +820,7 @@ class Daemon:
                 self._reserve = None
                 self._blocked_since.pop(reserved, None)
         self._backoff = MIN_BACKOFF
+        self._quiet_recovered('poll', 'cvENGINE answers polls again')
         if self._held_logged is not None:
             logger.info('cvENGINE no longer holds this Sentinel; taking work again')
             self._held_logged = None
@@ -1153,9 +1176,11 @@ class Daemon:
         return None
 
     def _report(self, task_id, result):
-        """POST the result, retrying a network error, a server error or rate limiting with exponential backoff and jitter (at most
-        ``REPORT_ATTEMPTS`` tries within ``REPORT_RETRY_SECONDS``, and none once the shutdown grace period is over). Any other refusal is final.
-        A result that still cannot be delivered releases the task so the server can run it again now rather than wait for the lease to expire."""
+        """POST the result, retrying a network error, a server error or rate limiting a few times with backoff and jitter (``REPORT_ATTEMPTS``
+        within ``REPORT_RETRY_SECONDS``, and no waiting once the shutdown grace period is over). A result that still cannot be delivered is
+        written to the spool (client/spool.py) and delivered when cvENGINE answers again, for up to the spool window (6 hours by default): the
+        finished scan is never thrown away for an update or an outage. Any other refusal is final. Only when the spool cannot hold it (turned off,
+        full, or the disk refused) is the task released, as before, so the server can run it again now rather than wait for the lease to expire."""
         try:
             size = len(json.dumps(result))
         except (TypeError, ValueError):
@@ -1182,8 +1207,109 @@ class Daemon:
             logger.warning('could not report the result for task %s (%s); retrying in %.1fs', task_id, error, delay)
             if self._halted.wait(delay):
                 break
-        logger.error('could not report the result for task %s (%s); releasing it so the server can run it again', task_id, error)
+        if self.spool.add(task_id, result):
+            logger.warning('could not report the result for task %s (%s); holding it on disk (%s held) and delivering it when cvENGINE answers again, '
+                           'for up to %.1f hours', task_id, error, self.spool.count(), spool_mod.window_seconds() / 3600.0)
+            self._update_spool_report()
+            self._spool_wake.set()
+            return
+        logger.error('could not report the result for task %s (%s) and it cannot be held; releasing it so the server can run it again', task_id, error)
         self._release(task_id, 'Sentinel could not deliver the result')
+
+    # --- the spool ----------------------------------------------------------------------------------------------
+
+    def _update_spool_report(self):
+        try:
+            count = self.spool.count()
+            if count:
+                _spool_report.clear()
+                _spool_report.update({'count': count, 'oldest_seconds': int(self.spool.oldest_age() or 0)})
+            else:
+                _spool_report.clear()
+        except Exception:  # noqa: BLE001 - a status line must never stop delivery
+            logger.exception('the spool status could not be read')
+
+    def _quiet_warning(self, what, message, exc):
+        """Log a repeated failure once, then at most every ``QUIET_LOG_SECONDS`` with how many were left out, so a six hour outage is a few lines."""
+        now = time.monotonic()
+        last = self._quiet.get(what)
+        if last is None:
+            self._quiet[what] = [now, 0]
+            logger.warning(message + ' (further identical failures are logged every %d minutes)', exc, QUIET_LOG_SECONDS // 60)
+        elif now - last[0] >= QUIET_LOG_SECONDS:
+            logger.warning(message + ' (%d more since the last line)', exc, last[1])
+            self._quiet[what] = [now, 0]
+        else:
+            last[1] += 1
+
+    def _quiet_recovered(self, what, line):
+        if self._quiet.pop(what, None) is not None:
+            logger.info(line)
+
+    def _deliver_spool_at_start(self):
+        try:
+            if self.spool.count():
+                logger.info('%d result(s) were held by an earlier run: delivering them before anything else', self.spool.count())
+                self._flush_spool()
+        except Exception:  # noqa: BLE001 - never stops a start
+            logger.exception('the spool could not be delivered at start')
+
+    def _flush_spool(self):
+        """One delivery pass: the held results, oldest first, each deleted once the server answered (2xx, which includes \"already have it\", or a
+        final 4xx refusal that no retry changes). A server that is unreachable, errors or rate limits ends the pass, and the entry stays. Entries older
+        than the window are moved aside, not offered. Returns True when nothing is left to deliver."""
+        if not self._spool_lock.acquire(blocking=False):
+            return False  # another pass is running
+        try:
+            expired = self.spool.expire_old()
+            for task_id in expired:
+                logger.error('the result for task %s was held longer than %.1f hours and is no longer offered to cvENGINE; it stays on disk under %s/',
+                             task_id, spool_mod.window_seconds() / 3600.0, spool_mod.EXPIRED_DIR)
+            for task_id, _age in self.spool.entries():
+                if self.stop_event.is_set() and self._halted.is_set():
+                    break
+                result = self.spool.load(task_id)
+                if result is None:
+                    continue
+                try:
+                    self.client.call('POST', f'sentinel/tasks/{task_id}/result', result)
+                except (httpclient.ApiError, requests.RequestException) as exc:
+                    if self._auth_failed(exc):
+                        break
+                    if getattr(exc, 'status', None) in AUTH_STATUSES or _retryable(exc):
+                        self._quiet_warning('spool', 'cvENGINE did not take the held results yet: %s', exc)
+                        break
+                    logger.warning('the server refused the held result for task %s (%s); dropping it', task_id, exc)
+                    self.spool.remove(task_id)
+                    continue
+                self.spool.remove(task_id)
+                self._quiet_recovered('spool', 'held results are being delivered again')
+                logger.info('delivered the held result for task %s (%d left)', task_id, self.spool.count())
+            left = self.spool.count()
+            self._update_spool_report()
+            if left == 0:
+                self._spool_backoff = SPOOL_MIN_BACKOFF
+            return left == 0
+        finally:
+            self._spool_lock.release()
+
+    def _spool_loop(self):
+        """Deliver held results with a capped backoff for as long as there are any. Quiet: one line per outage, one per delivery."""
+        while not self.stop_event.is_set():
+            try:
+                if self.spool.count() == 0:
+                    self._update_spool_report()
+                    self._spool_wake.wait(SPOOL_IDLE_SECONDS)
+                    self._spool_wake.clear()
+                    continue
+                if self._flush_spool():
+                    continue
+                delay = min(SPOOL_MAX_BACKOFF, self._spool_backoff) * random.uniform(0.5, 1.0)
+                self._spool_backoff = min(SPOOL_MAX_BACKOFF, self._spool_backoff * 2)
+                self.stop_event.wait(delay)
+            except Exception:  # noqa: BLE001 - the spool thread must never end while results are held
+                logger.exception('the spool delivery failed; trying again')
+                self.stop_event.wait(SPOOL_MIN_BACKOFF)
 
     def _release(self, task_id, reason):
         try:
@@ -1223,3 +1349,7 @@ class Daemon:
         release_by = time.monotonic() + RELEASE_WAIT_SECONDS
         for state in finishing:
             state['done'].wait(timeout=max(0.0, release_by - time.monotonic()))
+        held = self.spool.count()
+        if held:  # nothing to release: the results are on disk and go out at the next start
+            logger.info('%d finished result(s) stay in the spool and are delivered the next time cvENGINE answers', held)
+
