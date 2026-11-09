@@ -178,6 +178,13 @@ def _label(etype, payload, host):
     return host or ''
 
 
+def _is_wildcard(name, tags):
+    """True for the name bbot makes up for a wildcard zone (``_wildcard.<parent>``, a label that starts ``_wildcard``) and for a name bbot tagged exactly ``wildcard``
+    (it resolves only through the zone's catch-all answer; ``wildcard-domain`` marks the zone that has one, which is a real name): neither is a host, and every later stage would scan it and see the same answer."""
+    labels = name.lower().split('.')
+    return any(label.startswith('_wildcard') for label in labels) or any(str(t).lower() == 'wildcard' for t in (tags or []) if isinstance(t, str))
+
+
 def _status(tags):
     for tag in tags or []:
         if isinstance(tag, str) and tag.startswith('status-') and tag[7:].isdigit() and len(tag) <= 10:
@@ -233,6 +240,8 @@ class Collector:
         p = self.policy
         if etype == 'DNS_NAME' and isinstance(payload, str):
             name = p.name(payload)
+            if name and _is_wildcard(name, event.get('tags')):
+                name = ''  # a name that only resolves because its zone answers everything is not a host (review M5)
             if name:
                 self._add('subdomains', name)
                 for ip in event.get('resolved_hosts') or []:

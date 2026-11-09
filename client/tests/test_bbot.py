@@ -123,6 +123,20 @@ class CollectorTests(unittest.TestCase):
         self.dir = tempfile.mkdtemp()
         self.addCleanup(lambda: __import__('shutil').rmtree(self.dir, ignore_errors=True))
 
+    def test_a_wildcard_zone_adds_no_made_up_host_and_no_resolution(self):
+        """bbot tags a name that only resolves through a wildcard with ``wildcard`` and can emit ``_wildcard.<parent>``. Neither is a host (review M5)."""
+        c = bbot.Collector(bbot.Policy(TARGET['scope']), self.dir)
+        for e in (event('DNS_NAME', 'www.example.com', 'www.example.com', resolved_hosts=['192.0.2.10']),
+                  event('DNS_NAME', 'random-a1b2.example.com', 'random-a1b2.example.com', tags=['a-record', 'wildcard'], resolved_hosts=['192.0.2.55']),
+                  event('DNS_NAME', '_wildcard.example.com', '_wildcard.example.com', resolved_hosts=['192.0.2.55']),
+                  event('DNS_NAME', 'mail.example.com', 'mail.example.com', tags=['wildcard'], resolved_hosts=['192.0.2.55']),
+                  event('DNS_NAME', 'example.com', 'example.com', tags=['wildcard-domain'])):  # the zone that has the wildcard is a real name
+            c.add(e)
+        batch = c.take(1)
+        self.assertEqual(batch['subdomains'], ['example.com', 'www.example.com'])
+        self.assertEqual(batch['resolutions'], [{'name': 'www.example.com', 'ip': '192.0.2.10'}])
+        self.assertNotIn('192.0.2.55', batch['ips'])
+
     def test_events_become_a_batch_in_contract_held_to_the_scope(self):
         os.makedirs(os.path.join(self.dir, 'demo_scan', 'gowitness'))
         with open(os.path.join(self.dir, 'demo_scan', 'gowitness', 'shot.png'), 'wb') as handle:
