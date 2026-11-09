@@ -30,6 +30,10 @@ BUILTIN_NAME = 'CVEngine Scanner'  # what the install's own scanner is called; t
 # of a stored credential, client/signed_in.py) and ``vantage`` (it applies the server's egress proxy and private-target settings, ``vantage()``). The
 # server offers that work, and stops warning about the vantage point, only to a built-in scanner that says so.
 BUILTIN_FEATURES = ('secret_read', 'vantage')
+# What every other Sentinel reports in ``info.features``: ``bbot_keys`` says this client reads a bbot discovery task's API keys through the single-use
+# secret read, keeps them only in a private file for the run, and masks them in everything it reports. A server sends keys only to a Sentinel that says so
+# (and the owner has not switched it off); an old Sentinel does not say it and never gets them. Optional: a server that does not know it ignores it.
+EXTERNAL_FEATURES = ('bbot_keys',)
 
 logger = logging.getLogger('sentinel.config')
 

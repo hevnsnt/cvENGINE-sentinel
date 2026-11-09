@@ -279,6 +279,100 @@ class RunTests(unittest.TestCase):
         with self.assertRaises(bbot.Stopped):
             self.run_with(FakeProc(self.LINES), client=client)
 
+class KeyHandlingTests(unittest.TestCase):
+    """A key value reaches bbot only through the 0600 file; it is in no batch, no result, no error, no log, and its directory is gone afterwards."""
+
+    LINES = RunTests.LINES
+    run_with = RunTests.run_with
+    KEY = 'FAKE-KEY-0123456789abcdef'
+    KEYS = {'modules': {'shodan_dns': {'api_key': KEY}, 'censys': {'api_id': 'FAKE-ID-aaaa1111', 'api_secret': 'FAKE-SECRET-bbbb2222'}}}
+
+    def leaky_lines(self):
+        k = self.KEY
+        return [event('SCAN', {'name': 'demo_scan'}), event('DNS_NAME', 'www.example.com', 'www.example.com'),
+                event('FINDING', {'description': f'shodan_dns said key={k} was bad', 'host': 'www.example.com', 'severity': 'LOW'}, 'www.example.com', module='shodan_dns'),
+                event('TECHNOLOGY', {'technology': f'Thing {k}', 'host': 'www.example.com'}, 'www.example.com'),
+                event('HTTP_RESPONSE', {'url': f'https://www.example.com/?apikey={k}', 'host': 'www.example.com', 'title': f'T {k}', 'status_code': 200},
+                      'www.example.com')]
+
+    def test_no_key_value_in_any_batch_or_result_or_error(self):
+        client = FakeClient(keys=self.KEYS)
+        stderr = f'Setup soft-failed for shodan_dns: 401 for key {self.KEY} and FAKE-SECRET-bbbb2222\n'
+        with self.assertLogs('sentinel.bbot', 'ERROR') as logged:
+            result, client, seen = self.run_with(FakeProc(self.leaky_lines(), code=1, stderr=stderr + f'ValueError: bad {self.KEY}\n'), client=client,
+                                                 target={**TARGET, 'api_keys': True})
+            logging_text = '\n'.join(logged.output)
+        self.assertIn(self.KEY, seen['keys'])  # the file bbot reads has them
+        wire = json.dumps(client.batches()) + json.dumps(result) + logging_text + json.dumps(seen['cmd'])
+        for value in ('FAKE-KEY-0123456789abcdef', 'FAKE-ID-aaaa1111', 'FAKE-SECRET-bbbb2222'):
+            self.assertNotIn(value, wire)
+        self.assertTrue(client.batches())
+        self.assertIn('***', json.dumps(client.batches()))  # masked, not dropped
+
+    def test_a_run_error_message_carries_no_key(self):
+        client = FakeClient(keys=self.KEYS)
+        with self.assertRaises(bbot.RunError) as caught:
+            self.run_with(FakeProc([], code=1, stderr=f'ValueError: refused for {self.KEY}\n'), client=client, target={**TARGET, 'api_keys': True})
+        self.assertNotIn(self.KEY, str(caught.exception))
+
+    def test_the_key_file_is_private_and_the_directory_is_removed_on_every_path(self):
+        modes = {}
+
+        def popen(cmd, **kwargs):
+            work = os.path.dirname(cmd[cmd.index('-b') + 1])
+            modes['dir'], modes['file'] = os.stat(work).st_mode & 0o777, os.stat(os.path.join(work, 'keys.yml')).st_mode & 0o777
+            modes['work'] = work
+            return FakeProc(self.leaky_lines())
+        with mock.patch.object(bbot, '_stop'):
+            bbot.run_bbot_discovery({**TARGET, 'api_keys': True}, FakeClient(keys=self.KEYS), 7, halted=threading.Event(), popen=popen)
+        self.assertEqual((modes['dir'], modes['file']), (0o700, 0o600))
+        self.assertFalse(os.path.exists(modes['work']))
+        # a crash inside the run (the server stopped the task) removes it too
+        modes.clear()
+
+        def popen2(cmd, **kwargs):
+            modes['work'] = os.path.dirname(cmd[cmd.index('-b') + 1])
+            return FakeProc(self.leaky_lines())
+        with mock.patch.object(bbot, '_stop'), self.assertRaises(bbot.Stopped):
+            bbot.run_bbot_discovery({**TARGET, 'api_keys': True}, FakeClient([httpclient.ApiError(409, 'stopped')], keys=self.KEYS), 7,
+                                    halted=threading.Event(), popen=popen2)
+        self.assertFalse(os.path.exists(modes['work']))
+
+    def test_the_secret_is_read_once_and_a_task_without_the_flag_reads_none(self):
+        client = FakeClient(keys=self.KEYS)
+        self.run_with(FakeProc(self.LINES), client=client, target=TARGET)
+        self.assertEqual([p for _m, p, _b in client.calls if p.endswith('/secret')], [])
+
+    def test_an_unreadable_secret_runs_without_keys(self):
+        client = FakeClient(keys=None)
+        result, _c, seen = self.run_with(FakeProc(self.LINES), client=client, target={**TARGET, 'api_keys': True})
+        self.assertIsNone(seen['keys'])
+        self.assertEqual(result['outcome'], 'done')
+
+    def test_scrub_masks_nested_text_and_leaves_image_data_alone(self):
+        body = {'a': [{'b': f'x {self.KEY} y'}], 'screenshots': [{'content_type': 'image/png', 'data': 'AAAA' + self.KEY[:8], 'filename': self.KEY + '.png'}], 'n': 3}
+        out = bbot.scrub(body, bbot.secrets_of(self.KEYS))
+        self.assertNotIn(self.KEY, json.dumps(out))
+        self.assertEqual(out['screenshots'][0]['data'], 'AAAA' + self.KEY[:8])
+        self.assertEqual(out['n'], 3)
+
+    def test_stale_work_directories_are_swept_at_start(self):
+        with tempfile.TemporaryDirectory() as root:
+            stale = os.path.join(root, bbot.WORK_PREFIX + 'abc')
+            os.mkdir(stale, 0o700)
+            with open(os.path.join(stale, 'keys.yml'), 'w', encoding='utf-8') as handle:
+                handle.write('FAKE-KEY')
+            other = os.path.join(root, 'something-else')
+            os.mkdir(other)
+            link = os.path.join(root, bbot.WORK_PREFIX + 'link')
+            os.symlink(other, link)
+            plain = os.path.join(root, bbot.WORK_PREFIX + 'file')
+            open(plain, 'w').close()
+            self.assertEqual(bbot.sweep_stale(root), 1)
+            self.assertFalse(os.path.exists(stale))
+            self.assertTrue(os.path.isdir(other) and os.path.islink(link) and os.path.exists(plain))
+            self.assertEqual(bbot.sweep_stale(os.path.join(root, 'missing')), 0)
+
 
 if __name__ == '__main__':
     unittest.main()

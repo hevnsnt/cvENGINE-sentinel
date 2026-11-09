@@ -261,6 +261,8 @@ def info():
     if config.builtin():  # the server decides from the enrollment whether this is its built-in scanner; this only tells it the image knows it is
         out['builtin'] = True
         out['features'] = list(config.BUILTIN_FEATURES)
+    else:
+        out['features'] = list(config.EXTERNAL_FEATURES)
     if config.version():
         out['version'] = config.version()
     update = control.read_update()
@@ -345,6 +347,7 @@ class Daemon:
 
     def run(self):
         control.set_draining(False)  # a fresh start is never drained, whatever an updater that died half way left behind
+        bbot.sweep_stale()  # a key file a crashed run left in the temp directory goes before any task starts
         self._write_control()
         self._deliver_spool_at_start()  # held results go out before the first heartbeat: that heartbeat's list of running tasks must not make the server drop them
         hb = threading.Thread(target=self._heartbeat_loop, args=(self._hb_gen,), name='sentinel-heartbeat', daemon=True)

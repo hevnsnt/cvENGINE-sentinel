@@ -3,6 +3,11 @@
 ## Unreleased
 
 ### Added
+- A Sentinel that is not the built-in scanner now reports `info.features: ["bbot_keys"]` in its heartbeat: it reads a bbot discovery task's API keys through the
+  single-use secret read (`POST sentinel/tasks/<id>/secret`), keeps them only in a 0600 file inside a fresh 0700 directory for the run, and masks them. A cvENGINE
+  server sends the project's discovery API keys only to a Sentinel that says so (and that its owner has not opted out); an older Sentinel never says it and never gets
+  them. Optional field, no contract change, no new task kind, task payload unchanged. Every key is now also masked in each batch posted and in the final result and
+  any error text (not only in bbot's error stream), and a key directory a crashed run left in the temp directory is removed at the next start.
 - A Sentinel watchdog (`client/watchdog.py`, docs/WATCHDOG.md): a thread apart from the task threads, ticking every 10 seconds, on by default
   (`CVENGINE_SENTINEL_WATCHDOG=0` switches it off). W1 stops a task's whole process group at a per-kind hard deadline (the tool's own budget plus a grace; the
   owner can raise it, never lower it) and reports `error` "timed out after N minutes"; W2 stops a group that used no CPU and moved no bytes for N minutes (a
