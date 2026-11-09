@@ -91,12 +91,17 @@ class Admission:
     def __init__(self, budget=None):
         self._budget = budget
         self._lock = threading.Lock()
+        self.overcommit_mb = 0  # set by the watchdog (client/watchdog.py) while waiters starve behind long runs and real free memory allows it
 
     @property
     def budget(self):
         if self._budget is None:
             self._budget = budget_mb()
         return self._budget
+
+    @property
+    def effective_budget(self):
+        return self.budget + max(0, int(self.overcommit_mb or 0))
 
     def used(self, running):
         return sum(weight(k) for k in running)
@@ -106,7 +111,7 @@ class Admission:
         w = weight(kind)
         if w == 0 or not any(weight(k) > DEFAULT_WEIGHT_MB for k in running):
             return True  # nothing heavy runs: a task alone is always admitted, and a light one costs next to nothing
-        return self.used(running) + w <= self.budget
+        return self.used(running) + w <= self.effective_budget
 
     def admissible(self, kinds, running):
         """``kinds`` less those that would not fit beside ``running`` right now."""

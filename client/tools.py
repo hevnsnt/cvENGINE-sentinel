@@ -329,7 +329,9 @@ def _run(argv, timeout, register=None, max_bytes=None, env=None, ok_codes=(0,), 
                 logger.error('%s was killed by the system%s: out of memory in this container', os.path.basename(argv[0]),
                              '' if counted is None else f' (the cgroup counted {counted} out-of-memory kills during the run)')
                 raise ToolOOMError(f'{ToolOOMError.OOM_TEXT} ({os.path.basename(argv[0])} was killed by the system)')
-        raise ToolExitError(f'{os.path.basename(argv[0])} exited with status {proc.returncode}' + (f': {tail[:200]}' if tail else ''))
+        failure = ToolExitError(f'{os.path.basename(argv[0])} exited with status {proc.returncode}' + (f': {tail[:200]}' if tail else ''))
+        failure.partial = out.decode('utf-8', errors='replace')  # what it printed before it was stopped: the watchdog delivers a stopped nuclei run's findings
+        raise failure
     return out.decode('utf-8', errors='replace')
 
 

@@ -39,6 +39,7 @@ from . import shot
 from . import signed_in
 from . import templates
 from . import tools
+from . import watchdog as watchdog_mod
 
 logger = logging.getLogger('sentinel.daemon')
 
@@ -249,6 +250,7 @@ def bootstrap(blob_raw, name, max_concurrent, client_factory=httpclient.Client):
 
 
 _spool_report = {}  # set by the daemon: {count, oldest_seconds} while results are held for cvENGINE, empty otherwise (shown on the Sentinels page)
+_watchdog_report = {}  # set by the watchdog at every tick: {last_tick, actions_last_hour, kills, overcommit_active, reasons, actions, ...} (info.watchdog, optional)
 _waiting_report = []  # set by the daemon at every poll plan: [{kind, need_mb, free_mb, budget_mb, seconds, held_by: [{task, kind, mb, seconds}]}], or a stopping task
 
 
@@ -270,6 +272,8 @@ def info():
         out['openvas'] = {'ready': bool(ready), 'reason': '' if ready else str(why or '')[:200]}
     if _spool_report.get('count'):
         out['spool'] = dict(_spool_report)  # optional: a server that does not know the field ignores it
+    if _watchdog_report:
+        out['watchdog'] = dict(_watchdog_report)  # optional: a server that does not know the field ignores it; no target, finding or secret is ever in it
     out['waiting'] = list(_waiting_report)[:6]  # heavy kinds that wait for memory, tasks taken back and still stopping: shown on the Sentinels page (empty says nothing waits now)
     if 'ssh_probe' in declared_kinds():
         try:
@@ -291,6 +295,8 @@ def register(client, name, max_concurrent):
 
 
 class Daemon:
+    guard = None  # the watchdog (client/watchdog.py), set in __init__ unless CVENGINE_SENTINEL_WATCHDOG=0
+
     def __init__(self, server_url, token, max_concurrent=1, client=None, heartbeat_seconds=None):
         self.client = client or httpclient.Client(server_url, token)
         self.max_concurrent = _cap_concurrency(max_concurrent)
@@ -329,6 +335,10 @@ class Daemon:
         self._spool_wake = threading.Event()  # set when a result is added, so the spool thread delivers it without waiting
         self._spool_backoff = SPOOL_MIN_BACKOFF
         self._quiet = {}  # what -> [last logged (monotonic), suppressed count]: an outage is logged once, then rarely
+        self.hb_beat_at = time.monotonic()  # when the heartbeat loop last finished a pass (monotonic), for the watchdog and the container health check
+        self.poll_beat_at = time.monotonic()  # when the poll loop last turned
+        self._hb_gen = 0  # a replacement heartbeat thread bumps it: the old thread, if it ever returns, ends
+        self.guard = watchdog_mod.Watchdog(self) if watchdog_mod.enabled() else None  # client/watchdog.py: the Sentinel's own watchdog thread
         self.watchdog = config.builtin()  # the built-in scanner restarts itself when its heartbeats stop reaching the server
 
     # --- lifecycle --------------------------------------------------------------------------------------------
@@ -337,8 +347,10 @@ class Daemon:
         control.set_draining(False)  # a fresh start is never drained, whatever an updater that died half way left behind
         self._write_control()
         self._deliver_spool_at_start()  # held results go out before the first heartbeat: that heartbeat's list of running tasks must not make the server drop them
-        hb = threading.Thread(target=self._heartbeat_loop, name='sentinel-heartbeat', daemon=True)
+        hb = threading.Thread(target=self._heartbeat_loop, args=(self._hb_gen,), name='sentinel-heartbeat', daemon=True)
         hb.start()
+        if self.guard:
+            self.guard.start()
         try:
             threading.Thread(target=self._spool_loop, name='sentinel-spool', daemon=True).start()
         except RuntimeError:
@@ -354,6 +366,9 @@ class Daemon:
             threading.Thread(target=self._check_screenshot_sandbox, name='sentinel-shot-sandbox', daemon=True).start()
         try:
             while not self.stop_event.is_set():
+                self.poll_beat_at = time.monotonic()
+                if self.guard and not self.guard.alive():  # the watchdog thread itself died: the loop it guards starts it again
+                    self.guard.start()
                 try:
                     self._poll_once()
                 except Exception:  # noqa: BLE001 - a bug or a reply nobody anticipated must never end the daemon
@@ -446,9 +461,24 @@ class Daemon:
 
     # --- heartbeat ----------------------------------------------------------------------------------------------
 
-    def _heartbeat_loop(self):
+    def _heartbeat_loop(self, gen=0):
         while not self.stop_event.wait(self.heartbeat_seconds):
+            if gen != self._hb_gen:  # a newer heartbeat thread took over (restart_heartbeat)
+                return
+            self.hb_beat_at = time.monotonic()
             self._heartbeat_once()
+            self.hb_beat_at = time.monotonic()
+
+    def restart_heartbeat(self):
+        """Start a new heartbeat thread in place of one that is stuck or gone (the watchdog's W5). Returns whether a thread was started."""
+        self._hb_gen += 1
+        self.hb_beat_at = time.monotonic()
+        try:
+            threading.Thread(target=self._heartbeat_loop, args=(self._hb_gen,), name='sentinel-heartbeat', daemon=True).start()
+            return True
+        except RuntimeError:
+            logger.exception('the heartbeat thread could not be restarted')
+            return False
 
     def _heartbeat_once(self):
         """One heartbeat. Whatever goes wrong is logged and the thread lives on to the next one, and the updater's status file is rewritten
@@ -689,6 +719,13 @@ class Daemon:
             logger.warning('the server holds task %s for this Sentinel but it is not running here; releasing it', task_id)
             self._release(task_id, 'this Sentinel is not running the task (a lease left by a restart)')
 
+    def _liveness(self):
+        """When the watchdog, the heartbeat loop and the poll loop last turned, as seconds since the epoch, for ``control.health``; ``None`` with no watchdog."""
+        if not self.guard:
+            return None
+        now_m, now_w = time.monotonic(), time.time()
+        return {'wd': int(now_w - (now_m - self.guard.last_tick)), 'hb': int(now_w - (now_m - self.hb_beat_at)), 'poll': int(now_w - (now_m - self.poll_beat_at))}
+
     def _write_control(self, update_reply=None):
         """Tell the host-side updater where this Sentinel stands: running tasks (plus one while a poll that may return a task is outstanding),
         drain state, and what cvENGINE said about updating. Rewritten whenever a task starts or ends and around every poll, not only at
@@ -699,7 +736,7 @@ class Daemon:
             with self._lock:
                 kinds = [state.get('kind') for state in self._in_flight.values()]
             control.write_status(config.version(), self._active_count() + (1 if self._polling else 0), self._update_reply, kinds=kinds,
-                                 heartbeat_at=self.heartbeat_ok_at, started_at=self.started_at)
+                                 heartbeat_at=self.heartbeat_ok_at, started_at=self.started_at, liveness=self._liveness())
         except Exception as exc:  # noqa: BLE001 - the updater's status is a side channel; it must never stop a heartbeat or a task
             logger.warning('could not write the updater status: %s', exc)
 
@@ -713,6 +750,8 @@ class Daemon:
         """The kinds to ask for in this poll, given what is running. OpenVAS has its own slot: it never counts against ``max_concurrent``, and
         at most one OpenVAS task runs at a time. With every other slot taken, only OpenVAS (if no OpenVAS task runs) is asked for."""
         kinds = self._poll_kinds()
+        if self.guard:
+            kinds = self.guard.filter_kinds(kinds)  # none while the disk is low, none of a kind the watchdog withholds after repeated stops
         with self._lock:
             running = [state.get('kind') for state in self._in_flight.values()]
         if 'openvas' in running and 'openvas' in kinds:
@@ -900,13 +939,18 @@ class Daemon:
             return
         with self._lock:
             running = [st.get('kind') for st in self._in_flight.values()]
+        if self.guard and self.admission.used(running) + admission.weight(kind) > self.admission.budget and self.admission.can_start(kind, running):
+            self.guard.note_overcommit_admit(kind)  # fits only inside the watchdog's bounded overcommit
         if not self.admission.can_start(kind, running):  # the plan said it fit; a task that does not any more goes back, never into an out-of-memory kill
             self._release(task_id, 'out of memory budget on this Sentinel, retry later')
             return
         if not self._accept(task_id):
             return
         state = {'proc': None, 'done': threading.Event(), 'started': time.monotonic(), 'dropped': False, 'finishing': False,
-                 'kind': kind, 'runnable': kind in kinds}
+                 'kind': kind, 'runnable': kind in kinds, 'pgids': set()}
+        limit = (task.get('target') or {}).get('timeout_seconds') if isinstance(task.get('target'), dict) else None
+        if isinstance(limit, int) and not isinstance(limit, bool):
+            state['budget_s'] = limit  # a time limit the task carries (bbot, thorough wpscan): the watchdog's deadline is never under it
         with self._lock:
             self._in_flight[task_id] = state
         self._write_control()
@@ -956,6 +1000,9 @@ class Daemon:
         def register(proc):
             with self._lock:
                 state['proc'] = proc
+                pgid = watchdog_mod.pgid_of(proc)
+                if pgid is not None:
+                    state.setdefault('pgids', set()).add(pgid)
                 stop = state.get('dropped') or self._halted.is_set()
             if stop:
                 self._kill(proc)
@@ -1015,6 +1062,8 @@ class Daemon:
                          task_id, age, 'found without a worker' if state.get('dead_worker') else 'taken back')
             self._kill(proc, background=True)
             state['done'].set()
+            if self.guard:
+                self.guard.task_ended(state)
             if state.get('dead_worker'):
                 self._release(task_id, 'the worker running the task ended without a result')
             self._write_control()
@@ -1049,22 +1098,51 @@ class Daemon:
             self._report_unless_dropped(task_id, state, result)
         except bbot.Stopped as exc:  # the server ended a streamed task (cancelled, expired, its scan stopped): nothing more is sent
             outcome = 'stopped by the server'
+            if state.get('wd'):  # ... unless it was the watchdog that stopped it: that is reported
+                outcome = 'stopped by the watchdog'
+                self._report_unless_dropped(task_id, state, self._watchdog_result(state))
             logger.info('task %s was ended by the server: %s', task_id, _clip(str(exc), 200))
         except (tools.TargetError, bbot.RunError) as exc:
             if isinstance(exc, tools.Refused) or str(exc).startswith('refused:'):
                 logger.warning('task %s refused locally: %s', task_id, _clip(str(exc), 200))
-            self._report_unless_dropped(task_id, state, {'outcome': 'error', 'error': str(exc)[:280]})
+            self._report_unless_dropped(task_id, state, self._watchdog_result(state, exc) or {'outcome': 'error', 'error': str(exc)[:280]})
         except Exception as exc:  # noqa: BLE001 - one bad task must never take the daemon down
-            if not state.get('dropped'):
+            if not state.get('dropped') and not state.get('wd'):
                 logger.exception('task %s failed', task_id)
-            self._report_unless_dropped(task_id, state, {'outcome': 'error', 'error': str(exc)[:280]})
+            self._report_unless_dropped(task_id, state, self._watchdog_result(state, exc) or {'outcome': 'error', 'error': str(exc)[:280]})
         finally:
             logger.info('task %s finished: %s, %s, %.1fs', task_id, _clip(kind), 'dropped' if state.get('dropped') else outcome,
                         time.monotonic() - state.get('started', time.monotonic()))
             with self._lock:  # gone from the in-flight list before it is marked done, so shutdown never releases a finished task
                 self._in_flight.pop(task_id, None)
             state['done'].set()
+            if self.guard:
+                self.guard.task_ended(state)
             self._write_control()
+
+    def _report_in_thread(self, task_id, result):
+        """Report a result from a thread of its own (the watchdog's: ``_report`` may retry for a while)."""
+        try:
+            threading.Thread(target=self._report, args=(task_id, result), name=f'sentinel-report-{task_id}', daemon=True).start()
+        except RuntimeError:
+            logger.error('no thread to report the result of task %s in', task_id)
+
+    def _watchdog_result(self, state, exc=None):
+        """The result of a task the watchdog stopped, or ``None`` when it did not. Findings a stopped nuclei run had already printed are reported as ``done``
+        (they were found; an empty ``done`` would read as a clean scan, so none is ever sent); everything else is the plain error."""
+        wd = state.get('wd')
+        if not wd:
+            return None
+        partial = getattr(exc, 'partial', None)
+        if self.guard and self.guard.cfg['partial'] and state.get('kind') in watchdog_mod.NUCLEI_KINDS and partial:
+            try:
+                findings = tools.parse_nuclei_jsonl(partial)
+            except Exception:  # noqa: BLE001 - a cut last line, anything unreadable: the plain error
+                findings = []
+            if findings:
+                logger.warning('watchdog: task stopped; delivering the %d finding(s) it had already produced', len(findings))
+                return {'outcome': 'done', 'findings': findings}
+        return {'outcome': 'error', 'error': wd['text']}
 
     def _report_unless_dropped(self, task_id, state, result):
         """Report the result unless the task was dropped (taken back by the server, or stopped by shutdown, which releases it itself). Whoever
