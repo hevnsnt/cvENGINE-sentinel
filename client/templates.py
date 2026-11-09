@@ -41,6 +41,11 @@ class TemplateError(RuntimeError):
     """The approved template bundle could not be obtained or did not verify. The message is safe to report back to the server."""
 
 
+class BundlePending(TemplateError):
+    """The server has not packed the approved bundle yet (its ``bundle_sha256`` is still null). That is not a fault of this Sentinel and
+    not a final answer about the task: the task is given back to the server, which hands it out again once the bundle exists."""
+
+
 def bundles_dir():
     return os.path.join(control.state_dir(), 'templates')
 

@@ -6,6 +6,7 @@ import os
 import shutil
 import tarfile
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
@@ -281,7 +282,7 @@ class DaemonTemplateTests(unittest.TestCase):
     def test_the_read_only_policy_without_a_bundle_is_an_error(self):
         d = self.make()
         runner = mock.Mock()
-        with mock.patch.dict(tools.RUNNERS, {'nuclei_targeted': runner}), self.assertRaises(tools.TargetError):
+        with mock.patch.dict(tools.RUNNERS, {'nuclei_targeted': runner}), self.assertRaises(templates.BundlePending):
             d._execute({'kind': 'nuclei_targeted', 'target': {'targets': ['www.example.test'], 'template_policy': {'read_only': True}}}, None)
         runner.assert_not_called()
 
@@ -293,6 +294,82 @@ class DaemonTemplateTests(unittest.TestCase):
         with mock.patch.dict(tools.RUNNERS, {'nuclei_light': mock.Mock(return_value={'findings': []})}):
             d._execute({'kind': 'nuclei_light', 'target': {'targets': ['www.example.test'], 'template_policy': {'read_only': False}}}, None)
             self.assertIsNone(tools.RUNNERS['nuclei_light'].call_args.kwargs['templates'])
+
+
+def _fixture_target(kind):
+    """A target exactly as cvENGINE's own fixtures write it (cvengine_scanner/fixtures/targets)."""
+    import json
+    from cvengine_scanner import contract
+    return json.loads((contract.FIXTURES / 'targets' / f'{kind}.json').read_text(encoding='utf-8'))
+
+
+class ServerTemplatePolicyShapeTests(unittest.TestCase):
+    """The server puts ``bundle_sha256`` inside ``template_policy`` (sentinel_dispatch._nuclei_target), not at the top of the target."""
+
+    def make(self):
+        return daemon.Daemon('https://x.example', 'tok', client=FakeClient())
+
+    def test_the_bundle_the_server_names_in_its_template_policy_is_the_one_run(self):
+        d = self.make()
+        target = _fixture_target('nuclei_light')
+        target['template_policy']['bundle_sha256'] = 'c' * 64
+        runner = mock.Mock(return_value={'findings': []})
+        with mock.patch('client.templates.ensure_bundle', return_value='/state/templates/ccc') as ensure, \
+                mock.patch.dict(tools.RUNNERS, {'nuclei_light': runner}):
+            out = d._execute({'kind': 'nuclei_light', 'target': target}, None)
+        ensure.assert_called_once_with(d.client, 'c' * 64)
+        self.assertEqual(runner.call_args.kwargs['templates'], '/state/templates/ccc')
+        self.assertEqual(out['outcome'], 'done')
+
+    def test_a_read_only_task_whose_bundle_is_not_packed_yet_is_retryable_not_an_error(self):
+        d = self.make()
+        runner = mock.Mock()
+        with mock.patch.dict(tools.RUNNERS, {'nuclei_light': runner}):
+            with self.assertRaises(templates.BundlePending) as ctx:
+                d._execute({'kind': 'nuclei_light', 'target': _fixture_target('nuclei_light')}, None)
+        self.assertIsInstance(ctx.exception, templates.TemplateError)
+        self.assertNotIsInstance(ctx.exception, tools.TargetError)  # a TargetError is final; this one is retried
+        runner.assert_not_called()
+
+    def test_the_daemon_gives_such_a_task_back_to_the_server_instead_of_reporting_an_error(self):
+        d = self.make()
+        task = {'id': 77, 'kind': 'nuclei_light', 'target': _fixture_target('nuclei_light')}
+        state = {'runnable': True, 'kind': 'nuclei_light', 'done': threading.Event(), 'dropped': False, 'finishing': False, 'pgids': set()}
+        with mock.patch.dict(tools.RUNNERS, {'nuclei_light': mock.Mock()}), \
+                mock.patch.object(d, '_release') as release, mock.patch.object(d, '_report') as report, mock.patch.object(d, '_write_control'):
+            d._run_task(task, state)
+        report.assert_not_called()
+        release.assert_called_once()
+        self.assertEqual(release.call_args.args[0], 77)
+        self.assertIn('retry later', release.call_args.args[1])
+
+    def test_every_target_fixture_runs_through_execute_with_mocked_runners(self):
+        """The contract check: each kind's fixture target goes through Daemon._execute and comes back done (or the one refusal it is
+        meant to give). Every runner is mocked, so nothing scans anything; the target is the one the server's schema accepts."""
+        import glob
+        from cvengine_scanner import contract
+        expected_refusals = {  # kinds whose fixture the Sentinel is meant to refuse here, and why
+            'nuclei_light': templates.BundlePending,  # the fixture is read-only with bundle_sha256 still null (not packed yet)
+            'route_probe_signed': tools.TargetError,  # signed-in work needs the built-in scanner and a sign-in in the task
+            'secrets_scan': None,
+        }
+        stems = sorted(os.path.splitext(os.path.basename(p))[0] for p in glob.glob(str(contract.FIXTURES / 'targets' / '*.json')))
+        self.assertGreater(len(stems), 30)
+        for kind in stems:
+            d = self.make()
+            fake = {k: mock.Mock(return_value={'findings': [], 'items': [], 'hosts': [], 'ports': {}, 'outcome': 'done'}) for k in tools.RUNNERS}
+            with self.subTest(kind=kind), mock.patch.dict(tools.RUNNERS, fake), \
+                    mock.patch('client.config._local_internal', return_value=True), \
+                    mock.patch('client.config.builtin', return_value=True), \
+                    mock.patch('client.templates.ensure_bundle', return_value='/state/templates/ddd'), \
+                    mock.patch('client.templates.secret_rules', return_value=None):
+                target = _fixture_target(kind)
+                if kind in expected_refusals and expected_refusals[kind] is not None:
+                    with self.assertRaises(expected_refusals[kind]):
+                        d._execute({'id': 1, 'kind': kind, 'target': target, 'signed_in': None}, None)
+                    continue
+                out = d._execute({'id': 1, 'kind': kind, 'target': target, 'signed_in': None}, None)
+                self.assertEqual(out['outcome'], 'done')
 
 
 class HeartbeatRunningTests(unittest.TestCase):
