@@ -133,7 +133,7 @@ class CollectorTests(unittest.TestCase):
                   event('DNS_NAME', 'example.com', 'example.com', tags=['wildcard-domain'])):  # the zone that has the wildcard is a real name
             c.add(e)
         batch = c.take(1)
-        self.assertEqual(batch['subdomains'], ['example.com', 'www.example.com'])
+        self.assertEqual(sorted(batch['subdomains']), ['example.com', 'www.example.com'])
         self.assertEqual(batch['resolutions'], [{'name': 'www.example.com', 'ip': '192.0.2.10'}])
         self.assertNotIn('192.0.2.55', batch['ips'])
 
