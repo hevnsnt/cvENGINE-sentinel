@@ -222,5 +222,19 @@ class FlagsTests(unittest.TestCase):
         self.assertEqual(flags.host_of({}), '')
 
 
+
+class NmapTimedOutHostTests(unittest.TestCase):
+    """Review H3: nmap marks a host it gave up on with timedout="true". That flag is kept, so the host is never read as clean."""
+
+    def test_a_timed_out_host_is_flagged_and_a_finished_one_is_not(self):
+        xml = ('<nmaprun><host timedout="true"><status state="up"/><address addr="192.0.2.10" addrtype="ipv4"/></host>'
+               '<host><status state="up"/><address addr="198.51.100.20" addrtype="ipv4"/></host>'
+               '<runstats><finished exit="success"/></runstats></nmaprun>')
+        hosts = {h['ip']: h for h in parsers.parse_nmap_xml(xml, strict=True)['hosts']}
+        self.assertIs(hosts['192.0.2.10'].get('timed_out'), True)
+        self.assertNotIn('timed_out', hosts['198.51.100.20'])
+        self.assertEqual(hosts['192.0.2.10']['ports'], [])
+
+
 if __name__ == '__main__':
     unittest.main()

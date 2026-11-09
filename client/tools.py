@@ -353,13 +353,6 @@ def os_guess_reliable():
     return not any(marker in release for marker in KERNEL_MARKERS)
 
 
-def _same_address(a, b):
-    try:
-        return ipaddress.ip_address(str(a).strip().strip('[]')) == ipaddress.ip_address(str(b).strip().strip('[]'))
-    except ValueError:
-        return str(a).strip() == str(b).strip()
-
-
 def nmap_timeout(count):
     """Seconds one nmap run over ``count`` hosts may take before it is killed."""
     return min(NMAP_MAX_TIMEOUT, max(NMAP_MIN_TIMEOUT, NMAP_SECONDS_PER_TARGET * count))
@@ -381,11 +374,8 @@ def run_nmap(addresses, timeout=None, register=None):
             out.extend(parse_nmap_xml(_run(argv, timeout or nmap_timeout(len(group)), register), strict=True)['hosts'])
         finally:
             os.unlink(path)
-    # A row for every requested address: the server reads a missing row as "this Sentinel did not cover it" (an external scan falls back to a
-    # local one, an internal scan fails), and an address that answered nothing is a host with no open ports.
-    for address in addresses:
-        if not any(_same_address(address, row['ip']) for row in out):
-            out.append({'ip': str(address).strip().strip('[]'), 'os_guess': '', 'ports': []})
+    # nmap lists every host it scanned, with -Pn, whether or not any port is open. An address it does not list was not scanned, and gets no
+    # row: the server reads a missing row as "this Sentinel did not cover it" (review H3: a padded row read as a clean host).
     return {'hosts': out, 'os_reliable': os_guess_reliable()}
 
 

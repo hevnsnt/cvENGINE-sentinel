@@ -60,7 +60,10 @@ def parse_nmap_xml(xml_text, strict=False):
                           'service_name': (service_el.get('name') if service_el is not None else '') or '',
                           'product': (service_el.get('product') if service_el is not None else '') or '',
                           'version': (service_el.get('version') if service_el is not None else '') or ''})
-        hosts.append({'ip': addr_el.get('addr'), 'os_guess': os_guess, 'ports': ports})
+        row = {'ip': addr_el.get('addr'), 'os_guess': os_guess, 'ports': ports}
+        if host_el.get('timedout') == 'true':  # nmap gave up on the host (its host timeout): it was not fingerprinted, whatever ports it lists
+            row['timed_out'] = True
+        hosts.append(row)
     return {'hosts': hosts}
 
 

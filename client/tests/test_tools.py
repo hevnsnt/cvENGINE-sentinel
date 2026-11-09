@@ -128,9 +128,8 @@ class RunnerArgvTests(unittest.TestCase):
         self.assertIn('-n', captured['argv'])  # no reverse DNS: parse_nmap_xml never reads host names
         self.assertEqual(captured['targets_file_contents'], '8.8.8.8\n1.1.1.1\n')
         self.assertEqual(captured['timeout'], tools.NMAP_MIN_TIMEOUT)
-        # the sample report's two hosts, plus an empty row for each requested address the report does not mention
-        self.assertEqual(len(result['hosts']), 4)
-        self.assertEqual({h['ip'] for h in result['hosts']} >= {'8.8.8.8', '1.1.1.1'}, True)
+        # the sample report's two hosts; an address the report does not mention gets no row (it was not scanned: review H3)
+        self.assertEqual(sorted(h['ip'] for h in result['hosts']), ['192.0.2.10', '198.51.100.20'])
 
     def test_nmap_and_naabu_are_given_the_address_a_name_was_judged_by(self):
         files = []
@@ -158,10 +157,23 @@ class RunnerArgvTests(unittest.TestCase):
                 with self.assertRaises(tools.ToolOutputError):
                     tools.run_nmap(['8.8.8.8'])
 
-    def test_every_requested_address_gets_a_host_row(self):
+    def test_an_address_nmap_did_not_report_is_not_a_scanned_host(self):
+        # Review H3: a padded row used to make an address that nmap never reported read as a clean host with no services.
         with mock.patch('client.tools._run', return_value=FINISHED_REPORT):
             result = tools.run_nmap(['8.8.8.8', '1.1.1.1'])
-        self.assertEqual(result['hosts'], [{'ip': '8.8.8.8', 'os_guess': '', 'ports': []}, {'ip': '1.1.1.1', 'os_guess': '', 'ports': []}])
+        self.assertEqual(result['hosts'], [])
+
+    def test_a_host_nmap_timed_out_on_is_marked_and_is_not_a_clean_host(self):
+        report = ('<nmaprun><host timedout="true"><status state="up" reason="user-set"/><address addr="8.8.8.8" addrtype="ipv4"/></host>'
+                  '<host><status state="up" reason="user-set"/><address addr="1.1.1.1" addrtype="ipv4"/>'
+                  '<ports><port protocol="tcp" portid="22"><state state="open" reason="syn-ack"/></port></ports></host>'
+                  '<runstats><finished exit="success"/></runstats></nmaprun>')
+        with mock.patch('client.tools._run', return_value=report):
+            result = tools.run_nmap(['8.8.8.8', '1.1.1.1'])
+        by_ip = {h['ip']: h for h in result['hosts']}
+        self.assertIs(by_ip['8.8.8.8'].get('timed_out'), True)
+        self.assertNotIn('timed_out', by_ip['1.1.1.1'])  # a host nmap finished carries no flag
+        self.assertEqual(by_ip['1.1.1.1']['ports'][0]['number'], 22)
 
     def test_os_is_reported_unreliable_only_inside_docker_desktop_style_kernels(self):
         for release, reliable in (('6.19.14+kali-amd64', True), ('6.10.14-linuxkit', False), ('5.15.153.1-microsoft-standard-WSL2', False),
@@ -194,7 +206,7 @@ class RunnerArgvTests(unittest.TestCase):
         self.assertEqual(runs[0][1], '8.8.8.8\n')
         self.assertEqual(runs[1][0][:3], [tools.NMAP_BIN, '-6', *tools.NMAP_FLAGS[:1]])
         self.assertEqual(runs[1][1], '2606:4700:4700::1111\n')
-        self.assertEqual(len(result['hosts']), 4)  # the sample report's two hosts, plus an empty row for each requested address it does not mention
+        self.assertEqual(sorted(h['ip'] for h in result['hosts']), ['192.0.2.10', '198.51.100.20'])  # the IPv6 run reported nothing: no row, not scanned
         with mock.patch('client.tools._run', return_value=FINISHED_REPORT) as only_v6:
             tools.run_nmap(['2606:4700:4700::1111'])
         self.assertEqual(only_v6.call_count, 1)
