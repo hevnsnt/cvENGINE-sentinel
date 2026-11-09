@@ -78,6 +78,11 @@ class SpoolFileTests(DaemonTestCase):
         self.assertEqual(self.spool.count(), 0)
         self.assertTrue(os.path.exists(os.path.join(self.spool_dir, 'expired', '9.json')))
 
+    def test_the_window_is_said_in_hours_or_in_seconds_when_it_is_short(self):
+        self.assertEqual(spool.window_text(), '6.0 hours')
+        os.environ['CVENGINE_SENTINEL_SPOOL_HOURS'] = '0.003'
+        self.assertEqual(spool.window_text(), '10 seconds')
+
     def test_the_window_defaults_to_six_hours_and_is_configurable(self):
         self.assertEqual(spool.window_seconds(), 6 * 3600)
         os.environ['CVENGINE_SENTINEL_SPOOL_HOURS'] = '1.5'
@@ -163,7 +168,7 @@ class SpoolDeliveryTests(DaemonTestCase):
         self.fc.script[('POST', 'sentinel/heartbeat')] = [{'leases': ['82']}, {'leases': ['82']}, {'leases': ['82']}]
         for _ in range(3):
             d._heartbeat_once()
-        self.assertEqual(self.fc.body_for('sentinel/heartbeat')['running'], ['82'])
+        self.assertEqual(self.fc.body_for('sentinel/heartbeat')['running'], [82])  # whole numbers: the server refuses any other id
         self.assertEqual(self.fc.count('sentinel/tasks/82/release'), 0)
 
     def test_a_started_sentinel_with_a_spool_delivers_it_first(self):

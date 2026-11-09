@@ -39,6 +39,12 @@ def window_seconds():
     return min(hours, 24 * 30) * 3600.0
 
 
+def window_text():
+    """The window as people read it: hours, or seconds for a window set shorter than a tenth of an hour."""
+    seconds = window_seconds()
+    return f'{seconds / 3600.0:.1f} hours' if seconds >= 360 else f'{int(seconds)} seconds'
+
+
 def max_bytes():
     raw = os.environ.get('CVENGINE_SENTINEL_SPOOL_MAX_MB')
     try:

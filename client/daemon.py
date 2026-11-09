@@ -461,7 +461,8 @@ class Daemon:
             try:
                 with self._lock:
                     running = sorted(self._in_flight, key=str)
-                held = [t for t in self.spool.task_ids() if t not in {str(r) for r in running}]
+                listed = {str(r) for r in running}
+                held = [int(t) for t in self.spool.task_ids() if t.isdigit() and t not in listed]  # the server's task ids are whole numbers
                 out = self.client.call('POST', 'sentinel/heartbeat', {'info': info(), 'running': running + held})  # a held result's task still counts as running here
             except (httpclient.ApiError, requests.RequestException) as exc:
                 if not self._auth_failed(exc):
@@ -1209,7 +1210,7 @@ class Daemon:
                 break
         if self.spool.add(task_id, result):
             logger.warning('could not report the result for task %s (%s); holding it on disk (%s held) and delivering it when cvENGINE answers again, '
-                           'for up to %.1f hours', task_id, error, self.spool.count(), spool_mod.window_seconds() / 3600.0)
+                           'for up to %s', task_id, error, self.spool.count(), spool_mod.window_text())
             self._update_spool_report()
             self._spool_wake.set()
             return
@@ -1263,8 +1264,8 @@ class Daemon:
         try:
             expired = self.spool.expire_old()
             for task_id in expired:
-                logger.error('the result for task %s was held longer than %.1f hours and is no longer offered to cvENGINE; it stays on disk under %s/',
-                             task_id, spool_mod.window_seconds() / 3600.0, spool_mod.EXPIRED_DIR)
+                logger.error('the result for task %s was held longer than %s and is no longer offered to cvENGINE; it stays on disk under %s/',
+                             task_id, spool_mod.window_text(), spool_mod.EXPIRED_DIR)
             for task_id, _age in self.spool.entries():
                 if self.stop_event.is_set() and self._halted.is_set():
                     break
