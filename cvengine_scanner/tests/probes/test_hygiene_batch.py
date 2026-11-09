@@ -82,6 +82,33 @@ class RunBatchTests(unittest.TestCase):
         self.assertEqual(sorted(reviewed), ['example.com', 'mail.example.com'])
         self.assertEqual(sorted(r['name'] for r in got['mail']), ['example.com', 'mail.example.com'])
 
+    def test_a_dns_failure_on_the_mx_or_cname_lookup_is_unknown_not_no_mail(self):
+        """A resolver timeout says nothing about a name. It used to read as "no MX record", so the name was skipped with no row and the server resolved its
+        open SPF and DMARC findings (review M3). It is now named in ``unknown_names``; a real "no such record" is still just skipped."""
+        mail = [{'name': 'slow.example.com', 'always': False}, {'name': 'none.example.com', 'always': False}, {'name': 'cn.example.com', 'always': False},
+                {'name': 'ok.example.com', 'always': False}]
+        mx = {'slow.example.com': None, 'none.example.com': False, 'cn.example.com': True, 'ok.example.com': True}
+        cname = {'cn.example.com': None, 'ok.example.com': False, 'slow.example.com': False}
+        out = self.run_batch(task(mail=mail, tls=[]), mx=lambda name: mx[name], cname=lambda name: cname[name])
+        self.assertEqual(out['unknown_names'], ['cn.example.com', 'slow.example.com'])
+        self.assertEqual([m['name'] for m in out['mail']], ['ok.example.com'])
+
+    def test_no_failed_lookup_means_no_unknown_names_field(self):
+        out = self.run_batch(task())
+        self.assertNotIn('unknown_names', out)
+
+    def test_record_state_tells_a_missing_record_from_a_failed_lookup(self):
+        import dns.exception
+        import dns.resolver
+        for raised, expected in ((dns.resolver.NXDOMAIN(), False), (dns.resolver.NoAnswer(), False), (dns.exception.Timeout(), None), (dns.resolver.NoNameservers(), None)):
+            resolver = mock.Mock()
+            resolver.resolve.side_effect = raised
+            self.assertIs(hy.record_state('example.com', 'MX', resolver), expected, type(raised).__name__)
+        resolver = mock.Mock()
+        resolver.resolve.return_value = ['10 mx.example.com.']
+        self.assertIs(hy.record_state('example.com', 'MX', resolver), True)
+        self.assertFalse(hy.has_record('example.com', 'MX', mock.Mock(**{'resolve.side_effect': dns.exception.Timeout()})))
+
     def test_a_review_that_fails_is_left_out_so_the_server_reads_it_as_unknown(self):
         def emailer(name, **opts):
             if name == 'example.com':
