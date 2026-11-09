@@ -233,6 +233,20 @@ class ScannedAddressesTests(OpenvasTestCase):
         gmp = FakeGMP(get_report=lambda *a, **kw: report_detail)
         self.assertEqual(openvas.scanned_addresses(gmp, status, []), {'192.0.2.98'})
 
+    def test_a_finished_host_with_no_result_no_port_and_no_detail_never_answered(self):
+        """With CONSIDER_ALIVE gvmd scans a host that is offline, finds nothing and ends it. That is not a clean scan (review M4): the host is unanswered. A host
+        with a result of any severity, a port count, or host details answered, and a host without times keeps the old reading."""
+        detail = xml('<get_reports_response><report id="rep1"><report id="rep1">'
+                     '<results><result id="r1"><host>192.0.2.10</host><severity>0.0</severity></result></results>'
+                     '<host><ip>192.0.2.10</ip><start>2026-11-03T10:00:00Z</start><end>2026-11-03T11:00:00Z</end></host>'
+                     '<host><ip>192.0.2.11</ip><start>2026-11-03T10:00:00Z</start><end>2026-11-03T11:00:00Z</end><port_count><page>3</page></port_count></host>'
+                     '<host><ip>192.0.2.12</ip><start>2026-11-03T10:00:00Z</start><end>2026-11-03T11:00:00Z</end><detail><name>hostname</name></detail></host>'
+                     '<host><ip>192.0.2.13</ip><start>2026-11-03T10:00:00Z</start><end>2026-11-03T11:00:00Z</end></host>'
+                     '<host><ip>192.0.2.14</ip></host>'
+                     '</report></report></get_reports_response>')
+        self.assertEqual(openvas._unanswered_hosts(detail), {'192.0.2.13'})
+        self.assertEqual(openvas._unanswered_hosts(None), set())
+
     def test_a_report_read_failure_falls_back_to_just_the_results(self):
         items = [{'address': '192.0.2.10'}]
         status = xml('<get_tasks_response><task><last_report><report id="rep1"/></last_report></task></get_tasks_response>')
@@ -843,6 +857,26 @@ class ConfigGuardTests(OpenvasTestCase):
 class RunOutcomeTests(OpenvasTestCase):
     def happy(self):
         return happy_gmp()
+
+    def test_a_host_gvmd_finished_without_an_answer_is_reported_unreached_and_not_scanned(self):
+        """The run lists two hosts. One has a result; the other was offline, so gvmd ended it with nothing (CONSIDER_ALIVE). The offline one is in
+        ``unreached_hosts`` and not in ``scanned_addresses``, so the server closes none of its earlier findings (review M4)."""
+        down = '52.151.200.61'
+        gmp = self.happy()
+        gmp.responses['get_report'] = lambda *a, **kw: xml(
+            '<get_reports_response><report id="rep1"><report id="rep1">'
+            '<host><ip>192.0.2.10</ip><start>2026-11-03T10:00:00Z</start><end>2026-11-03T11:00:00Z</end></host>'
+            f'<host><ip>{down}</ip><start>2026-11-03T10:00:00Z</start><end>2026-11-03T11:00:00Z</end></host>'
+            '</report></report></get_reports_response>')
+        with sessions(gmp):
+            result = openvas.run_openvas({HOST: '', down: ''})
+        self.assertEqual(result['scanned_addresses'], ['192.0.2.10'])  # the host of the CVE result the happy gvmd returns
+        self.assertEqual(result['unreached_hosts'], [down])
+
+    def test_a_run_with_every_host_answering_has_no_unreached_field(self):
+        with sessions(self.happy()):
+            result = openvas.run_openvas({HOST: ''})
+        self.assertNotIn('unreached_hosts', result)
 
     def test_a_done_run_with_no_result_and_no_host_is_an_error_naming_the_report(self):
         gmp = self.happy()
