@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Fixed
+- **nuclei now runs on the server's approved template set.** The task names its bundle inside `template_policy`, and the Sentinel looked for it at the top level, so under the default read-only policy every nuclei task failed, and under the all-templates policy the Sentinel ran the templates baked into its image, never refreshed. A read-only task whose bundle is not packed yet is given back to be retried, not failed. The result names the template release the run used (`templates_release`).
+- **A host nuclei never reached is not reported as scanned.** nuclei exits cleanly with no output for a host nothing answered. The run now reads nuclei's error log and names those hosts in `unreachable` (the template test reports them as errors).
+- **nuclei findings keep their evidence.** The raw request and response are kept (clipped, credentials redacted) instead of dropped with `-omit-raw`, with the CVE ids, CVSS score, references and remediation text the template carries.
+- **testssl reports whether a handshake happened and its exit code.** A port that completes no TLS handshake sends no "not vulnerable" answers, because nothing was tested.
+- **nmap reports a host it gave up on as `timed_out`,** and an address it did not report gets no clean row.
+- **naabu full-port discovery can finish.** One time-limit function serves nmap and naabu, a run that runs out of time reports the addresses it did not reach (`incomplete`, `unfinished`) instead of an error, and the fingerprint pass scans the ports of its task with the extended port set and the reviewed scripts.
+- **A DNS timeout on a mail name is unknown, not "no mail".** The MX or CNAME lookup that failed is named in `unknown_names`.
+- **OpenVAS: a host gvmd finished without any answer is reported in `unreached_hosts` and not as scanned,** so a host that was only offline closes none of its earlier findings.
+- **bbot wildcard names are not subdomains.** A name tagged `wildcard` and the `_wildcard.<zone>` placeholder are dropped.
+- **`detect_tools` declares a tool only when its version probe exits cleanly,** and **a discovery sweep that died is an error,** not "no host is up".
+
 ### Added
 - A Sentinel that is not the built-in scanner now reports `info.features: ["bbot_keys"]` in its heartbeat: it reads a bbot discovery task's API keys through the
   single-use secret read (`POST sentinel/tasks/<id>/secret`), keeps them only in a 0600 file inside a fresh 0700 directory for the run, and masks them. A cvENGINE
