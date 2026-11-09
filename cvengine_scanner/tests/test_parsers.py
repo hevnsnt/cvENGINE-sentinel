@@ -301,6 +301,9 @@ if __name__ == '__main__':
     unittest.main()
 
 
+ToolOutputError, parse_discover_xml = parsers.ToolOutputError, parsers.parse_discover_xml
+
+
 class DiscoverStrictTests(unittest.TestCase):
     """A discovery sweep that died is an error, never "no host is up" (review L3)."""
 
