@@ -34,7 +34,7 @@ from cvengine_scanner.flags import (DISCOVER_FLAGS, KERNEL_MARKERS, MAX_DISCOVER
                                     NUCLEI_VALIDATE_FLAGS, PATH_PROBE_ODD, PATH_PROBE_PLAIN, TESTSSL_FLAGS, UDP_NSE_SCRIPTS, UDP_PORTS, WAFW00F_TIMEOUT,
                                     WPSCAN_ARGS, WPSCAN_THOROUGH_ARGS, host_of, thorough_timeout, udp_nmap_flags, wafw00f_flags)
 from cvengine_scanner.parsers import (MAX_FINDINGS, MAX_FINDINGS_BYTES, MAX_LIST_ITEMS, ToolOutputError, parse_discover_xml,  # noqa: F401
-                                      parse_naabu_output, parse_nmap_xml, parse_nuclei_jsonl, parse_port_reasons, parse_testssl_report,
+                                      parse_naabu_output, parse_nmap_xml, parse_nuclei_jsonl, parse_port_reasons, parse_testssl_report, testssl_result,
                                       parse_waf_output)
 
 from . import admission, bbot, config, dbprobe, egress, openvas, rdp, scope
@@ -549,9 +549,15 @@ def run_testssl(host, ip, port, starttls=None, timeout=900, register=None):
                 report = json.load(handle)
         except (OSError, ValueError):
             raise ToolOutputError('testssl wrote no readable report') from None
-    items = parse_testssl_report(report)[:300]
+    # testssl exits 9 when no server answered and 0 when the scan completed: the code is sent (a killed run is an error, never a report)
+    code = proc.returncode
+    if not isinstance(code, int) or code < 0:
+        raise ToolExitError(f'testssl.sh was killed by the system (status {code})')
+    result = testssl_result(parse_testssl_report(report), code)
+    items = result['items'][:300]
     return {'items': [{'id': str(i.get('id') or ''), 'severity': str(i.get('severity') or ''),
-                       'finding': str(i.get('finding') or ''), 'cve': str(i.get('cve') or '')} for i in items]}
+                       'finding': str(i.get('finding') or ''), 'cve': str(i.get('cve') or '')} for i in items],
+            'handshake': result['handshake'], 'returncode': code}
 
 
 # --- nmap -sU: raw XML returned as-is; the server reads it with cvengine_scanner.nmap.parse_xml -------------------------

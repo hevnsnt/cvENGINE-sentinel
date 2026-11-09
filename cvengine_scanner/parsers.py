@@ -195,6 +195,33 @@ def parse_testssl_report(raw):
     return [i for i in raw if isinstance(i, dict) and i.get('id')] if isinstance(raw, list) else []
 
 
+# testssl's protocol checks: "offered" on one of these is a handshake the scan completed. Every other test needs one.
+TESTSSL_PROTOCOLS = frozenset({'SSLv2', 'SSLv3', 'TLS1', 'TLS1_1', 'TLS1_2', 'TLS1_3'})
+
+
+def testssl_handshake(items):
+    """Whether testssl completed a TLS handshake with the endpoint: a protocol it reports as offered, and no scan problem (a WARN or FATAL
+    ``scanProblem``). Without one, its other answers, including "not vulnerable", were never tested (review H2)."""
+    if any(str(i.get('id')) == 'scanProblem' and str(i.get('severity') or '').upper() in ('WARN', 'FATAL') for i in items):
+        return False
+    return any(str(i.get('id')) in TESTSSL_PROTOCOLS and str(i.get('finding') or '').lower().startswith('offered') for i in items)
+
+
+def testssl_result(items, returncode):
+    """``{'items', 'handshake', 'returncode'}`` for one testssl.sh run: the finding objects of its report (``items``, as
+    ``parse_testssl_report`` reads them) with, when no handshake happened, every clear answer left out (a test marked OK, or "not
+    vulnerable", that testssl printed without a handshake). The protocols and the scan problem stay, so the server sees what happened."""
+    handshake = testssl_handshake(items)
+    kept = list(items) if handshake else [i for i in items if not _clear_answer(i)]
+    return {'items': kept, 'handshake': handshake, 'returncode': returncode}
+
+
+def _clear_answer(item):
+    if str(item.get('id')) in TESTSSL_PROTOCOLS:
+        return False
+    return str(item.get('severity') or '').upper() == 'OK' or str(item.get('finding') or '').lower().startswith('not vulnerable')
+
+
 def parse_waf_output(text, strict=False):
     """The result of a ``waf`` task from wafw00f's JSON report: ``{'products': [{'name', 'manufacturer'?}], 'generic': bool}``. A generic detection
     (something blocks, no product known) and "no WAF" name nothing; names are stripped and cut, a generic or empty name and a repeat (any case)

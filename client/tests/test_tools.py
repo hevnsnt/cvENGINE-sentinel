@@ -402,7 +402,8 @@ class TestsslRunnerTests(unittest.TestCase):
         self.assertTrue(captured['kwargs']['start_new_session'])
         self.assertEqual(result, {'items': [
             {'id': 'heartbleed', 'severity': 'HIGH', 'finding': 'VULNERABLE', 'cve': 'CVE-2014-0160'},
-            {'id': 'not_tracked', 'severity': 'INFO', 'finding': 'test ok', 'cve': ''}]})
+            {'id': 'not_tracked', 'severity': 'INFO', 'finding': 'test ok', 'cve': ''}],
+            'handshake': False, 'returncode': 0})  # no protocol was reported as offered: no handshake is shown, and the code is sent
 
     def test_starttls_is_added_only_when_given(self):
         captured = {}
@@ -452,6 +453,44 @@ class TestsslRunnerTests(unittest.TestCase):
             with self.assertRaises(subprocess.TimeoutExpired):
                 tools.run_testssl('www.example.test', '8.8.8.8', 443, timeout=1)
         killpg.assert_called_once_with(Slow.pid, signal.SIGKILL)
+
+    def test_a_listener_that_completes_no_handshake_sends_no_clear_vulnerability_tests(self):
+        """Review H2: on a plain HTTP port testssl exits 9, offers no protocol and still prints "not vulnerable" for every test it could not run.
+        Those must not reach the server as clear results. The protocols and the scan problem are kept, so the server can see what happened."""
+        report = [{'id': 'SSLv2', 'severity': 'OK', 'finding': 'not offered'}, {'id': 'SSLv3', 'severity': 'OK', 'finding': 'not offered'},
+                  {'id': 'TLS1_2', 'severity': 'OK', 'finding': 'not offered'}, {'id': 'TLS1_3', 'severity': 'OK', 'finding': 'not offered'},
+                  {'id': 'scanProblem', 'severity': 'WARN', 'finding': 'Client problem: No server certificate could be retrieved'},
+                  {'id': 'heartbleed', 'severity': 'OK', 'finding': 'not vulnerable, no heartbeat extension'},
+                  {'id': 'ROBOT', 'severity': 'OK', 'finding': 'not vulnerable, no RSA key transport cipher'},
+                  {'id': 'FREAK', 'severity': 'OK', 'finding': 'not vulnerable'}]
+
+        class Plain(self._FakeProc):
+            def __init__(self, argv, report, **kwargs):
+                super().__init__(argv, report, **kwargs)
+                self.returncode = 9  # testssl's own code for "no server answered a handshake"
+        with mock.patch('client.tools.subprocess.Popen', side_effect=lambda argv, **kw: Plain(argv, report, **kw)):
+            result = tools.run_testssl('www.example.test', '8.8.8.8', 80)
+        self.assertIs(result['handshake'], False)
+        self.assertEqual(result['returncode'], 9)
+        ids = [i['id'] for i in result['items']]
+        self.assertEqual(ids, ['SSLv2', 'SSLv3', 'TLS1_2', 'TLS1_3', 'scanProblem'])
+
+    def test_a_listener_that_completes_a_handshake_keeps_its_clear_tests(self):
+        report = [{'id': 'TLS1_2', 'severity': 'OK', 'finding': 'offered (OK)'}, {'id': 'heartbleed', 'severity': 'OK', 'finding': 'not vulnerable'}]
+        with mock.patch('client.tools.subprocess.Popen', side_effect=lambda argv, **kw: self._FakeProc(argv, report, **kw)):
+            result = tools.run_testssl('www.example.test', '8.8.8.8', 443)
+        self.assertIs(result['handshake'], True)
+        self.assertEqual(result['returncode'], 0)
+        self.assertEqual([i['id'] for i in result['items']], ['TLS1_2', 'heartbleed'])
+
+    def test_a_run_killed_by_a_signal_is_an_error(self):
+        class Killed(self._FakeProc):
+            def __init__(self, argv, report, **kwargs):
+                super().__init__(argv, report, **kwargs)
+                self.returncode = -9
+        with mock.patch('client.tools.subprocess.Popen', side_effect=lambda argv, **kw: Killed(argv, [], **kw)):
+            with self.assertRaises(tools.ToolExitError):
+                tools.run_testssl('www.example.test', '8.8.8.8', 443)
 
 
 class UdpRunnerTests(unittest.TestCase):
