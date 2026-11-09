@@ -15,8 +15,10 @@ Proxy. On the built-in scanner, cvENGINE's egress proxy (``client.egress``) reac
 the keys, exactly as the server's own bbot run used it; a proxy that suits no scheme bbot takes fails the run rather than go out directly.
 
 Credentials. A task whose project stored API keys for bbot's modules says ``api_keys`` and carries none: they are read once through
-``sentinel/tasks/<id>/secret`` (only the built-in scanner is offered such a task) and handed to bbot in a preset file only this user can read, in a
-fresh private directory deleted when the run ends, never on its command line. Every key is masked in what bbot writes to its error stream.
+``sentinel/tasks/<id>/secret`` (the built-in scanner, or a Sentinel that advertises ``info.features`` ``bbot_keys`` and that the owner has not opted
+out) and handed to bbot in a preset file only this user can read, in a fresh private directory deleted when the run ends, never on its command line.
+Every key is masked in what bbot writes to its error stream, in every batch posted and in the final result (``scrub``), and a directory a crashed
+run left behind is removed at the next start (``sweep_stale``).
 """
 import base64
 import collections
@@ -27,6 +29,7 @@ import os
 import random
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
 import threading
@@ -357,14 +360,16 @@ def _retryable(exc):
 class Sender:
     """Posts batches in order, each until the server takes it."""
 
-    def __init__(self, client, task_id, halted=None, sleep=None):
+    def __init__(self, client, task_id, halted=None, sleep=None, secrets=()):
         self.client, self.task_id, self.seq = client, task_id, 0
+        self.secrets = list(secrets)  # key values masked in every batch before it leaves this machine
         self.halted = halted or threading.Event()
         self.sleep = sleep or (lambda seconds: self.halted.wait(seconds))
 
     def send(self, body):
         seq = self.seq + 1
         body['seq'] = seq
+        body = scrub(body, self.secrets)
         give_up_at, delay = time.monotonic() + POST_GIVE_UP_SECONDS, 1.0
         while True:
             try:
@@ -404,6 +409,49 @@ def read_keys(client, task_id):
             if kept:
                 clean[module] = kept
     return {'modules': clean} if clean else {}
+
+
+WORK_PREFIX = 'cvengine-bbot-'
+
+
+def scrub(value, secrets):
+    """``value`` (a batch, a result: nested dicts, lists and strings) with every key masked in every string, keys and values alike. A screenshot's
+    ``data`` is image bytes, not text, and is passed as is."""
+    if not secrets:
+        return value
+    if isinstance(value, str):
+        return redact(value, secrets)
+    if isinstance(value, list):
+        return [scrub(v, secrets) for v in value]
+    if isinstance(value, dict):
+        return {(redact(k, secrets) if isinstance(k, str) else k): (v if k == 'data' and isinstance(v, str) and 'content_type' in value else scrub(v, secrets))
+                for k, v in value.items()}
+    return value
+
+
+def sweep_stale(root=None):
+    """Remove the key and scan directories a run that crashed (a kill, a power loss) left in the temp directory: they hold a keys file. Called once
+    at start, before any task runs, by the Sentinel that owns this temp directory. Only plain directories this user owns are touched. Returns how many
+    were removed."""
+    root = root or tempfile.gettempdir()
+    removed = 0
+    try:
+        names = os.listdir(root)
+    except OSError:
+        return 0
+    for name in names:
+        path = os.path.join(root, name)
+        try:
+            info = os.lstat(path)
+            if not name.startswith(WORK_PREFIX) or not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+                continue
+        except OSError:
+            continue
+        shutil.rmtree(path, ignore_errors=True)
+        removed += not os.path.exists(path)
+    if removed:
+        logger.info('removed %d stale bbot work director%s left by an earlier run', removed, 'y' if removed == 1 else 'ies')
+    return removed
 
 
 def secrets_of(config):
@@ -527,8 +575,8 @@ def run_bbot_discovery(target, client, task_id, register=None, internal=False, h
         raise RunError(str(exc)) from None
     config = {**keys, **({'web': {'http_proxy': proxy[0]}} if proxy else {})}
     secrets += [proxy[0]] if proxy else []
-    work = tempfile.mkdtemp(prefix='cvengine-bbot-')  # 0700: the key file and bbot's scan output live here and go with it
-    sender = Sender(client, task_id, halted=halted)
+    work = tempfile.mkdtemp(prefix=WORK_PREFIX)  # 0700: the key file and bbot's scan output live here and go with it
+    sender = Sender(client, task_id, halted=halted, secrets=secrets)
     problems, hard_failures, stderr_tail = [], [], collections.deque(maxlen=200)
     try:
         blacklist_file = os.path.join(work, 'blacklist.txt')
@@ -603,9 +651,11 @@ def run_bbot_discovery(target, client, task_id, register=None, internal=False, h
             incomplete = 'bbot refused its configuration and scanned nothing'
         if incomplete and not collector.found_any:
             raise RunError(incomplete)
-        return {'outcome': 'done', 'partials': sender.seq, 'mode': target.get('mode') if target.get('mode') in ('passive', 'standard', 'deep') else 'passive',
-                'incomplete': redact(incomplete, secrets)[:300], 'scan_name': collector.scan_name, 'web_events': dict(collector.web_events),
+        return scrub({'outcome': 'done', 'partials': sender.seq, 'mode': target.get('mode') if target.get('mode') in ('passive', 'standard', 'deep') else 'passive',
+                'incomplete': incomplete[:300], 'scan_name': collector.scan_name, 'web_events': dict(collector.web_events),
                 'problems': [{'module': m, 'reason': r} for m, r in problems if _MODULE.match(m)],
-                'hard_failures': [{'module': m, 'reason': r} for m, r in hard_failures if _MODULE.match(m)]}
+                'hard_failures': [{'module': m, 'reason': r} for m, r in hard_failures if _MODULE.match(m)]}, secrets)
+    except RunError as exc:
+        raise RunError(redact(str(exc), secrets)) from None
     finally:
         shutil.rmtree(work, ignore_errors=True)

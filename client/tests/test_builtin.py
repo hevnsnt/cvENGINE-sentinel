@@ -57,6 +57,13 @@ class ConfigTests(Env):
         self.assertIs(out['builtin'], True)
         self.assertEqual(out['features'], ['secret_read', 'vantage'])
 
+    def test_an_external_sentinel_advertises_bbot_keys_and_nothing_else(self):
+        with mock.patch('client.control.updater_info', return_value={'installed': False}), mock.patch.object(config, 'builtin', return_value=False):
+            out = daemon.info()
+        self.assertEqual(out['features'], ['bbot_keys'])
+        self.assertNotIn('builtin', out)
+        self.assertEqual(out['contract_version'], config.CONTRACT_VERSION)
+
     def test_the_blob_is_read_from_the_file_afresh(self):
         self.assertIsNone(config.blob())
         self.write_blob(BLOB)
