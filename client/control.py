@@ -19,6 +19,9 @@ from . import config
 
 DRAIN_TTL = 2 * 3600
 STATUS_MAX_AGE = 180  # the daemon rewrites its status at every heartbeat; one older than this means it is not running
+WATCHDOG_STALE = 90  # the watchdog ticks every 10 s: one that has not for this long is stuck or gone
+HEARTBEAT_LOOP_STALE = 420  # the heartbeat loop finishes a pass every minute and the watchdog restarts it at 150 s: still stale at this age, the watchdog is not doing it
+POLL_LOOP_STALE = 480  # the poll loop turns every few seconds and the watchdog ends the process at 300 s
 HEARTBEAT_MAX_AGE = 180  # the built-in scanner is unhealthy when no heartbeat reached the server for this long (and restarts itself: daemon.WEDGED)
 UPDATE_STATUSES = ('waiting', 'draining', 'updating', 'done', 'failed')
 UPDATER_ENV = 'CVENGINE_SENTINEL_UPDATER'  # ``installed``: written into .env by the installer, which runs before the stack is up to be told directly
@@ -82,7 +85,7 @@ def is_draining(now=None):
 
 # --- the daemon's status, for the updater to read -----------------------------------------------------------------------------------------
 
-def write_status(version, in_flight, update_reply, now=None, kinds=None, heartbeat_at=None, started_at=None):
+def write_status(version, in_flight, update_reply, now=None, kinds=None, heartbeat_at=None, started_at=None, liveness=None):
     """Written by the daemon. ``setting`` is the daemon's effective self-update value: what cvENGINE said in the heartbeat (else the server's settings
     override), capped by this machine's own. The CLI runs in another process, which never sees the daemon's overrides, so it decides on this value.
     ``kinds`` are the kinds of the tasks running now: the updater does not drain for an OpenVAS scan that runs for hours. ``heartbeat_at`` is when a
@@ -93,7 +96,8 @@ def write_status(version, in_flight, update_reply, now=None, kinds=None, heartbe
     _write_json('control.json', {'version': version, 'in_flight': in_flight, 'draining': is_draining(), 'mode': update_reply.get('mode'),
                                  'setting': setting, 'requested': bool(update_reply.get('requested')), 'in_flight_kinds': sorted({k for k in (kinds or []) if isinstance(k, str)}),
                                  'at': int(now or time.time()), 'phase': 'running', 'builtin': config.builtin(),
-                                 'heartbeat_at': int(heartbeat_at) if heartbeat_at else None, 'started_at': int(started_at or now or time.time())})
+                                 'heartbeat_at': int(heartbeat_at) if heartbeat_at else None, 'started_at': int(started_at or now or time.time()),
+                                 **({'liveness': {k: int(v) for k, v in liveness.items()}} if liveness else {})})
 
 
 def write_enrolling(now=None):
@@ -126,6 +130,12 @@ def health(now=None):
     age = int(now - at)
     if age > STATUS_MAX_AGE:
         return False, f'the daemon status is {age}s old (more than {STATUS_MAX_AGE}s): the daemon is not running or is stuck'
+    live = status.get('liveness')
+    if isinstance(live, dict) and status.get('phase') == 'running':  # written only while the watchdog is on (CVENGINE_SENTINEL_WATCHDOG=0 leaves it out)
+        for key, limit, what in (('wd', WATCHDOG_STALE, 'the watchdog'), ('hb', HEARTBEAT_LOOP_STALE, 'the heartbeat loop'), ('poll', POLL_LOOP_STALE, 'the poll loop')):
+            stamp = live.get(key)
+            if isinstance(stamp, int) and not isinstance(stamp, bool) and now - stamp > limit:
+                return False, f'{what} has not run for {int(now - stamp)}s (more than {limit}s): this Sentinel is stuck'
     if status.get('builtin') and status.get('phase') == 'running':
         quiet = _quiet_for(status, now)
         if quiet is None or quiet > HEARTBEAT_MAX_AGE:
