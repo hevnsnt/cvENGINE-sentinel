@@ -652,8 +652,13 @@ class DaemonTestCase(unittest.TestCase):
         env = mock.patch.dict('os.environ')
         env.start()
         self.addCleanup(env.stop)
-        for name in ('CVENGINE_SENTINEL_NETWORK', 'CVENGINE_SENTINEL_DISABLE', 'CVENGINE_SENTINEL_PROFILE'):
+        for name in ('CVENGINE_SENTINEL_NETWORK', 'CVENGINE_SENTINEL_DISABLE', 'CVENGINE_SENTINEL_PROFILE', 'CVENGINE_SENTINEL_SPOOL_HOURS', 'CVENGINE_SENTINEL_SPOOL_MAX_MB'):
             os.environ.pop(name, None)
+        self.spool_dir = tempfile.mkdtemp(prefix='sentinel-test-spool-')
+        self.addCleanup(shutil.rmtree, self.spool_dir, True)
+        os.environ['CVENGINE_SENTINEL_SPOOL_DIR'] = self.spool_dir
+        daemon._spool_report.clear()
+        self.addCleanup(daemon._spool_report.clear)
         self.fc = FakeClient()
 
     def make(self, **kwargs):
@@ -731,6 +736,7 @@ class ShutdownRaceTests(DaemonTestCase):
         self.assertEqual(self.fc.count('sentinel/tasks/24/result'), 0)
 
     def test_a_task_delivering_its_result_at_shutdown_releases_it_itself_when_that_fails(self):
+        os.environ['CVENGINE_SENTINEL_SPOOL_HOURS'] = '0'  # the spool is off: the result cannot be held, so the task is released (the spool itself is tested in SpoolTests)
         d = self.make()
         self.fc.script[('POST', 'sentinel/tasks/25/result')] = [httpclient.ApiError(503, 'down')] * 10
         task = {'id': 25, 'kind': 'nmap', 'target': {}}
@@ -799,12 +805,14 @@ class ReportRetryTests(DaemonTestCase):
             self.assertEqual((fc.count('sentinel/tasks/32/result'), fc.count('sentinel/tasks/32/release')), (1, 0), status)
 
     def test_a_result_that_never_gets_through_releases_the_task(self):
+        os.environ['CVENGINE_SENTINEL_SPOOL_HOURS'] = '0'  # the spool is off: the result cannot be held, so the task is released (the spool itself is tested in SpoolTests)
         self.fc.script[('POST', 'sentinel/tasks/33/result')] = [httpclient.ApiError(502, 'bad gateway')] * 20
         self.make()._report(33, {'outcome': 'done'})
         self.assertEqual(self.fc.count('sentinel/tasks/33/result'), daemon.REPORT_ATTEMPTS)
         self.assertEqual(self.fc.count('sentinel/tasks/33/release'), 1)
 
     def test_retries_stop_within_the_time_bound(self):
+        os.environ['CVENGINE_SENTINEL_SPOOL_HOURS'] = '0'  # the spool is off: the result cannot be held, so the task is released (the spool itself is tested in SpoolTests)
         self.fc.script[('POST', 'sentinel/tasks/34/result')] = [httpclient.ApiError(503, 'down')] * 20
         with mock.patch.object(daemon, 'REPORT_RETRY_SECONDS', 0), mock.patch.object(daemon, 'REPORT_BACKOFF', 1):
             self.make()._report(34, {'outcome': 'done'})
@@ -812,6 +820,7 @@ class ReportRetryTests(DaemonTestCase):
         self.assertEqual(self.fc.count('sentinel/tasks/34/release'), 1)
 
     def test_nothing_is_retried_once_the_grace_period_is_over(self):
+        os.environ['CVENGINE_SENTINEL_SPOOL_HOURS'] = '0'  # the spool is off: the result cannot be held, so the task is released (the spool itself is tested in SpoolTests)
         self.fc.script[('POST', 'sentinel/tasks/35/result')] = [httpclient.ApiError(503, 'down')] * 20
         d = self.make()
         d._halted.set()

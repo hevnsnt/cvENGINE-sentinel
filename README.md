@@ -162,6 +162,8 @@ On `docker compose stop` or `down` (SIGTERM), the Sentinel:
 `docker-compose.yml` gives the container 75 seconds (`stop_grace_period`) before Docker kills it, which leaves time
 for the OpenVAS stop and the release calls. `init: true` reaps the child processes testssl.sh leaves behind.
 
+A result that is finished but not yet delivered stays in the spool across the stop and goes out at the next start.
+
 On every start the daemon clears any drain flag an interrupted update left behind, and registers again.
 
 ### Switching full to light
@@ -225,6 +227,8 @@ container. "Not passed by compose" below means a value in `.env` has no effect; 
 | `CVENGINE_SENTINEL_MAX_CONCURRENT`                                                                              | No               | detected from the CPUs the container may use          | How many tasks run at once, OpenVAS not counted (see [Concurrency](#concurrency)). Capped at 10; a value that is not a number means 1.                                                            | daemon                                                                    |
 | `CVENGINE_SENTINEL_UPDATE`                                                                                      | No               | unset (cvENGINE decides)                              | `off`, `manual` or `automatic`. A ceiling on the self-update setting (see [Updates](#updates)).                                                                                                   | daemon, and `scripts/update.sh` through it                                |
 | `CVENGINE_SENTINEL_UPDATE_EXIT`                                                                                 | No               | unset                                                 | `1`: when cvENGINE asks this Sentinel to update it takes no new work, finishes the tasks it has and exits with code 76 (see [Updates](#updates)). For a supervisor that replaces the image after the exit (`scripts/pull-on-exit.sh`). Unset: the host updater acts on the request. Never used by the built-in scanner. | daemon |
+| `CVENGINE_SENTINEL_SPOOL_HOURS` | No | `6` | How long a finished result that cvENGINE did not take (an update, an outage) is held on disk and offered again. `0` turns the spool off (the task is released instead). See [Polling, heartbeat and results](#polling-heartbeat-and-results). | daemon |
+| `CVENGINE_SENTINEL_SPOOL_MAX_MB` | No | `256` | Size limit of the result spool directory. | daemon |
 | `CVENGINE_SENTINEL_UPDATER`                                                                                     | No               | unset                                                 | `installed` tells cvENGINE an updater exists before its first run. `install-updater.sh` writes it, and `--remove` deletes it. Do not set it by hand.                                              | daemon                                                                    |
 | `CVENGINE_SENTINEL_ALLOW_INSECURE`                                                                              | No               | unset                                                 | Exactly `1` allows a plain `http` server address (lab use only).                                                                                                                                  | daemon                                                                    |
 | `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY`                                                                         | No               | unset                                                 | A proxy for the Sentinel's connection to cvENGINE. testssl.sh and WPScan run with a minimal environment that leaves these out.                                                                    | daemon (through `requests`)                                               |
@@ -665,9 +669,21 @@ Re-running `install-updater.sh` rewrites that file (a `systemctl edit` drop-in s
   jitter, and a stop request ends the wait) before asking again, so it is not parked by the rate limit. A full long poll
   is answered with one second and is asked again at once.
 - A task the server takes back (it is no longer in the heartbeat's lease list) is killed and not reported.
-- A result that fails to post is retried up to 5 times within 2 minutes (network errors, 5xx and 429, with backoff).
-  If it still cannot be delivered, the Sentinel releases the task so cvENGINE can run it again. Other refusals (400,
-  409, 410) are final.
+- A result that fails to post (network error, 5xx, 429) is retried a few times within 20 seconds. If cvENGINE still
+  does not answer (an update, a restart, an outage) the finished result goes to the **spool** and the task slot is free
+  again: one file per task under `spool/` next to the token file (the `sentinel-state` volume, mode 0600, written
+  atomically). The spool is delivered oldest first with a backoff that doubles to 60 seconds, for as long as
+  `CVENGINE_SENTINEL_SPOOL_HOURS` (default 6) allows, and each entry is deleted when cvENGINE answers 2xx (which includes
+  \"already have it\") or refuses it for good (400, 409, 410; one log line). A Sentinel that starts with a spool, and
+  every heartbeat, delivers it before anything else, and a task whose result is held still counts as running in the
+  heartbeat so the server does not end it. An entry older than the window is no longer offered (the server has long
+  since given the task up) and is kept in `spool/expired/` for you; `expired/` is the first thing dropped when the
+  directory goes over `CVENGINE_SENTINEL_SPOOL_MAX_MB` (default 256), and a result that still does not fit is refused,
+  which releases the task as before. `CVENGINE_SENTINEL_SPOOL_HOURS=0` turns the spool off. The heartbeat carries
+  `info.spool` (`count`, `oldest_seconds`) while results are held, which the Sentinels page shows; the field is
+  optional and nothing in the contract changes.
+- While cvENGINE is unreachable the heartbeat and the poll keep retrying with a capped backoff and log the outage once,
+  then at most every 10 minutes, and once more when it ends.
 - A malformed reply or task from the server is logged and skipped, with backoff; it never stops the daemon.
 - If the server is unreachable at start, the Sentinel keeps running and retries its registration at every heartbeat.
 - If the token cannot be saved after bootstrap (a read-only or full volume), the Sentinel keeps running with it in
