@@ -221,6 +221,7 @@ class Watchdog:
         self.thread = None
         self.last_tick = clock()  # monotonic
         self.last_tick_wall = wall()
+        self.peak = {}  # task id -> the largest real memory (MB) its process groups showed
         self.seen = {}  # task id -> {'sig', 'moved'} for the no-progress rule
         self.watch = {}  # pgid -> when its task ended (monotonic): a group still alive after the grace is an orphan
         self.actions = collections.deque(maxlen=60)  # {'at', 'code', 'kind', 'minutes'}
@@ -421,10 +422,14 @@ class Watchdog:
         floor = cfg['floor_mb'] or max(300, int((limit or 0) * 0.15))
         heavy = [(tid, kind, age, st) for tid, kind, age, st in rows if admission.weight(kind) > admission.DEFAULT_WEIGHT_MB]
         estimates = []
-        for _tid, kind, age, st in rows:
+        for tid, kind, age, st in rows:
             w = admission.weight(kind)
             rss = sum(scan[g]['rss_mb'] for g in st.get('pgids', ()) if g in scan)
-            estimates.append(max(rss * 1.15, 1.0) if age >= 120 and rss > 0 else w)  # a run that has been going a while has grown to what it will use
+            peak = self.peak[tid] = max(self.peak.get(tid, 0.0), rss)  # the most this run has shown: a run is never estimated below what it already used
+            estimates.append(peak * 1.15 if age >= 120 and peak > 0 else w)  # a run that has been going a while has grown to what it will use, plus 15 percent
+        for tid in list(self.peak):
+            if tid not in {r[0] for r in rows}:
+                del self.peak[tid]
         waited = max((now - since for since in blocked.values()), default=0)
         fair = bool(heavy) and min(age for _t, _k, age, _s in heavy) >= cfg['mem_hold']
         new = 0
@@ -487,7 +492,7 @@ class Watchdog:
                 except OSError:
                     pass
                 self.act('orphans', None, None, f'{len(alive)} tool process(es) of process group {pgid} outlived their task by {int(now - since)}s: killed')
-                del self.watch[pgid]
+                # the entry stays one more tick: the zombies the kill leaves are reaped then
 
     # --- W5: liveness ------------------------------------------------------------------------------------------------------------------------
 
