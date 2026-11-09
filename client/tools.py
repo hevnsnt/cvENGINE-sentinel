@@ -419,7 +419,7 @@ def run_discover(cidr, timeout=900, register=None):
         raise TargetError('discover only runs on an internal Sentinel')
     cidr = validate_cidr(cidr)
     argv = [NMAP_BIN, *DISCOVER_FLAGS, '-oX', '-', cidr]
-    return parse_discover_xml(_run(argv, timeout, register))
+    return parse_discover_xml(_run(argv, timeout, register), strict=True)
 
 
 # --- naabu ----------------------------------------------------------------------------------------------------------
@@ -1390,10 +1390,11 @@ def detect_tools():
     found = []
     for name, argv in VERSION_ARGS.items():
         try:
-            subprocess.run(argv, capture_output=True, timeout=10, check=False)
-            found.append(name)
+            ran = subprocess.run(argv, capture_output=True, timeout=10, check=False)
         except (OSError, subprocess.TimeoutExpired):
             continue
+        if ran.returncode == 0:  # a binary that starts and then fails its own version probe is broken: declaring it would take tasks it cannot run (review L1)
+            found.append(name)
     if gvm_available():
         found.append('gvm')
     return found

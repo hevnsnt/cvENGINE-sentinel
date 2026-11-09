@@ -299,3 +299,23 @@ class NmapTimedOutHostTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class DiscoverStrictTests(unittest.TestCase):
+    """A discovery sweep that died is an error, never "no host is up" (review L3)."""
+
+    def test_an_empty_unparseable_or_unfinished_report_is_an_error_in_strict_mode(self):
+        for text in ('', '   ', '<nmaprun><host><status state="up"/><address addr="10.20.0.9" addrtype="ipv4"/></host>', '<nmaprun></nmaprun>',
+                     '<other><runstats><finished exit="success"/></runstats></other>'):
+            with self.subTest(text=text[:30]):
+                with self.assertRaises(ToolOutputError):
+                    parse_discover_xml(text, strict=True)
+
+    def test_a_finished_report_with_no_host_up_is_a_real_empty_answer(self):
+        out = parse_discover_xml('<nmaprun><runstats><finished exit="success"/><hosts up="0" down="256" total="256"/></runstats></nmaprun>', strict=True)
+        self.assertEqual(out, {'hosts': []})
+
+    def test_the_lenient_mode_is_as_before(self):
+        self.assertEqual(parse_discover_xml('<nmaprun'), {'hosts': []})
+        self.assertEqual(parse_discover_xml(''), {'hosts': []})
+

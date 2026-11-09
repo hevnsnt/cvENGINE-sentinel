@@ -93,16 +93,24 @@ def parse_port_reasons(xml_text):
     return out
 
 
-def parse_discover_xml(xml_text):
-    """The addresses nmap's ping sweep found up, each with the host names it learned, from ``-oX`` output."""
+def parse_discover_xml(xml_text, strict=False):
+    """The addresses nmap's ping sweep found up, each with the host names it learned, from ``-oX`` output. ``strict`` (the sweep runner) refuses a report
+    that is empty, unparseable, not an ``nmaprun`` or that never reached ``<finished exit="success">``: a sweep that died part way is an error, never "no
+    host is up" (review L3), exactly as ``parse_nmap_xml(strict=True)`` does for a scan."""
     hosts = []
     if not (xml_text or '').strip():
+        if strict:
+            raise ToolOutputError('the discovery sweep produced no report')
         return {'hosts': hosts}
     try:
         root = ET.fromstring(xml_text)
     except ET.ParseError:
         logger.warning('could not parse nmap XML output')
+        if strict:
+            raise ToolOutputError('the discovery sweep produced a report that could not be read') from None
         return {'hosts': hosts}
+    if strict and (root.tag != 'nmaprun' or root.find('runstats/finished[@exit="success"]') is None):
+        raise ToolOutputError('the discovery sweep did not finish its report')
     for host_el in root.findall('host'):
         status = host_el.find('status')
         addr_el = host_el.find("address[@addrtype='ipv4']")

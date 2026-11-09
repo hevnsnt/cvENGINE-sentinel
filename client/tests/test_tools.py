@@ -892,6 +892,26 @@ class GvmAvailableTests(unittest.TestCase):
 DISCOVER_XML = _read('sample_discover.xml')
 
 
+class DetectToolsTests(unittest.TestCase):
+    def test_a_tool_whose_version_probe_fails_is_not_declared(self):
+        """A binary that starts and then exits non-zero on its own version flag is broken; declaring it would take tasks it cannot run (review L1)."""
+        results = {'nuclei': mock.Mock(returncode=1), 'naabu': mock.Mock(returncode=0)}
+
+        def fake_run(argv, **kw):
+            for name, result in results.items():
+                if argv == tools.VERSION_ARGS[name]:
+                    return result
+            return mock.Mock(returncode=0)
+        with mock.patch('client.tools.subprocess.run', side_effect=fake_run), mock.patch('client.tools.gvm_available', return_value=False):
+            found = tools.detect_tools()
+        self.assertNotIn('nuclei', found)
+        self.assertIn('naabu', found)
+
+    def test_a_missing_binary_is_still_left_out(self):
+        with mock.patch('client.tools.subprocess.run', side_effect=FileNotFoundError('x')), mock.patch('client.tools.gvm_available', return_value=False):
+            self.assertEqual(tools.detect_tools(), [])
+
+
 class DiscoverTests(unittest.TestCase):
     def setUp(self):
         patcher = mock.patch('client.config._local_internal', return_value=True)
