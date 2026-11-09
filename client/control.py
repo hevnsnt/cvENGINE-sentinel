@@ -20,7 +20,7 @@ from . import config
 DRAIN_TTL = 2 * 3600
 STATUS_MAX_AGE = 180  # the daemon rewrites its status at every heartbeat; one older than this means it is not running
 WATCHDOG_STALE = 90  # the watchdog ticks every 10 s: one that has not for this long is stuck or gone
-HEARTBEAT_LOOP_STALE = 420  # the heartbeat loop finishes a pass every minute and the watchdog restarts it at 240 s: still stale at this age, the watchdog is not doing it
+HEARTBEAT_LOOP_STALE = 420  # the heartbeat loop finishes a pass every minute and the watchdog restarts it at 150 s: still stale at this age, the watchdog is not doing it
 POLL_LOOP_STALE = 480  # the poll loop turns every few seconds and the watchdog ends the process at 300 s
 HEARTBEAT_MAX_AGE = 180  # the built-in scanner is unhealthy when no heartbeat reached the server for this long (and restarts itself: daemon.WEDGED)
 UPDATE_STATUSES = ('waiting', 'draining', 'updating', 'done', 'failed')

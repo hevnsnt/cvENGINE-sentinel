@@ -599,6 +599,28 @@ class ReportAndLogTests(Env):
         self.assertEqual(daemon.config.CONTRACT_VERSION, body['info']['contract_version'])
 
 
+class MemStateTests(unittest.TestCase):
+    FILES = {'/proc/meminfo': 'MemTotal:  131072000 kB\nMemAvailable:  100000000 kB\n', '/sys/fs/cgroup/memory.max': '2147483648\n',
+             '/sys/fs/cgroup/memory.current': '1073741824\n', '/sys/fs/cgroup/memory.stat': 'anon 1\ninactive_file 268435456\n'}
+
+    def test_the_container_limit_and_working_set_are_read_from_the_cgroup_files_as_they_are_written(self):
+        # the kernel's files end in a newline: a limit that is not parsed would fall back to the host's memory, 64 times too large
+        state = watchdog.mem_state(lambda path: self.FILES.get(path, ''))
+        self.assertEqual(state['limit_mb'], 2048)
+        self.assertEqual(state['avail_mb'], 2048 - (1024 - 256))  # the limit less usage without the reclaimable page cache
+
+    def test_a_real_read_strips_the_newline(self):
+        with tempfile.NamedTemporaryFile('w', suffix='.max', delete=False) as handle:
+            handle.write('2147483648\n')
+        self.addCleanup(os.unlink, handle.name)
+        self.assertEqual(watchdog._read(handle.name), '2147483648')
+
+    def test_the_live_host_gives_a_limit_and_available_memory(self):
+        state = watchdog.mem_state()
+        self.assertGreater(state['limit_mb'], 0)
+        self.assertGreater(state['avail_mb'], 0)
+
+
 class ProcTests(Env):
     def test_scan_proc_reads_the_group_of_a_real_tool(self):
         proc = subprocess.Popen(['sh', '-c', 'sleep 600 & sleep 600'], start_new_session=True)

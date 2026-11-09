@@ -111,7 +111,7 @@ def no_progress_seconds(kind):
 def _read(path):
     try:
         with open(path, encoding='ascii', errors='replace') as handle:
-            return handle.read()
+            return handle.read().strip()
     except OSError:
         return ''
 
@@ -173,6 +173,10 @@ def pgid_of(proc):
 def mem_state(read=_read):
     """``{'limit_mb', 'avail_mb'}``: this container's limit and the memory really left: the lesser of the host's MemAvailable and the limit less what the
     cgroup's working set (usage without the reclaimable page cache) holds."""
+    raw_read = read
+
+    def read(path):  # a kernel file ends in a newline: the limit would not parse, and the host's memory would be taken for it
+        return raw_read(path).strip()
     avail_host = limit = None
     total = None
     for line in read('/proc/meminfo').splitlines():
@@ -244,7 +248,7 @@ class Watchdog:
             'over_pct': env_int('CVENGINE_SENTINEL_WATCHDOG_OVERCOMMIT_PERCENT', 25, 0, 50),
             'floor_mb': env_int('CVENGINE_SENTINEL_WATCHDOG_MEM_FLOOR_MB', 0, 0),  # 0: the larger of 300 MB and 15 percent of the limit
             'mem_kill': os.environ.get('CVENGINE_SENTINEL_WATCHDOG_MEM_KILL', '').strip().lower() in ('1', 'true', 'yes', 'on'),
-            'hb_stale': env_int('CVENGINE_SENTINEL_WATCHDOG_HEARTBEAT_STALE_SECONDS', 240, 90),
+            'hb_stale': env_int('CVENGINE_SENTINEL_WATCHDOG_HEARTBEAT_STALE_SECONDS', 150, 90),
             'poll_stale': env_int('CVENGINE_SENTINEL_WATCHDOG_POLL_STALE_SECONDS', 300, 120),
             'disk_floor_mb': env_int('CVENGINE_SENTINEL_WATCHDOG_DISK_FLOOR_MB', 300, 1),
             'kill_limit': env_int('CVENGINE_SENTINEL_WATCHDOG_KILLS_PER_HOUR', 3, 1),

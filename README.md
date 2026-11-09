@@ -229,6 +229,7 @@ container. "Not passed by compose" below means a value in `.env` has no effect; 
 | `CVENGINE_SENTINEL_UPDATE_EXIT`                                                                                 | No               | unset                                                 | `1`: when cvENGINE asks this Sentinel to update it takes no new work, finishes the tasks it has and exits with code 76 (see [Updates](#updates)). For a supervisor that replaces the image after the exit (`scripts/pull-on-exit.sh`). Unset: the host updater acts on the request. Never used by the built-in scanner. | daemon |
 | `CVENGINE_SENTINEL_SPOOL_HOURS` | No | `6` | How long a finished result that cvENGINE did not take (an update, an outage) is held on disk and offered again. `0` turns the spool off (the task is released instead). See [Polling, heartbeat and results](#polling-heartbeat-and-results). | daemon |
 | `CVENGINE_SENTINEL_SPOOL_MAX_MB` | No | `256` | Size limit of the result spool directory. | daemon |
+| `CVENGINE_SENTINEL_WATCHDOG` | No | on | `0` switches the Sentinel's own watchdog off (hard deadlines, no-progress kill, memory deadlock breaker, orphan reaper, liveness restart, disk guard). Thresholds: [docs/WATCHDOG.md](docs/WATCHDOG.md). | daemon |
 | `CVENGINE_SENTINEL_UPDATER`                                                                                     | No               | unset                                                 | `installed` tells cvENGINE an updater exists before its first run. `install-updater.sh` writes it, and `--remove` deletes it. Do not set it by hand.                                              | daemon                                                                    |
 | `CVENGINE_SENTINEL_ALLOW_INSECURE`                                                                              | No               | unset                                                 | Exactly `1` allows a plain `http` server address (lab use only).                                                                                                                                  | daemon                                                                    |
 | `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY`                                                                         | No               | unset                                                 | A proxy for the Sentinel's connection to cvENGINE. testssl.sh and WPScan run with a minimal environment that leaves these out.                                                                    | daemon (through `requests`)                                               |
@@ -704,6 +705,10 @@ container on its own. The image declares the same check (`HEALTHCHECK`), so a co
 For the built-in scanner the check is stricter: it also fails when no heartbeat has reached the server for 180 seconds (counted from the start
 while there has been none yet). It passes while the scanner waits for its first enrollment. `python3 -m client.control heartbeat` answers only
 "has a heartbeat reached the server in the last 180 seconds": cvENGINE's updater asks it before it keeps a new scanner image.
+
+With the watchdog on (the default) the check also fails when the watchdog has not ticked for 90 seconds, or the heartbeat loop for 420 seconds, or the poll
+loop for 480 seconds, for every Sentinel; the watchdog itself ends a stuck process (exit code 3) so the restart policy restarts it.
+See [docs/WATCHDOG.md](docs/WATCHDOG.md) for the rules, the deadline table and `autoheal` / systemd for a setup that restarts on `unhealthy`.
 
 ### Status files
 
