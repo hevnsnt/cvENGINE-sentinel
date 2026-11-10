@@ -326,7 +326,11 @@ def _run(argv, timeout, register=None, max_bytes=None, env=None, ok_codes=(0,), 
         return out.decode('utf-8', errors='replace')
     if proc.returncode not in (*ok_codes, None):
         # A crashed or killed tool leaves nothing, or something incomplete: returning that would read as "no open ports" or "no findings".
-        tail = ''.join(ch for ch in err.decode('utf-8', errors='replace')[:300] if ch.isprintable() or ch == ' ').strip()
+        err_text = err.decode('utf-8', errors='replace')
+        # nuclei opens every run with a warning about its JSON library on this CPU; left in, it took the whole 200 characters of every failure message and hid the
+        # error itself (on the VPS each "no templates" failure read "...fallback to encoding/json[FTL] Could not run nuclei: no templ")
+        said = '\n'.join(line for line in err_text.splitlines() if not _NOISE_LINE.search(line))
+        tail = ''.join(ch for ch in said[:300] if ch.isprintable() or ch == ' ').strip()
         logger.warning('%s exited %s: %s', os.path.basename(argv[0]), proc.returncode, tail)
         if proc.returncode in (-9, 137) and not getattr(proc, 'stopped_by_sentinel', False):  # not this daemon's own stop (a timeout and an oversized output are handled above)
             oom_after = _oom_events()
@@ -337,8 +341,12 @@ def _run(argv, timeout, register=None, max_bytes=None, env=None, ok_codes=(0,), 
                 raise ToolOOMError(f'{ToolOOMError.OOM_TEXT} ({os.path.basename(argv[0])} was killed by the system)')
         failure = ToolExitError(f'{os.path.basename(argv[0])} exited with status {proc.returncode}' + (f': {tail[:200]}' if tail else ''))
         failure.partial = out.decode('utf-8', errors='replace')  # what it printed before it was stopped: the watchdog delivers a stopped nuclei run's findings
+        failure.stderr = err_text  # what it said, whole (the message keeps 200 characters): a caller reads why it stopped
         raise failure
     return out.decode('utf-8', errors='replace')
+
+
+_NOISE_LINE = re.compile(r'WARNING: sonic/ast only supports')
 
 
 # --- nmap -----------------------------------------------------------------------------------------------------------
@@ -472,6 +480,9 @@ def nuclei_env():
     return env
 
 
+_NO_TEMPLATES = re.compile(r'no templates? (?:were )?(?:provided|found|loaded)', re.I)
+
+
 def run_nuclei(targets, tags=None, severities=None, timeout=3600, register=None, templates=None, secret_file=None):
     """Host names are passed to nuclei as names, because each finding reports the host it was given. They were judged by scope (and by
     every address they resolved to) just before; nuclei resolves them again, so a name whose DNS answer changes in between is the one gap.
@@ -505,6 +516,20 @@ def run_nuclei(targets, tags=None, severities=None, timeout=3600, register=None,
             # -elog: nuclei logs every request that failed, with its input. A run that exits 0 with no findings says nothing about a target
             # nothing answered, so the error log is what tells the two apart (review H4).
             output = _run([NUCLEI_BIN, '-l', path, *flags, '-elog', errlog], timeout, register, env=nuclei_env())
+        except subprocess.TimeoutExpired as exc:
+            # out of time: what it found so far is kept, and every target is named unfinished, so none of them is recorded as scanned clean (the server
+            # keeps findings and puts each unreachable target back as due). Before, the whole run was lost: two deep passes of one host each ran their full hour
+            # on the VPS and returned nothing.
+            findings = parse_nuclei_jsonl(getattr(exc, 'partial', '') or '', evidence=secret_file is None)
+            logger.warning('nuclei ran out of its %s s for %d target(s); %d finding(s) kept, every target stays due', timeout, len(targets), len(findings))
+            return {'findings': findings, 'templates_release': release, 'unreachable': list(targets), 'incomplete': True}
+        except ToolExitError as exc:
+            if (clean_tags or clean_severities) and _NO_TEMPLATES.search(getattr(exc, 'stderr', '') or str(exc)):
+                # the filter this task asked for matches no template in this set (``haproxy`` at ``info``): there is nothing to check on these targets, which is
+                # an answer, not a failure. It failed 29 tasks in two days on the VPS, the same tag sets every time, and they stayed due for ever.
+                logger.info('nuclei: no template matches tags %s at severities %s; nothing to check', clean_tags, clean_severities)
+                return {'findings': [], 'templates_release': release, 'unreachable': [], 'no_templates': True}
+            raise
         finally:
             os.unlink(path)
         findings = parse_nuclei_jsonl(output, evidence=secret_file is None)  # a signed-in run keeps no request or response (its sign-in is in them)
@@ -614,13 +639,62 @@ def _failure_line(stderr, stdout, token=''):
     return ''
 
 
+def wpscan_args_for(args, token):
+    """``args`` as a run without an API token can use: WPScan refuses ``vp`` and ``vt`` (vulnerable plugins and themes) without one and aborts the whole
+    scan, so a site of a project with no token was never scanned at all (14 of the last 90 runs on the VPS). Without a token the scan lists the plugins
+    and themes it detects and their versions instead (``p``, ``t``), which the server's own CVE feed reads."""
+    if token:
+        return list(args)
+    out = list(args)
+    if '--enumerate' in out and out.index('--enumerate') + 1 < len(out):
+        i = out.index('--enumerate') + 1
+        out[i] = ','.join({'vp': 'p', 'vt': 't'}.get(part, part) for part in out[i].split(','))
+    return out
+
+
+_REDIRECTS_TO = re.compile(r'The URL supplied redirects to (https?://\S+?)\.?(?:\s|$)')
+
+
+def _site(host):
+    host = (host or '').lower().rstrip('.')
+    return host[4:] if host.startswith('www.') else host
+
+
+def same_site_redirect(url, outcome):
+    """The URL an aborted scan says ``url`` redirects to, when it is the same site (the same host, or its ``www.`` twin, http or https), else None. WPScan stops
+    at the redirect rather than follow it, so a site that answers on its other name (www to apex, a path) was never scanned: 32 of the last 90 runs on the
+    VPS. Anything that leaves the site is left alone: the scan is never carried to a host it was not given."""
+    report = outcome.get('report') if isinstance(outcome, dict) else None
+    if outcome.get('returncode') != 4 or not isinstance(report, dict):
+        return None
+    found = _REDIRECTS_TO.search(str(report.get('scan_aborted') or ''))
+    if not found:
+        return None
+    target = found.group(1)
+    if not _URL.match(target) or target.rstrip('/') == url.rstrip('/'):
+        return None
+    from urllib.parse import urlsplit
+    if _site(urlsplit(target).hostname) != _site(urlsplit(url).hostname):
+        return None
+    return target
+
+
+def _wpscan_following(url, token, timeout, register, args):
+    outcome = _wpscan(url, token, timeout, register, wpscan_args_for(args, token))
+    target = same_site_redirect(url, outcome)
+    if target is None:
+        return outcome
+    logger.info('wpscan: %s redirects to %s on the same site; scanning that', url, target)
+    return _wpscan(target, token, timeout, register, wpscan_args_for(args, token))  # judged by scope again inside, as any URL
+
+
 def run_wpscan(url, token='', timeout=900, register=None):
     """Run the quick pass of WPScan on one site and return its raw outcome: ``{'report', 'returncode', 'stderr_tail'}``, exactly what
     ``cveFeed.wpscan_scan._classify`` already reads from a local run: the one function, local or dispatched, that
     turns a wpscan process's outcome into a report or a classified failure. The API token travels in the environment,
     never a command line argument, and never logged. The URL's host is judged by scope (with every address it resolves
     to); WPScan resolves it again, so a DNS answer that changes in between is the one gap."""
-    return _wpscan(url, token, timeout, register, WPSCAN_ARGS)
+    return _wpscan_following(url, token, timeout, register, WPSCAN_ARGS)
 
 
 def run_wpscan_thorough(url, token='', timeout_seconds=None, register=None):
@@ -629,7 +703,7 @@ def run_wpscan_thorough(url, token='', timeout_seconds=None, register=None):
     ``flags.thorough_timeout``). Same URL, scope, token and result handling as the quick pass: ``{'report', 'returncode', 'stderr_tail'}``, where a
     run cut at its limit still reports what it read (WPScan ends its scan 30 seconds before the process would be killed, exit code 4 with a partial
     report)."""
-    return _wpscan(url, token, thorough_timeout(timeout_seconds), register, WPSCAN_THOROUGH_ARGS)
+    return _wpscan_following(url, token, thorough_timeout(timeout_seconds), register, WPSCAN_THOROUGH_ARGS)
 
 
 def _wpscan(url, token, timeout, register, args):

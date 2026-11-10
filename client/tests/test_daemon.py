@@ -1079,6 +1079,15 @@ class KindPolicyTests(DaemonTestCase):
             d._execute({'id': 43, 'kind': 'discover', 'target': {'cidr': '10.0.0.0/24'}}, None)
         runner.assert_not_called()
 
+    def test_a_nuclei_task_runs_with_the_time_limit_of_its_kind_and_size(self):
+        """The daemon passes nuclei a limit under the server's wait (cvengine_scanner.flags.task_seconds), not the 3600 s default."""
+        d = self.make()
+        runner = mock.Mock(return_value={'findings': [], 'unreachable': []})
+        with mock.patch.dict(tools.RUNNERS, {'nuclei_targeted': runner}), mock.patch.object(d, '_approved_templates', return_value=None):
+            d._execute({'id': 44, 'kind': 'nuclei_targeted', 'target': {'targets': ['www.example.test'] * 9, 'tags': ['nginx']}}, None)
+        self.assertEqual(runner.call_args.kwargs['timeout'], tools.task_seconds('nuclei_targeted', 9))
+        self.assertLess(runner.call_args.kwargs['timeout'], 3600)
+
     def test_the_polled_kinds_follow_a_network_setting_from_the_server(self):
         os.environ['CVENGINE_SENTINEL_NETWORK'] = 'internal'
         d = self.make()

@@ -169,6 +169,31 @@ class RunTests(unittest.TestCase):
         self.assertEqual(config.KIND_SINCE['secrets_scan'], 3)
 
 
+class DeadNameTests(unittest.TestCase):
+    run_task = RunTests.run_task
+
+    def test_a_name_that_does_not_resolve_is_skipped_and_the_rest_of_the_batch_is_read(self):
+        """On the VPS a batch of up to 25 hosts failed whole ("[Errno -5] No address associated with hostname") for one dead name in it."""
+        import copy
+        import socket
+        task = target()
+        dead = copy.deepcopy(task['hosts'][0])
+        dead['host'], dead['urls'], dead['script_urls'] = 'gone.example.test', ['https://gone.example.test/'], []
+        task['hosts'].insert(0, dead)
+        task['scope']['names'] = list(task['scope']['names']) + ['gone.example.test']
+
+        def gai(name, port, *args, **kwargs):
+            if name == 'gone.example.test':
+                raise socket.gaierror(-5, 'No address associated with hostname')
+            return fake_getaddrinfo(name, port, *args, **kwargs)
+        with mock.patch('socket.getaddrinfo', side_effect=gai):
+            result, site, calls, _ = self.run_task(task, report)
+        self.assertNotIn('gone.example.test', {u.split('/')[2] for u, _ in site.asked})
+        self.assertIn('https://www.example.test/', [u for u, _ in site.asked])  # the live host was read
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(result['fetched'])
+
+
 class DeclareTests(unittest.TestCase):
     def setUp(self):
         self.addCleanup(config.set_server_contract, {})

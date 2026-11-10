@@ -173,3 +173,23 @@ class NmapPassFlagsTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class NucleiTaskLimitTests(unittest.TestCase):
+    """A nuclei run ends before the server stops waiting for it (agentapi.sentinel_dispatch: COMPLETION_CEILING + PER_TARGET_SECONDS x (targets - 1)), so its
+    findings arrive. The server's numbers are copied here on purpose: a change on one side must fail this until the other side matches."""
+    SERVER = {'nuclei_light': (900, 20), 'nuclei_targeted': (1800, 30), 'nuclei_deep': (3600, 60)}
+
+    def test_every_nuclei_run_ends_at_least_a_minute_before_the_server_gives_up(self):
+        from cvengine_scanner.flags import task_seconds
+        for kind, (base, per) in self.SERVER.items():
+            for count in (1, 2, 5, 9, 21, 64, 200):
+                with self.subTest(kind=kind, targets=count):
+                    self.assertLessEqual(task_seconds(kind, count), base + per * (count - 1) - 60)
+
+    def test_the_limits_cover_the_longest_runs_seen_in_production(self):
+        """The longest completed runs on the VPS (11/8 to 11/10) fit: a limit is a ceiling on a stuck run, never on a normal one."""
+        from cvengine_scanner.flags import task_seconds
+        for kind, count, longest in (('nuclei_light', 63, 926), ('nuclei_targeted', 9, 1714), ('nuclei_deep', 21, 3008), ('nuclei_deep', 1, 1335)):
+            with self.subTest(kind=kind, targets=count):
+                self.assertGreater(task_seconds(kind, count), longest)
