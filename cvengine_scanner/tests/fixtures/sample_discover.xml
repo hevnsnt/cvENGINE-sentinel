@@ -2,4 +2,5 @@
 <hostnames><hostname name="files.corp" type="PTR"/></hostnames></host>
 <host><status state="down"/><address addr="10.20.0.6" addrtype="ipv4"/></host>
 <host><status state="up"/><address addr="10.20.0.9" addrtype="ipv4"/><hostnames/></host>
-<host><status state="up"/><address addr="aa:bb:cc:dd:ee:ff" addrtype="mac"/></host></nmaprun>
+<host><status state="up"/><address addr="aa:bb:cc:dd:ee:ff" addrtype="mac"/></host><runstats><finished time="1794253000" timestr="Mon Nov  9 16:30:00 2026" elapsed="2.10" summary="Nmap done at Mon Nov  9 16:30:00 2026; 256 IP addresses (2 hosts up) scanned in 2.10 seconds" exit="success"/><hosts up="2" down="254" total="256"/></runstats>
+</nmaprun>

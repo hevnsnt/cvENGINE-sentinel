@@ -950,7 +950,7 @@ class Daemon:
         if not self._accept(task_id):
             return
         state = {'proc': None, 'done': threading.Event(), 'started': time.monotonic(), 'dropped': False, 'finishing': False,
-                 'kind': kind, 'runnable': kind in kinds, 'pgids': set()}
+                 'kind': kind, 'runnable': kind in kinds, 'pgids': set(), 'signed_in': bool(task.get('signed_in'))}
         limit = (task.get('target') or {}).get('timeout_seconds') if isinstance(task.get('target'), dict) else None
         if isinstance(limit, int) and not isinstance(limit, bool):
             state['budget_s'] = limit  # a time limit the task carries (bbot, thorough wpscan): the watchdog's deadline is never under it
@@ -1105,6 +1105,14 @@ class Daemon:
                 outcome = 'stopped by the watchdog'
                 self._report_unless_dropped(task_id, state, self._watchdog_result(state))
             logger.info('task %s was ended by the server: %s', task_id, _clip(str(exc), 200))
+        except templates.BundlePending as exc:  # the server has not packed the approved set yet: not an error, the task is due again
+            logger.info('task %s waits for its approved template bundle (%s); giving it back', task_id, _clip(str(exc), 120))
+            with self._lock:
+                give_back = not state.get('dropped')
+                if give_back:
+                    state['finishing'] = True
+            if give_back:
+                self._release(task_id, 'the approved template bundle is not ready yet, retry later')
         except (tools.TargetError, bbot.RunError) as exc:
             if isinstance(exc, tools.Refused) or str(exc).startswith('refused:'):
                 logger.warning('task %s refused locally: %s', task_id, _clip(str(exc), 200))
@@ -1139,7 +1147,7 @@ class Daemon:
         partial = getattr(exc, 'partial', None)
         if self.guard and self.guard.cfg['partial'] and state.get('kind') in watchdog_mod.NUCLEI_KINDS and partial:
             try:
-                findings = tools.parse_nuclei_jsonl(partial)
+                findings = tools.parse_nuclei_jsonl(partial, evidence=not state.get('signed_in'))  # a signed-in run keeps no request or response
             except Exception:  # noqa: BLE001 - a cut last line, anything unreadable: the plain error
                 findings = []
             if findings:
@@ -1167,7 +1175,13 @@ class Daemon:
         if not isinstance(target, dict):
             raise tools.TargetError('the task target is not an object')
         if kind in ('nmap', 'naabu'):
-            out = runner(target.get('addresses') or [], register=register)
+            addresses = target.get('addresses') or []
+            # the time limit: the task's own when the server sends one, else sized from the host count (cvengine_scanner.flags.task_seconds)
+            seconds = tools.task_seconds(kind, len(addresses) if isinstance(addresses, list) else 1, target.get('timeout'))
+            if kind == 'nmap':  # ``ports``: what the fingerprint pass scans (the server's naabu result plus the extended set); absent means the top thousand
+                out = runner(addresses, timeout=seconds, ports=target.get('ports'), register=register)
+            else:
+                out = runner(addresses, timeout=seconds, register=register)
         elif kind in ('nuclei_light', 'nuclei_targeted', 'nuclei_deep'):
             targets = target.get('targets') or []
 
@@ -1246,15 +1260,16 @@ class Daemon:
         """The directory of the server's approved nuclei templates a task must run on, or ``None`` when the task names no bundle and the server asks
         for no policy (an older server: the templates baked into this image are used). A task under the read-only policy that names no bundle, or a
         bundle that cannot be fetched or verified, is an error: nothing unapproved is ever run in its place."""
-        sha256 = target.get('bundle_sha256')
-        policy = target.get('template_policy')
+        policy = target.get('template_policy') if isinstance(target.get('template_policy'), dict) else {}
+        # the server's shape is ``template_policy.bundle_sha256`` (sentinel_dispatch._nuclei_target); the top level is read too
+        sha256 = policy.get('bundle_sha256') or target.get('bundle_sha256')
         if sha256:
             try:
                 return templates.ensure_bundle(self.client, sha256)
             except templates.TemplateError as exc:
                 raise tools.TargetError(str(exc)) from None
-        if isinstance(policy, dict) and policy.get('read_only'):
-            raise tools.TargetError('the task requires the approved template set but names no template bundle')
+        if policy.get('read_only'):
+            raise templates.BundlePending('the approved template bundle is not packed yet; the task is given back and runs once it exists')
         return None
 
     def _report(self, task_id, result):

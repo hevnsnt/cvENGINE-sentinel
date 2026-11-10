@@ -27,6 +27,8 @@ import tempfile
 import threading
 import time
 
+from cvengine_scanner import flags
+
 from . import admission
 from . import config
 from . import control
@@ -40,7 +42,7 @@ TICK_SECONDS = 10.0
 # deadline adds GRACE_SECONDS so a tool that stops on its own limit is never the watchdog's doing.
 TOOL_BUDGET_SECONDS = {
     'nuclei_light': 3600, 'nuclei_targeted': 3600, 'nuclei_deep': 3600, 'nuclei_validate': 600,
-    'nmap': 3600, 'nmap_verify': 900, 'nmap_full': 1500, 'nmap_udp': 1500, 'discover': 900, 'naabu': 900,
+    'nmap': 3600, 'nmap_verify': 900, 'nmap_full': 1500, 'nmap_udp': 1500, 'discover': 900, 'naabu': flags.TASK_LIMITS['naabu'][2],
     'testssl': 900, 'wpscan': 900, 'waf': 300, 'web_screenshot': 1800, 'rdp_shot': 300, 'secrets_scan': 1800,
     'bbot_discovery': 21600, 'wpscan_thorough': 12 * 3600, 'openvas': 24 * 3600,
 }

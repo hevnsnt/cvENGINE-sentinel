@@ -110,6 +110,67 @@ class NucleiParsingTests(unittest.TestCase):
         self.assertEqual({len(e) for e in first['extracted_results']}, {500})
 
 
+
+class NucleiEvidenceTests(unittest.TestCase):
+    """Review M2: a finding keeps what identifies and explains it (its CVE ids, CVSS score, references, remediation, and the request and the
+    response that matched), bounded and with credentials redacted. A signed-in run keeps no request or response at all."""
+
+    CVE_LINE = {'template-id': 'CVE-2021-41773', 'host': 'https://www.example.test', 'type': 'HTTP', 'matched-at': 'https://www.example.test/cgi-bin/x',
+                'matcher-status': True, 'matcher-name': 'path-traversal',
+                'request': 'GET /cgi-bin/x HTTP/1.1\nHost: www.example.test\nAuthorization: Basic dXNlcjpwYXNz\nCookie: session=abc\nX-Api-Key: k1\n',
+                'response': 'HTTP/1.1 200 OK\nSet-Cookie: sid=zzz\n\nroot:x:0:0:root\nAuthorization: Bearer tok123\n',
+                'info': {'name': 'Apache path traversal', 'severity': 'critical', 'description': 'd', 'remediation': 'Upgrade Apache.',
+                         'reference': ['https://nvd.example.test/CVE-2021-41773', 'https://advisory.example.test/1'],
+                         'classification': {'cve-id': ['cve-2021-41773'], 'cvss-score': 7.5}, 'tags': ['cve', 'apache']}}
+
+    def test_a_cve_hit_keeps_its_cve_ids_score_references_and_remediation(self):
+        (finding,) = parsers.parse_nuclei_jsonl(json.dumps(self.CVE_LINE))
+        self.assertEqual(finding['cve_ids'], ['CVE-2021-41773'])
+        self.assertEqual(finding['cvss_score'], 7.5)
+        self.assertEqual(finding['references'], ['https://nvd.example.test/CVE-2021-41773', 'https://advisory.example.test/1'])
+        self.assertEqual(finding['remediation'], 'Upgrade Apache.')
+        self.assertEqual(finding['type'], 'http')
+
+    def test_the_request_and_the_response_are_kept_with_credentials_redacted(self):
+        (finding,) = parsers.parse_nuclei_jsonl(json.dumps(self.CVE_LINE))
+        self.assertIn('GET /cgi-bin/x HTTP/1.1', finding['request'])
+        self.assertIn('Authorization: [REDACTED]', finding['request'])
+        self.assertIn('Cookie: [REDACTED]', finding['request'])
+        self.assertIn('X-Api-Key: [REDACTED]', finding['request'])
+        self.assertIn('Set-Cookie: [REDACTED]', finding['response'])
+        self.assertIn('Authorization: [REDACTED]', finding['response'])
+        self.assertIn('root:x:0:0:root', finding['response'])  # the evidence itself stays
+        for secret in ('dXNlcjpwYXNz', 'session=abc', 'k1', 'sid=zzz', 'tok123'):
+            self.assertNotIn(secret, finding['request'] + finding['response'])
+
+    def test_bare_bearer_and_basic_tokens_are_redacted_wherever_they_sit(self):
+        row = dict(self.CVE_LINE, request='GET / HTTP/1.1\nX-Custom: Bearer abc.def.ghi\n', response='Note: Basic cGFzczp3b3Jk here')
+        (finding,) = parsers.parse_nuclei_jsonl(json.dumps(row))
+        self.assertNotIn('abc.def.ghi', finding['request'])
+        self.assertNotIn('cGFzczp3b3Jk', finding['response'])
+
+    def test_the_evidence_is_clipped_to_the_servers_limit(self):
+        row = dict(self.CVE_LINE, request='A' * 9000, response='B' * 9000)
+        (finding,) = parsers.parse_nuclei_jsonl(json.dumps(row))
+        self.assertEqual((len(finding['request']), len(finding['response'])), (4096, 4096))
+
+    def test_a_signed_in_run_keeps_no_request_or_response(self):
+        (finding,) = parsers.parse_nuclei_jsonl(json.dumps(self.CVE_LINE), evidence=False)
+        self.assertNotIn('request', finding)
+        self.assertNotIn('response', finding)
+        self.assertEqual(finding['cve_ids'], ['CVE-2021-41773'])
+
+    def test_malformed_classification_is_read_as_absent(self):
+        row = {'template-id': 't', 'host': 'www.example.test', 'info': {'classification': {'cve-id': ['not-a-cve', 7], 'cvss-score': 'high'},
+                                                                       'reference': 'https://example.test/one'}}
+        (finding,) = parsers.parse_nuclei_jsonl(json.dumps(row))
+        self.assertNotIn('cve_ids', finding)
+        self.assertNotIn('cvss_score', finding)
+        self.assertEqual(finding['references'], ['https://example.test/one'])
+        self.assertNotIn('remediation', finding)
+        self.assertNotIn('request', finding)
+
+
 class StrictNmapTests(unittest.TestCase):
     """The scan runner's strict reading: an nmap that died part way is an error, never "no hosts, nothing open"."""
 
@@ -199,7 +260,7 @@ class FlagsTests(unittest.TestCase):
         self.assertEqual(flags.NUCLEI_FLAGS[flags.NUCLEI_FLAGS.index('-etags') + 1], 'dos')
 
     def test_every_flag_list_is_plain_strings(self):
-        for name in ('NMAP_FLAGS', 'NAABU_FLAGS', 'NUCLEI_FLAGS', 'TESTSSL_FLAGS', 'WPSCAN_ARGS', 'WPSCAN_THOROUGH_ARGS', 'DISCOVER_FLAGS'):
+        for name in ('NMAP_FAST_FLAGS', 'NAABU_FLAGS', 'NUCLEI_FLAGS', 'TESTSSL_FLAGS', 'WPSCAN_ARGS', 'WPSCAN_THOROUGH_ARGS', 'DISCOVER_FLAGS'):
             with self.subTest(name=name):
                 self.assertTrue(all(isinstance(item, str) for item in getattr(flags, name)))
 
@@ -222,5 +283,42 @@ class FlagsTests(unittest.TestCase):
         self.assertEqual(flags.host_of({}), '')
 
 
+
+class NmapTimedOutHostTests(unittest.TestCase):
+    """Review H3: nmap marks a host it gave up on with timedout="true". That flag is kept, so the host is never read as clean."""
+
+    def test_a_timed_out_host_is_flagged_and_a_finished_one_is_not(self):
+        xml = ('<nmaprun><host timedout="true"><status state="up"/><address addr="192.0.2.10" addrtype="ipv4"/></host>'
+               '<host><status state="up"/><address addr="198.51.100.20" addrtype="ipv4"/></host>'
+               '<runstats><finished exit="success"/></runstats></nmaprun>')
+        hosts = {h['ip']: h for h in parsers.parse_nmap_xml(xml, strict=True)['hosts']}
+        self.assertIs(hosts['192.0.2.10'].get('timed_out'), True)
+        self.assertNotIn('timed_out', hosts['198.51.100.20'])
+        self.assertEqual(hosts['192.0.2.10']['ports'], [])
+
+
 if __name__ == '__main__':
     unittest.main()
+
+
+ToolOutputError, parse_discover_xml = parsers.ToolOutputError, parsers.parse_discover_xml
+
+
+class DiscoverStrictTests(unittest.TestCase):
+    """A discovery sweep that died is an error, never "no host is up" (review L3)."""
+
+    def test_an_empty_unparseable_or_unfinished_report_is_an_error_in_strict_mode(self):
+        for text in ('', '   ', '<nmaprun><host><status state="up"/><address addr="10.20.0.9" addrtype="ipv4"/></host>', '<nmaprun></nmaprun>',
+                     '<other><runstats><finished exit="success"/></runstats></other>'):
+            with self.subTest(text=text[:30]):
+                with self.assertRaises(ToolOutputError):
+                    parse_discover_xml(text, strict=True)
+
+    def test_a_finished_report_with_no_host_up_is_a_real_empty_answer(self):
+        out = parse_discover_xml('<nmaprun><runstats><finished exit="success"/><hosts up="0" down="256" total="256"/></runstats></nmaprun>', strict=True)
+        self.assertEqual(out, {'hosts': []})
+
+    def test_the_lenient_mode_is_as_before(self):
+        self.assertEqual(parse_discover_xml('<nmaprun'), {'hosts': []})
+        self.assertEqual(parse_discover_xml(''), {'hosts': []})
+

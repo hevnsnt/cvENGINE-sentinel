@@ -128,9 +128,9 @@ class RunnerArgvTests(unittest.TestCase):
         self.assertIn('-n', captured['argv'])  # no reverse DNS: parse_nmap_xml never reads host names
         self.assertEqual(captured['targets_file_contents'], '8.8.8.8\n1.1.1.1\n')
         self.assertEqual(captured['timeout'], tools.NMAP_MIN_TIMEOUT)
-        # the sample report's two hosts, plus an empty row for each requested address the report does not mention
-        self.assertEqual(len(result['hosts']), 4)
-        self.assertEqual({h['ip'] for h in result['hosts']} >= {'8.8.8.8', '1.1.1.1'}, True)
+        self.assertIn('--top-ports', captured['argv'])  # no task ports: the fingerprint pass scans the top thousand
+        # the sample report's two hosts; an address the report does not mention gets no row (it was not scanned: review H3)
+        self.assertEqual(sorted(h['ip'] for h in result['hosts']), ['192.0.2.10', '198.51.100.20'])
 
     def test_nmap_and_naabu_are_given_the_address_a_name_was_judged_by(self):
         files = []
@@ -158,10 +158,23 @@ class RunnerArgvTests(unittest.TestCase):
                 with self.assertRaises(tools.ToolOutputError):
                     tools.run_nmap(['8.8.8.8'])
 
-    def test_every_requested_address_gets_a_host_row(self):
+    def test_an_address_nmap_did_not_report_is_not_a_scanned_host(self):
+        # Review H3: a padded row used to make an address that nmap never reported read as a clean host with no services.
         with mock.patch('client.tools._run', return_value=FINISHED_REPORT):
             result = tools.run_nmap(['8.8.8.8', '1.1.1.1'])
-        self.assertEqual(result['hosts'], [{'ip': '8.8.8.8', 'os_guess': '', 'ports': []}, {'ip': '1.1.1.1', 'os_guess': '', 'ports': []}])
+        self.assertEqual(result['hosts'], [])
+
+    def test_a_host_nmap_timed_out_on_is_marked_and_is_not_a_clean_host(self):
+        report = ('<nmaprun><host timedout="true"><status state="up" reason="user-set"/><address addr="8.8.8.8" addrtype="ipv4"/></host>'
+                  '<host><status state="up" reason="user-set"/><address addr="1.1.1.1" addrtype="ipv4"/>'
+                  '<ports><port protocol="tcp" portid="22"><state state="open" reason="syn-ack"/></port></ports></host>'
+                  '<runstats><finished exit="success"/></runstats></nmaprun>')
+        with mock.patch('client.tools._run', return_value=report):
+            result = tools.run_nmap(['8.8.8.8', '1.1.1.1'])
+        by_ip = {h['ip']: h for h in result['hosts']}
+        self.assertIs(by_ip['8.8.8.8'].get('timed_out'), True)
+        self.assertNotIn('timed_out', by_ip['1.1.1.1'])  # a host nmap finished carries no flag
+        self.assertEqual(by_ip['1.1.1.1']['ports'][0]['number'], 22)
 
     def test_os_is_reported_unreliable_only_inside_docker_desktop_style_kernels(self):
         for release, reliable in (('6.19.14+kali-amd64', True), ('6.10.14-linuxkit', False), ('5.15.153.1-microsoft-standard-WSL2', False),
@@ -192,9 +205,9 @@ class RunnerArgvTests(unittest.TestCase):
         self.assertEqual(len(runs), 2)
         self.assertNotIn('-6', runs[0][0])
         self.assertEqual(runs[0][1], '8.8.8.8\n')
-        self.assertEqual(runs[1][0][:3], [tools.NMAP_BIN, '-6', *tools.NMAP_FLAGS[:1]])
+        self.assertEqual(runs[1][0][:3], [tools.NMAP_BIN, '-6', *tools.nmap_pass_flags()[:1]])
         self.assertEqual(runs[1][1], '2606:4700:4700::1111\n')
-        self.assertEqual(len(result['hosts']), 4)  # the sample report's two hosts, plus an empty row for each requested address it does not mention
+        self.assertEqual(sorted(h['ip'] for h in result['hosts']), ['192.0.2.10', '198.51.100.20'])  # the IPv6 run reported nothing: no row, not scanned
         with mock.patch('client.tools._run', return_value=FINISHED_REPORT) as only_v6:
             tools.run_nmap(['2606:4700:4700::1111'])
         self.assertEqual(only_v6.call_count, 1)
@@ -208,6 +221,29 @@ class RunnerArgvTests(unittest.TestCase):
         self.assertIn('-json', argv)
         self.assertEqual(result['ports']['192.0.2.10'], [22, 80])  # whatever naabu printed is parsed as it is
 
+    def test_naabu_gets_a_time_limit_sized_from_its_hosts_and_a_timeout_is_partial_not_an_error(self):
+        with mock.patch('client.tools._run', return_value='') as fake_run:
+            tools.run_naabu(['8.8.8.8'])
+        self.assertEqual(fake_run.call_args[0][1], 900)  # one host: the floor of the naabu range
+        partial = '{"ip":"8.8.8.8","port":22}\n'
+
+        def runs_out(argv, timeout, register=None):
+            err = subprocess.TimeoutExpired(argv, timeout)
+            err.partial = partial
+            raise err
+        with mock.patch('client.tools._run', side_effect=runs_out):
+            result = tools.run_naabu(['8.8.8.8', '1.1.1.1'])
+        self.assertIs(result['incomplete'], True)
+        self.assertEqual(result['unfinished'], ['8.8.8.8', '1.1.1.1'])
+        self.assertEqual(result['ports'], {'8.8.8.8': [22]})  # the ports it read are kept
+
+    def test_a_naabu_run_that_fits_its_chunk_gets_the_limit_of_its_hosts_and_is_complete(self):
+        hosts = [f'8.8.{i // 256}.{i % 256}' for i in range(1, 25)]
+        with mock.patch('client.tools._run', return_value='') as fake_run:
+            result = tools.run_naabu(hosts)
+        self.assertNotIn('incomplete', result)
+        self.assertEqual(fake_run.call_args[0][1], tools.task_seconds('naabu', 24))
+
     def test_run_nuclei_adds_clean_tags_and_severities_only(self):
         with mock.patch('client.tools._run', return_value=_read('sample_nuclei.jsonl')) as fake_run:
             result = tools.run_nuclei(['www.example.test'], tags=['tech', 'not valid; rm -rf /'],
@@ -219,13 +255,13 @@ class RunnerArgvTests(unittest.TestCase):
         self.assertEqual(argv[argv.index('-severity') + 1], 'high')
         self.assertEqual(len(result['findings']), 2)
 
-    def test_nuclei_always_excludes_dos_templates_and_omits_raw_traffic(self):
+    def test_nuclei_always_excludes_dos_templates_and_keeps_the_raw_evidence(self):
         for tags in (None, [], ['cve'], ['dos', 'cve']):
             with self.subTest(tags=tags), mock.patch('client.tools._run', return_value='') as fake_run:
                 tools.run_nuclei(['www.example.test'], tags=tags)
                 argv = fake_run.call_args[0][0]
                 self.assertEqual(argv[argv.index('-etags') + 1], 'dos')
-                self.assertIn('-omit-raw', argv)
+                self.assertNotIn('-omit-raw', argv)  # the request and response are the finding's evidence (review M2)
                 self.assertEqual('-tags' in argv, bool(tags))
 
     def test_a_tag_filter_with_nothing_usable_fails_closed(self):
@@ -255,6 +291,148 @@ class RunnerArgvTests(unittest.TestCase):
             with self.assertRaises(tools.TargetError):
                 tools.run_nmap(['8.8.8.8; rm -rf /'])
         fake_run.assert_not_called()
+
+
+class NucleiTemplateReleaseTests(unittest.TestCase):
+    """The result names the template set the run used, so a stale run is visible in the result (review L5)."""
+
+    def test_a_run_on_an_approved_bundle_names_that_bundle(self):
+        bundle = '/state/templates/' + 'e' * 64
+        with mock.patch('client.tools.os.path.isdir', return_value=True), mock.patch('client.tools._run', return_value=''):
+            result = tools.run_nuclei(['www.example.test'], templates=bundle)
+        self.assertEqual(result['templates_release'], 'approved:' + 'e' * 64)
+
+    def test_a_run_on_the_image_templates_names_the_image_release(self):
+        with mock.patch.object(tools, 'IMAGE_TEMPLATES_VERSION', 'v10.5.1'), mock.patch('client.tools._run', return_value=''):
+            result = tools.run_nuclei(['www.example.test'])
+        self.assertEqual(result['templates_release'], 'image:v10.5.1')
+
+    def test_a_release_is_always_a_short_plain_string(self):
+        self.assertLessEqual(len(tools.IMAGE_TEMPLATES_VERSION), 40)
+        with mock.patch('client.tools._run', return_value=''):
+            release = tools.run_nuclei(['www.example.test'])['templates_release']
+        self.assertRegex(release, r'^[A-Za-z0-9:._-]{1,80}$')
+
+
+def _nuclei_run(stdout, errors):
+    """A fake nuclei run: ``stdout`` is its JSONL findings and ``errors`` (a list of dicts) is what it writes to the -elog file it is given."""
+    def fake(argv, timeout, register=None, env=None):
+        if '-elog' in argv:
+            with open(argv[argv.index('-elog') + 1], 'w', encoding='utf-8') as handle:
+                handle.write(''.join(json.dumps(row) + '\n' for row in errors))
+        return stdout
+    return fake
+
+
+REFUSED = {'input': 'closed.example.test:8080', 'error': 'Get "http://closed.example.test:8080": dial tcp 192.0.2.7:8080: connect: connection refused'}
+
+
+class NucleiReachTests(unittest.TestCase):
+    """Review H4: nuclei exits 0 with no output when nothing answered. The targets it never reached are listed as unreachable, never as scanned
+    with no findings."""
+
+    def test_a_closed_port_run_that_exits_clean_names_its_targets_as_unreachable(self):
+        errors = [dict(REFUSED, input='www.example.test:8080', error='dial tcp: connect: connection refused'), dict(REFUSED)]
+        with mock.patch('client.tools._run', side_effect=_nuclei_run('', errors)):
+            result = tools.run_nuclei(['www.example.test:8080', 'closed.example.test:8080'])
+        self.assertEqual(result['findings'], [])
+        self.assertEqual(result['unreachable'], ['www.example.test:8080', 'closed.example.test:8080'])
+
+    def test_a_host_that_gave_a_finding_is_reached_even_when_some_requests_failed(self):
+        finding = json.dumps({'template-id': 'tech-detect', 'host': 'www.example.test', 'matched-at': 'https://www.example.test/', 'info': {'name': 'n', 'severity': 'info'}})
+        errors = [{'input': 'https://www.example.test/x', 'error': 'context deadline exceeded (Client.Timeout exceeded)'}]
+        with mock.patch('client.tools._run', side_effect=_nuclei_run(finding, errors)):
+            result = tools.run_nuclei(['https://www.example.test/'])
+        self.assertEqual(result['unreachable'], [])
+        self.assertEqual(len(result['findings']), 1)
+
+    def test_an_error_that_is_not_a_connection_failure_leaves_the_host_reached(self):
+        errors = [{'input': 'www.example.test', 'error': 'unexpected EOF in template response parser: bad json body'}, {'input': 'www.example.test', 'error': 'read tcp: broken pipe'}]
+        with mock.patch('client.tools._run', side_effect=_nuclei_run('', errors)):
+            result = tools.run_nuclei(['www.example.test'])
+        # a host with an answer-level error (not a connection failure) is reached: only a connection-class error on every request counts
+        self.assertEqual(result['unreachable'], [])
+
+    def test_a_run_with_no_error_log_names_nothing_unreachable(self):
+        with mock.patch('client.tools._run', return_value=''):
+            self.assertEqual(tools.run_nuclei(['www.example.test'])['unreachable'], [])
+
+    def test_the_error_log_is_requested_and_removed_with_the_run(self):
+        seen = {}
+
+        def capture(argv, timeout, register=None, env=None):
+            seen['log'] = argv[argv.index('-elog') + 1]
+            return ''
+        with mock.patch('client.tools._run', side_effect=capture):
+            tools.run_nuclei(['www.example.test'])
+        self.assertFalse(os.path.exists(seen['log']))
+
+    def test_a_template_test_host_nuclei_never_reached_is_an_error_not_a_negative(self):
+        template = 'id: t\ninfo:\n  name: t\n  severity: info\nhttp:\n  - method: GET\n    path:\n      - "{{BaseURL}}/"\n    matchers:\n      - type: status\n        status:\n          - 200\n'
+        errors = [{'input': 'closed.example.test', 'error': 'dial tcp: connect: connection refused'}]
+
+        def status(argv, timeout, register=None):
+            if '-elog' in argv:
+                with open(argv[argv.index('-elog') + 1], 'w', encoding='utf-8') as handle:
+                    handle.write(json.dumps(errors[0]) + '\n')
+            return 0, '', ''
+        with mock.patch('client.tools._run_status', side_effect=status):
+            outcomes = tools.run_nuclei_validate('test', template, ['closed.example.test', 'www.example.test'])['outcomes']
+        by_host = {o['host']: o for o in outcomes}
+        self.assertIn('never reached', by_host['closed.example.test']['error'])
+        self.assertEqual(by_host['www.example.test'].get('error', ''), '')
+
+
+class NmapPassWiringTests(unittest.TestCase):
+    """Review M1 and M7 on the wire: the task's ports reach the fingerprint pass, the task's own time limit is used inside its range, and a
+    port the server did not send right is a refusal, not a scan of something else."""
+
+    def test_the_task_ports_replace_the_top_thousand_and_keep_the_extra_ports(self):
+        with mock.patch('client.tools._run', return_value=FINISHED_REPORT) as fake_run:
+            tools.run_nmap(['8.8.8.8'], ports=[22, 80])
+        argv = fake_run.call_args[0][0]
+        self.assertNotIn('--top-ports', argv)
+        covered = set()
+        for part in argv[argv.index('-p') + 1].split(','):
+            low, _, high = part.partition('-')
+            covered.update(range(int(low), int(high or low) + 1))
+        self.assertTrue({22, 80, 6379, 6380, 1, 3} <= covered)  # the task's ports, a Redis pair outside nmap's top thousand, the closed probes
+        self.assertIn('--script', argv)
+
+    def test_a_task_without_ports_scans_the_top_thousand(self):
+        with mock.patch('client.tools._run', return_value=FINISHED_REPORT) as fake_run:
+            tools.run_nmap(['8.8.8.8'])
+        argv = fake_run.call_args[0][0]
+        self.assertEqual(argv[argv.index('--top-ports') + 1], '1000')
+        self.assertNotIn('-p', argv)
+
+    def test_ports_that_are_not_ports_are_refused_before_anything_runs(self):
+        for bad in (['22; id'], [0], [70000], 'x', [True]):
+            with self.subTest(bad=bad), mock.patch('client.tools._run') as fake_run:
+                with self.assertRaises(tools.TargetError):
+                    tools.run_nmap(['8.8.8.8'], ports=bad)
+            fake_run.assert_not_called()
+
+    def test_the_daemon_sends_the_task_ports_and_its_time_limit_to_nmap(self):
+        from client import daemon
+        from client.tests.test_daemon import FakeClient
+        d = daemon.Daemon('https://x.example', 'tok', client=FakeClient())
+        runner = mock.Mock(return_value={'hosts': []})
+        with mock.patch.dict(tools.RUNNERS, {'nmap': runner}):
+            d._execute({'kind': 'nmap', 'target': {'addresses': ['8.8.8.8'], 'ports': [22, 80], 'timeout': 1800}}, None)
+        self.assertEqual(runner.call_args.kwargs['ports'], [22, 80])
+        self.assertEqual(runner.call_args.kwargs['timeout'], 1800)
+
+    def test_the_daemon_sizes_a_naabu_task_from_its_hosts_unless_the_task_names_a_limit(self):
+        from client import daemon
+        from client.tests.test_daemon import FakeClient
+        d = daemon.Daemon('https://x.example', 'tok', client=FakeClient())
+        runner = mock.Mock(return_value={'ports': {}})
+        with mock.patch.dict(tools.RUNNERS, {'naabu': runner}):
+            d._execute({'kind': 'naabu', 'target': {'addresses': ['8.8.8.8']}}, None)
+            self.assertEqual(runner.call_args.kwargs['timeout'], tools.task_seconds('naabu', 1))
+            d._execute({'kind': 'naabu', 'target': {'addresses': ['8.8.8.8'], 'timeout': 2400}}, None)
+            self.assertEqual(runner.call_args.kwargs['timeout'], 2400)
 
 
 class RunTests(unittest.TestCase):
@@ -381,7 +559,8 @@ class TestsslRunnerTests(unittest.TestCase):
         self.assertTrue(captured['kwargs']['start_new_session'])
         self.assertEqual(result, {'items': [
             {'id': 'heartbleed', 'severity': 'HIGH', 'finding': 'VULNERABLE', 'cve': 'CVE-2014-0160'},
-            {'id': 'not_tracked', 'severity': 'INFO', 'finding': 'test ok', 'cve': ''}]})
+            {'id': 'not_tracked', 'severity': 'INFO', 'finding': 'test ok', 'cve': ''}],
+            'handshake': False, 'returncode': 0})  # no protocol was reported as offered: no handshake is shown, and the code is sent
 
     def test_starttls_is_added_only_when_given(self):
         captured = {}
@@ -431,6 +610,44 @@ class TestsslRunnerTests(unittest.TestCase):
             with self.assertRaises(subprocess.TimeoutExpired):
                 tools.run_testssl('www.example.test', '8.8.8.8', 443, timeout=1)
         killpg.assert_called_once_with(Slow.pid, signal.SIGKILL)
+
+    def test_a_listener_that_completes_no_handshake_sends_no_clear_vulnerability_tests(self):
+        """Review H2: on a plain HTTP port testssl exits 9, offers no protocol and still prints "not vulnerable" for every test it could not run.
+        Those must not reach the server as clear results. The protocols and the scan problem are kept, so the server can see what happened."""
+        report = [{'id': 'SSLv2', 'severity': 'OK', 'finding': 'not offered'}, {'id': 'SSLv3', 'severity': 'OK', 'finding': 'not offered'},
+                  {'id': 'TLS1_2', 'severity': 'OK', 'finding': 'not offered'}, {'id': 'TLS1_3', 'severity': 'OK', 'finding': 'not offered'},
+                  {'id': 'scanProblem', 'severity': 'WARN', 'finding': 'Client problem: No server certificate could be retrieved'},
+                  {'id': 'heartbleed', 'severity': 'OK', 'finding': 'not vulnerable, no heartbeat extension'},
+                  {'id': 'ROBOT', 'severity': 'OK', 'finding': 'not vulnerable, no RSA key transport cipher'},
+                  {'id': 'FREAK', 'severity': 'OK', 'finding': 'not vulnerable'}]
+
+        class Plain(self._FakeProc):
+            def __init__(self, argv, report, **kwargs):
+                super().__init__(argv, report, **kwargs)
+                self.returncode = 9  # testssl's own code for "no server answered a handshake"
+        with mock.patch('client.tools.subprocess.Popen', side_effect=lambda argv, **kw: Plain(argv, report, **kw)):
+            result = tools.run_testssl('www.example.test', '8.8.8.8', 80)
+        self.assertIs(result['handshake'], False)
+        self.assertEqual(result['returncode'], 9)
+        ids = [i['id'] for i in result['items']]
+        self.assertEqual(ids, ['SSLv2', 'SSLv3', 'TLS1_2', 'TLS1_3', 'scanProblem'])
+
+    def test_a_listener_that_completes_a_handshake_keeps_its_clear_tests(self):
+        report = [{'id': 'TLS1_2', 'severity': 'OK', 'finding': 'offered (OK)'}, {'id': 'heartbleed', 'severity': 'OK', 'finding': 'not vulnerable'}]
+        with mock.patch('client.tools.subprocess.Popen', side_effect=lambda argv, **kw: self._FakeProc(argv, report, **kw)):
+            result = tools.run_testssl('www.example.test', '8.8.8.8', 443)
+        self.assertIs(result['handshake'], True)
+        self.assertEqual(result['returncode'], 0)
+        self.assertEqual([i['id'] for i in result['items']], ['TLS1_2', 'heartbleed'])
+
+    def test_a_run_killed_by_a_signal_is_an_error(self):
+        class Killed(self._FakeProc):
+            def __init__(self, argv, report, **kwargs):
+                super().__init__(argv, report, **kwargs)
+                self.returncode = -9
+        with mock.patch('client.tools.subprocess.Popen', side_effect=lambda argv, **kw: Killed(argv, [], **kw)):
+            with self.assertRaises(tools.ToolExitError):
+                tools.run_testssl('www.example.test', '8.8.8.8', 443)
 
 
 class UdpRunnerTests(unittest.TestCase):
@@ -673,6 +890,26 @@ class GvmAvailableTests(unittest.TestCase):
 
 
 DISCOVER_XML = _read('sample_discover.xml')
+
+
+class DetectToolsTests(unittest.TestCase):
+    def test_a_tool_whose_version_probe_fails_is_not_declared(self):
+        """A binary that starts and then exits non-zero on its own version flag is broken; declaring it would take tasks it cannot run (review L1)."""
+        results = {'nuclei': mock.Mock(returncode=1), 'naabu': mock.Mock(returncode=0)}
+
+        def fake_run(argv, **kw):
+            for name, result in results.items():
+                if argv == tools.VERSION_ARGS[name]:
+                    return result
+            return mock.Mock(returncode=0)
+        with mock.patch('client.tools.subprocess.run', side_effect=fake_run), mock.patch('client.tools.gvm_available', return_value=False):
+            found = tools.detect_tools()
+        self.assertNotIn('nuclei', found)
+        self.assertIn('naabu', found)
+
+    def test_a_missing_binary_is_still_left_out(self):
+        with mock.patch('client.tools.subprocess.run', side_effect=FileNotFoundError('x')), mock.patch('client.tools.gvm_available', return_value=False):
+            self.assertEqual(tools.detect_tools(), [])
 
 
 class DiscoverTests(unittest.TestCase):
@@ -958,3 +1195,23 @@ class WafResultContractTests(unittest.TestCase):
             with self.subTest(text=text):
                 reported = {'outcome': 'done', **tools.parse_waf_output(text, strict=True)}
                 self.assertEqual(list(check.iter_errors(reported)), [])
+
+
+class SignedInEvidenceTests(unittest.TestCase):
+    """Review M2 and the signed-in run: a signed-in nuclei run keeps no request or response, even when the watchdog stops it and delivers the
+    findings it had printed (their requests carry the sign-in)."""
+
+    def test_a_stopped_signed_in_run_delivers_its_findings_without_their_requests(self):
+        from client import daemon
+        from client.tests.test_daemon import FakeClient
+        d = daemon.Daemon('https://x.example', 'tok', client=FakeClient())
+        d.guard = mock.Mock(cfg={'partial': True})
+        row = json.dumps({'template-id': 't', 'host': 'www.example.test', 'request': 'GET / HTTP/1.1\nCookie: session=abc\n',
+                          'info': {'name': 'n', 'severity': 'info'}})
+        exc = tools.ToolExitError('nuclei stopped')
+        exc.partial = row + '\n'
+        state = {'wd': {'text': 'stopped'}, 'kind': 'nuclei_light', 'signed_in': True}
+        result = d._watchdog_result(state, exc)
+        self.assertEqual(result['outcome'], 'done')
+        self.assertEqual(len(result['findings']), 1)
+        self.assertNotIn('request', result['findings'][0])

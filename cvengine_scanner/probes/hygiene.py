@@ -375,13 +375,22 @@ def fetch_txt(name, resolver=None):
         return []
 
 
-def has_record(name, rtype, resolver=None):
+def record_state(name, rtype, resolver=None):
+    """``True`` when ``name`` has a ``rtype`` record, ``False`` when DNS says it has none (no such name, no such record type), and ``None`` when the lookup
+    itself failed (a timeout, no name server answered, any other resolver error): that says nothing about the name, and a caller must not read it as "no
+    record" (review M3)."""
     import dns.exception
     import dns.resolver
     try:
         return bool(list((resolver or _resolver()).resolve(name, rtype)))
-    except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer, dns.resolver.NoNameservers, dns.exception.Timeout, dns.exception.DNSException):
+    except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
         return False
+    except (dns.resolver.NoNameservers, dns.exception.Timeout, dns.exception.DNSException):
+        return None
+
+
+def has_record(name, rtype, resolver=None):
+    return record_state(name, rtype, resolver) is True
 
 
 def fetch_records(name, rtype, resolver=None):
@@ -623,14 +632,24 @@ def run_batch(target, probe=None, emailer=None, mx=None, cname=None, workers=TLS
     policy = ScopePolicy(target.get('scope'))
     probe = probe or probe_tls
     emailer = emailer or email_findings
-    mx = mx or (lambda name: has_record(name, 'MX'))
-    cname = cname or (lambda name: has_record(name, 'CNAME'))
+    mx = mx or (lambda name: record_state(name, 'MX'))
+    cname = cname or (lambda name: record_state(name, 'CNAME'))
+    unknown = set()  # names whose MX or CNAME lookup failed: not reviewed, and not "no mail here" (review M3)
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
         certs = list(pool.map(lambda t: _tls_row(t, policy, probe), list(dict.fromkeys(tls))))
 
     def selected(item):
         name, always = item
-        return name if always or (not is_ip(name) and mx(name) and not cname(name)) else None
+        if always or is_ip(name):
+            return name if always else None
+        has_mx = mx(name)
+        if has_mx is False:
+            return None  # DNS says no mail exchanger: not a mail name
+        has_cname = cname(name)
+        if has_mx is None or has_cname is None:  # a failed lookup: the name is unknown, never skipped as "not a mail name"
+            unknown.add(name)
+            return None
+        return name if has_mx and not has_cname else None
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAIL_WORKERS) as pool:
         chosen = [n for n in pool.map(selected, list(dict.fromkeys(mail))) if n]
 
@@ -641,4 +660,4 @@ def run_batch(target, probe=None, emailer=None, mx=None, cname=None, workers=TLS
                 logger.warning('email review of %s failed: %s', name, type(exc).__name__)
                 return None
         rows = [r for r in pool.map(review, chosen) if r is not None]
-    return {'certs': certs, 'mail': rows, 'touched': policy.touched, 'refused': policy.refused}
+    return {'certs': certs, 'mail': rows, 'touched': policy.touched, 'refused': policy.refused, **({'unknown_names': sorted(unknown)} if unknown else {})}

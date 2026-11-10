@@ -4,6 +4,7 @@ network, so the Sentinel and the cvENGINE server run the same code over the same
 """
 import json
 import logging
+import re
 from xml.etree import ElementTree as ET
 
 from .flags import GENERIC_WAF_NAMES, MAX_DISCOVER_HOSTS, MAX_OPEN_PER_IP, MAX_WAF_PRODUCTS, WAF_NAME_LEN, host_of
@@ -60,7 +61,10 @@ def parse_nmap_xml(xml_text, strict=False):
                           'service_name': (service_el.get('name') if service_el is not None else '') or '',
                           'product': (service_el.get('product') if service_el is not None else '') or '',
                           'version': (service_el.get('version') if service_el is not None else '') or ''})
-        hosts.append({'ip': addr_el.get('addr'), 'os_guess': os_guess, 'ports': ports})
+        row = {'ip': addr_el.get('addr'), 'os_guess': os_guess, 'ports': ports}
+        if host_el.get('timedout') == 'true':  # nmap gave up on the host (its host timeout): it was not fingerprinted, whatever ports it lists
+            row['timed_out'] = True
+        hosts.append(row)
     return {'hosts': hosts}
 
 
@@ -89,16 +93,24 @@ def parse_port_reasons(xml_text):
     return out
 
 
-def parse_discover_xml(xml_text):
-    """The addresses nmap's ping sweep found up, each with the host names it learned, from ``-oX`` output."""
+def parse_discover_xml(xml_text, strict=False):
+    """The addresses nmap's ping sweep found up, each with the host names it learned, from ``-oX`` output. ``strict`` (the sweep runner) refuses a report
+    that is empty, unparseable, not an ``nmaprun`` or that never reached ``<finished exit="success">``: a sweep that died part way is an error, never "no
+    host is up" (review L3), exactly as ``parse_nmap_xml(strict=True)`` does for a scan."""
     hosts = []
     if not (xml_text or '').strip():
+        if strict:
+            raise ToolOutputError('the discovery sweep produced no report')
         return {'hosts': hosts}
     try:
         root = ET.fromstring(xml_text)
     except ET.ParseError:
         logger.warning('could not parse nmap XML output')
+        if strict:
+            raise ToolOutputError('the discovery sweep produced a report that could not be read') from None
         return {'hosts': hosts}
+    if strict and (root.tag != 'nmaprun' or root.find('runstats/finished[@exit="success"]') is None):
+        raise ToolOutputError('the discovery sweep did not finish its report')
     for host_el in root.findall('host'):
         status = host_el.find('status')
         addr_el = host_el.find("address[@addrtype='ipv4']")
@@ -134,7 +146,7 @@ MAX_FINDINGS = 5000
 MAX_FINDINGS_BYTES = 20 * 1024 * 1024  # the server's result route takes 24 MB; the findings stay well under it
 MAX_LIST_ITEMS = 20  # tags and extracted results kept per finding
 _LIMITS = {'template_id': 200, 'name': 500, 'severity': 20, 'host': 255, 'matched_at': 500, 'description': 4000, 'matcher_name': 200,
-           'extracted': 500, 'tag': 100}
+           'extracted': 500, 'tag': 100, 'reference': 500, 'remediation': 500, 'type': 40}
 
 
 def _clip(value, limit):
@@ -150,9 +162,40 @@ def _strings(value, limit, split=False):
     return [v[:limit] for v in value if isinstance(v, str) and v][:MAX_LIST_ITEMS]
 
 
-def parse_nuclei_jsonl(text):
+# The request and the response a finding keeps: the first characters, as the server keeps them (contract: finding.request/response).
+EVIDENCE_LIMIT = 4096
+# A header whose name says it carries a credential: its value is never kept (review M2). The name is matched as a whole word fragment so
+# Authorization, Proxy-Authorization, Cookie, Set-Cookie, X-Api-Key, X-Auth-Token and the like are all covered.
+_SECRET_HEADER = re.compile(r'^([A-Za-z0-9-]*(?:auth|cookie|token|secret|password|passwd|api-?key|session|csrf)[A-Za-z0-9-]*)[ \t]*:.*$',
+                            re.IGNORECASE | re.MULTILINE)
+_BEARER = re.compile(r'\b(bearer|basic)[ \t]+[A-Za-z0-9._~+/=-]{4,}', re.IGNORECASE)
+
+
+def redact_evidence(text):
+    """``text`` (a request or response) with every credential-bearing header's value and every bearer or basic token replaced by
+    ``[REDACTED]``. What was matched stays readable: only the secret goes."""
+    text = _SECRET_HEADER.sub(lambda m: f'{m.group(1)}: [REDACTED]', text)
+    return _BEARER.sub(lambda m: f'{m.group(1)} [REDACTED]', text)
+
+
+def _cve_ids(value):
+    values = value if isinstance(value, list) else [value]
+    return sorted({v.upper() for v in values if isinstance(v, str) and _CVE_ID.fullmatch(v)})[:MAX_LIST_ITEMS]
+
+
+def _cvss(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 10:
+        return None
+    return float(value)
+
+
+_CVE_ID = re.compile(r'CVE-[0-9]{4}-[0-9]{4,7}', re.IGNORECASE)
+
+
+def parse_nuclei_jsonl(text, evidence=True):
     """Findings from nuclei's JSONL output. A line that is not an object is skipped and a field of the wrong type is read as empty, so one
-    odd line never fails the task; every field is clipped and at most ``MAX_FINDINGS`` are kept."""
+    odd line never fails the task; every field is clipped and at most ``MAX_FINDINGS`` are kept. ``evidence=False`` (a signed-in run, whose
+    requests carry a sign-in) keeps no request or response at all; otherwise they are kept clipped and redacted."""
     findings, size = [], 0
     for line in (text or '').splitlines():
         line = line.strip()
@@ -177,12 +220,68 @@ def parse_nuclei_jsonl(text):
                    'matcher_name': _clip(row.get('matcher-name'), _LIMITS['matcher_name']),
                    'extracted_results': _strings(row.get('extracted-results'), _LIMITS['extracted']),
                    'tags': _strings(info.get('tags'), _LIMITS['tag'], split=True)}
+        classification = info.get('classification') if isinstance(info.get('classification'), dict) else {}
+        cve_ids = _cve_ids(classification.get('cve-id'))
+        if cve_ids:
+            finding['cve_ids'] = cve_ids
+        cvss = _cvss(classification.get('cvss-score'))
+        if cvss is not None:
+            finding['cvss_score'] = cvss
+        references = _strings(info.get('reference'), _LIMITS['reference'])
+        if references:
+            finding['references'] = references
+        remediation = _clip(info.get('remediation'), _LIMITS['remediation'])
+        if remediation:
+            finding['remediation'] = remediation
+        kind = _clip(row.get('type'), _LIMITS['type']).lower()
+        if kind:
+            finding['type'] = kind
+        if evidence:
+            for key in ('request', 'response'):
+                text_value = _clip(row.get(key), EVIDENCE_LIMIT)
+                if text_value:
+                    finding[key] = redact_evidence(text_value)
         size += len(json.dumps(finding))
         if size > MAX_FINDINGS_BYTES:
             logger.warning('nuclei findings passed %s bytes; the rest were dropped so the result fits the server\'s limit', MAX_FINDINGS_BYTES)
             break
         findings.append(finding)
     return findings
+
+
+# The errors that mean nothing answered a request: nothing listens, the name does not resolve, the connection or the answer timed out.
+# A failure of another kind (a broken body, a bad header) means something answered, so the host is reached.
+NUCLEI_CONNECTION_ERRORS = re.compile(r'connection refused|no such host|timeout|deadline exceeded|no route to host|network is unreachable|'
+                                      r'connection reset|could not resolve|dial tcp|no address', re.IGNORECASE)
+
+
+def parse_nuclei_errors(text):
+    """``{host: [error text, ...]}`` from nuclei's error log (``-elog``): one JSON object per line, naming the input it failed on (``input``)
+    and the error. A line that is not an object, or names no input, is skipped."""
+    errors = {}
+    for line in (text or '').splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        target = next((row[k] for k in ('input', 'host', 'target', 'matched-at', 'url') if isinstance(row.get(k), str) and row[k]), '')
+        if target:
+            errors.setdefault(host_of({'host': target}), []).append(_clip(row.get('error'), 500))
+    return errors
+
+
+def unreached_targets(targets, errors, answered_hosts):
+    """The ``targets`` (as they were asked) that nuclei never reached: every request it logged for their host failed to connect, and no finding
+    names that host. A host with no logged error is not counted: nothing says it was not reached, so it is not reported as unreachable."""
+    out = []
+    for target in targets:
+        host = host_of({'host': target})
+        failed = errors.get(host)
+        if failed and host not in answered_hosts and all(NUCLEI_CONNECTION_ERRORS.search(text) for text in failed):
+            out.append(target)
+    return out
 
 
 def parse_testssl_report(raw):
@@ -193,6 +292,33 @@ def parse_testssl_report(raw):
         raw = [item for group in results if isinstance(group, dict) for value in group.values()
                if isinstance(value, list) for item in value]
     return [i for i in raw if isinstance(i, dict) and i.get('id')] if isinstance(raw, list) else []
+
+
+# testssl's protocol checks: "offered" on one of these is a handshake the scan completed. Every other test needs one.
+TESTSSL_PROTOCOLS = frozenset({'SSLv2', 'SSLv3', 'TLS1', 'TLS1_1', 'TLS1_2', 'TLS1_3'})
+
+
+def testssl_handshake(items):
+    """Whether testssl completed a TLS handshake with the endpoint: a protocol it reports as offered, and no scan problem (a WARN or FATAL
+    ``scanProblem``). Without one, its other answers, including "not vulnerable", were never tested (review H2)."""
+    if any(str(i.get('id')) == 'scanProblem' and str(i.get('severity') or '').upper() in ('WARN', 'FATAL') for i in items):
+        return False
+    return any(str(i.get('id')) in TESTSSL_PROTOCOLS and str(i.get('finding') or '').lower().startswith('offered') for i in items)
+
+
+def testssl_result(items, returncode):
+    """``{'items', 'handshake', 'returncode'}`` for one testssl.sh run: the finding objects of its report (``items``, as
+    ``parse_testssl_report`` reads them) with, when no handshake happened, every clear answer left out (a test marked OK, or "not
+    vulnerable", that testssl printed without a handshake). The protocols and the scan problem stay, so the server sees what happened."""
+    handshake = testssl_handshake(items)
+    kept = list(items) if handshake else [i for i in items if not _clear_answer(i)]
+    return {'items': kept, 'handshake': handshake, 'returncode': returncode}
+
+
+def _clear_answer(item):
+    if str(item.get('id')) in TESTSSL_PROTOCOLS:
+        return False
+    return str(item.get('severity') or '').upper() == 'OK' or str(item.get('finding') or '').lower().startswith('not vulnerable')
 
 
 def parse_waf_output(text, strict=False):

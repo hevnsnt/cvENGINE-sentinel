@@ -155,6 +155,8 @@ RUN curl -fsSLo /tmp/nuclei-templates.tgz "https://github.com/projectdiscovery/n
     && tar -xzf /tmp/nuclei-templates.tgz -C /home/sentinel/nuclei-templates --strip-components=1 \
     && rm /tmp/nuclei-templates.tgz \
     && chown -R sentinel:sentinel /home/sentinel
+# The release of those baked templates, reported with every nuclei run that uses them (client.tools.IMAGE_TEMPLATES_VERSION).
+ENV CVENGINE_NUCLEI_TEMPLATES_VERSION=${NUCLEI_TEMPLATES_VERSION}
 
 # WPScan (GPLv3, run as a separate program, never linked): mirrors cveFeed/wpscan_scan.py's own invocation. Reproducible: WPScan and every gem it
 # needs are installed at the exact versions of docker/wpscan/Gemfile.lock, each downloaded .gem checked against the lock's sha256 before anything is

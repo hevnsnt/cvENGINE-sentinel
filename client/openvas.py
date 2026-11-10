@@ -641,6 +641,26 @@ def _report_hosts(detail):
     return {_text(h, 'ip') for h in detail.findall('.//report/host') if _text(h, 'ip') and _finished(h)}
 
 
+def _unanswered_hosts(detail):
+    """The report hosts gvmd finished that never answered: with ``CONSIDER_ALIVE`` gvmd scans a host that is offline or firewalled from this Sentinel, finds no
+    open port and ends it, so "finished" proves nothing about it (review M4). A finished host answered when the report has a result of any severity for it
+    (gvmd logs one for every live host), a port count above zero, or host details. Only a host with an end time can be unanswered: a gvmd that gives no times
+    keeps the old reading."""
+    if detail is None:
+        return set()
+    answered = {_text(r, 'host') for r in detail.findall('.//report/results/result') if _text(r, 'host')}
+    out = set()
+    for host in detail.findall('.//report/host'):
+        ip = _text(host, 'ip')
+        if not ip or not _text(host, 'end') or ip in answered:
+            continue
+        ports = _text(host, 'port_count/page') or _text(host, 'port_count')
+        if (ports.isdigit() and int(ports) > 0) or host.find('detail') is not None:
+            continue
+        out.add(ip)
+    return out
+
+
 def _report_id(task_status):
     report = task_status.find('./task/last_report/report') if task_status is not None else None
     if report is None and task_status is not None:
@@ -1068,7 +1088,8 @@ def _execute(run, addresses, excluded, hours, preferences):
     if partial and not items:
         raise OpenvasError(f'{ended} and found nothing')
     found = {i['address'] for i in items}
-    scanned = found if partial else found | _report_hosts(run.detail)
+    unanswered = _unanswered_hosts(run.detail) - found
+    scanned = found if partial else found | (_report_hosts(run.detail) - unanswered)
     if not scanned:
         raise _empty_error(run)
     results, dropped_compact, dropped_cve = bound_results(items, MAX_PAYLOAD_BYTES)
@@ -1091,8 +1112,11 @@ def _execute(run, addresses, excluded, hours, preferences):
                           '(docker compose restart openvas-gvmd)')
     if incomplete:
         logger.warning('GVM task %s is reported as partial: %s', run.task_id, '; '.join(incomplete))
-    return {'results': results, 'scanned_addresses': sorted(scanned), 'without_cve': no_cve, 'unusable': unusable,
-            'partial': partial or bool(dropped_cve) or bool(incomplete), 'nvt_cache_stale': stale}
+    out = {'results': results, 'scanned_addresses': sorted(scanned), 'without_cve': no_cve, 'unusable': unusable,
+           'partial': partial or bool(dropped_cve) or bool(incomplete), 'nvt_cache_stale': stale}
+    if unanswered:  # listed by gvmd, never answered: not scanned, so nothing earlier on them is closed (the server reads ``unreached_hosts``)
+        out['unreached_hosts'] = sorted(unanswered)
+    return out
 
 
 def run_openvas(hosts, excluded_families=None, max_hours_=None, register=None, connection_factory=None, preferences=None):

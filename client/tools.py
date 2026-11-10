@@ -29,12 +29,14 @@ import time
 import xml.etree.ElementTree as ET
 
 from cvengine_scanner.flags import (DISCOVER_FLAGS, KERNEL_MARKERS, MAX_DISCOVER_ADDRESSES, MAX_DISCOVER_HOSTS, MAX_OPEN_PER_IP,  # noqa: F401
-                                    MAX_PATH_TARGETS, MAX_TARGETS, MAX_TEMPLATE_BYTES, MAX_VERIFY_PORTS, NAABU_FLAGS, NMAP_FLAGS, NMAP_FULL_FLAGS,
+                                    MAX_PATH_TARGETS, MAX_TARGETS, MAX_TEMPLATE_BYTES, MAX_VERIFY_PORTS, NAABU_FLAGS, NMAP_FULL_FLAGS, TASK_LIMITS,
+                                    nmap_pass_flags, task_seconds,
                                     NMAP_VERIFY_FLAGS, NSE_SCRIPT_TIMEOUT, NSE_SCRIPTS, NUCLEI_FIXTURE_FLAGS, NUCLEI_FLAGS, NUCLEI_TEMPLATE_FLAGS,
                                     NUCLEI_VALIDATE_FLAGS, PATH_PROBE_ODD, PATH_PROBE_PLAIN, TESTSSL_FLAGS, UDP_NSE_SCRIPTS, UDP_PORTS, WAFW00F_TIMEOUT,
                                     WPSCAN_ARGS, WPSCAN_THOROUGH_ARGS, host_of, thorough_timeout, udp_nmap_flags, wafw00f_flags)
 from cvengine_scanner.parsers import (MAX_FINDINGS, MAX_FINDINGS_BYTES, MAX_LIST_ITEMS, ToolOutputError, parse_discover_xml,  # noqa: F401
-                                      parse_naabu_output, parse_nmap_xml, parse_nuclei_jsonl, parse_port_reasons, parse_testssl_report,
+                                      parse_naabu_output, parse_nmap_xml, parse_nuclei_errors, parse_nuclei_jsonl, parse_port_reasons, parse_testssl_report,
+                                      testssl_result, unreached_targets,
                                       parse_waf_output)
 
 from . import admission, bbot, config, dbprobe, egress, openvas, rdp, scope
@@ -48,16 +50,19 @@ _BRACKETED = re.compile(r'\[([0-9A-Fa-f:.]+)\]:([0-9]{1,5})')
 NMAP_BIN = os.environ.get('CVENGINE_NMAP_BIN', 'nmap')
 NAABU_BIN = os.environ.get('CVENGINE_NAABU_BIN', 'naabu')
 NUCLEI_BIN = os.environ.get('CVENGINE_NUCLEI_BIN', 'nuclei')
+# The release of the nuclei templates baked into this image (the Dockerfile sets it): reported with every run that used them.
+IMAGE_TEMPLATES_VERSION = (os.environ.get('CVENGINE_NUCLEI_TEMPLATES_VERSION') or 'unknown')[:40]
 
 _TAG = re.compile(r'[a-z0-9][a-z0-9-]{0,39}')
 _SEVERITY = re.compile(r'info|low|medium|high|critical|unknown')
 
+MAX_ERROR_LOG_BYTES = 8 * 1024 * 1024  # bytes of a nuclei error log read: more is a runaway log, the rest is not needed to tell reached from not
 MAX_TOOL_OUTPUT = 64 * 1024 * 1024  # bytes of stdout kept from nmap, naabu or nuclei: more than this stops the run
 _STDERR_KEPT = 4096
 _CHUNK = 64 * 1024
 
-# nmap runs up to MAX_TARGETS hosts with -sV -O and an 8 minute per-host timeout: the run's own cap grows with the host count.
-NMAP_MIN_TIMEOUT, NMAP_SECONDS_PER_TARGET, NMAP_MAX_TIMEOUT = 600, 90, 3600
+# The time a nmap or naabu run may take comes from cvengine_scanner.flags.task_seconds, the function the server reads too (review M7).
+NMAP_MIN_TIMEOUT = TASK_LIMITS['nmap'][0]
 
 
 class TargetError(ValueError):
@@ -307,10 +312,11 @@ def _run(argv, timeout, register=None, max_bytes=None, env=None, ok_codes=(0,), 
         reader.start()
     try:
         proc.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as exc:
         _kill_group(proc)
         proc.wait()
         _join(proc, readers)
+        exc.partial = out.decode('utf-8', errors='replace')  # what it printed before it was stopped: a naabu run keeps what it found
         raise
     _join(proc, readers)
     if too_big.is_set():
@@ -351,22 +357,20 @@ def os_guess_reliable():
     return not any(marker in release for marker in KERNEL_MARKERS)
 
 
-def _same_address(a, b):
-    try:
-        return ipaddress.ip_address(str(a).strip().strip('[]')) == ipaddress.ip_address(str(b).strip().strip('[]'))
-    except ValueError:
-        return str(a).strip() == str(b).strip()
-
-
 def nmap_timeout(count):
     """Seconds one nmap run over ``count`` hosts may take before it is killed."""
-    return min(NMAP_MAX_TIMEOUT, max(NMAP_MIN_TIMEOUT, NMAP_SECONDS_PER_TARGET * count))
+    return task_seconds('nmap', count)
 
 
-def run_nmap(addresses, timeout=None, register=None):
+def run_nmap(addresses, timeout=None, register=None, ports=None):
     """nmap scans one address family per run and needs ``-6`` for IPv6 (without it the address is "failed to resolve" and the report has no host),
     so the IPv4 and IPv6 addresses of the task run separately and their hosts are returned together. Host names are replaced by the address
-    they were judged by (the result is keyed by IP either way). ``timeout`` defaults to one sized from the number of hosts."""
+    they were judged by (the result is keyed by IP either way). ``timeout`` defaults to one sized from the number of hosts. ``ports`` (the
+    task's, from the naabu result) are the ports the fingerprint pass scans; without them it scans the top thousand (``flags.nmap_pass_flags``)."""
+    try:
+        pass_flags = nmap_pass_flags(ports)
+    except ValueError as exc:
+        raise TargetError(str(exc)) from None
     resolve = _resolver()
     addresses = _pinned(validate_targets(addresses, resolver=resolve), resolve)
     out = []
@@ -375,15 +379,12 @@ def run_nmap(addresses, timeout=None, register=None):
             continue
         path = _targets_file(group)
         try:
-            argv = [NMAP_BIN, *flags, *NMAP_FLAGS, '-oX', '-', '-iL', path]
+            argv = [NMAP_BIN, *flags, *pass_flags, '-oX', '-', '-iL', path]
             out.extend(parse_nmap_xml(_run(argv, timeout or nmap_timeout(len(group)), register), strict=True)['hosts'])
         finally:
             os.unlink(path)
-    # A row for every requested address: the server reads a missing row as "this Sentinel did not cover it" (an external scan falls back to a
-    # local one, an internal scan fails), and an address that answered nothing is a host with no open ports.
-    for address in addresses:
-        if not any(_same_address(address, row['ip']) for row in out):
-            out.append({'ip': str(address).strip().strip('[]'), 'os_guess': '', 'ports': []})
+    # nmap lists every host it scanned, with -Pn, whether or not any port is open. An address it does not list was not scanned, and gets no
+    # row: the server reads a missing row as "this Sentinel did not cover it" (review H3: a padded row read as a clean host).
     return {'hosts': out, 'os_reliable': os_guess_reliable()}
 
 
@@ -418,21 +419,28 @@ def run_discover(cidr, timeout=900, register=None):
         raise TargetError('discover only runs on an internal Sentinel')
     cidr = validate_cidr(cidr)
     argv = [NMAP_BIN, *DISCOVER_FLAGS, '-oX', '-', cidr]
-    return parse_discover_xml(_run(argv, timeout, register))
+    return parse_discover_xml(_run(argv, timeout, register), strict=True)
 
 
 # --- naabu ----------------------------------------------------------------------------------------------------------
 
-def run_naabu(addresses, timeout=900, register=None):
-    """Host names are replaced by the address they were judged by: naabu's result is keyed by IP either way."""
+def run_naabu(addresses, timeout=None, register=None):
+    """Host names are replaced by the address they were judged by: naabu's result is keyed by IP either way. A run that runs out of time is not
+    an error (review H5: a whole chunk was lost and its addresses stayed due for ever): it returns the ports read so far with ``incomplete``
+    and ``unfinished``. naabu says nothing about a host it finished, so every address of such a run is unfinished and stays due."""
     resolve = _resolver()
     addresses = _pinned(validate_targets(addresses, resolver=resolve), resolve)
     if not addresses:
         return {'ports': {}}
+    seconds = timeout or task_seconds('naabu', len(addresses))
     path = _targets_file(addresses)
     try:
         argv = [NAABU_BIN, '-list', path, *NAABU_FLAGS]
-        return {'ports': parse_naabu_output(_run(argv, timeout, register))}
+        try:
+            return {'ports': parse_naabu_output(_run(argv, seconds, register))}
+        except subprocess.TimeoutExpired as exc:
+            logger.warning('naabu ran out of its %s s for %d address(es); they stay due', seconds, len(addresses))
+            return {'ports': parse_naabu_output(getattr(exc, 'partial', '')), 'incomplete': True, 'unfinished': addresses}
     finally:
         os.unlink(path)
 
@@ -488,12 +496,30 @@ def run_nuclei(targets, tags=None, severities=None, timeout=3600, register=None,
     clean_severities = _clean_words(severities, _SEVERITY)
     if clean_severities:
         flags += ['-severity', ','.join(clean_severities)]
+    # the release a run used: the approved bundle is stored under its sha256 (client.templates.bundle_path), the baked set is the image's
+    release = f'approved:{os.path.basename(os.path.normpath(templates))}' if templates is not None else f'image:{IMAGE_TEMPLATES_VERSION}'
     path = _targets_file(targets)
+    with tempfile.TemporaryDirectory(prefix='nuclei-run-') as work:
+        errlog = os.path.join(work, 'errors.jsonl')
+        try:
+            # -elog: nuclei logs every request that failed, with its input. A run that exits 0 with no findings says nothing about a target
+            # nothing answered, so the error log is what tells the two apart (review H4).
+            output = _run([NUCLEI_BIN, '-l', path, *flags, '-elog', errlog], timeout, register, env=nuclei_env())
+        finally:
+            os.unlink(path)
+        findings = parse_nuclei_jsonl(output, evidence=secret_file is None)  # a signed-in run keeps no request or response (its sign-in is in them)
+        errors = parse_nuclei_errors(_read_error_log(errlog))
+    return {'findings': findings, 'templates_release': release,
+            'unreachable': unreached_targets(targets, errors, {f['host'] for f in findings})}
+
+
+def _read_error_log(path):
+    """The text of a nuclei error log, bounded; a run that logged nothing leaves no file (nothing failed)."""
     try:
-        argv = [NUCLEI_BIN, '-l', path, *flags]
-        return {'findings': parse_nuclei_jsonl(_run(argv, timeout, register, env=nuclei_env()))}
-    finally:
-        os.unlink(path)
+        with open(path, encoding='utf-8', errors='replace') as handle:
+            return handle.read(MAX_ERROR_LOG_BYTES)
+    except OSError:
+        return ''
 
 
 # --- testssl.sh: one host:port at a time, raw report items, server-side evaluate() reads them ------------------------
@@ -545,9 +571,15 @@ def run_testssl(host, ip, port, starttls=None, timeout=900, register=None):
                 report = json.load(handle)
         except (OSError, ValueError):
             raise ToolOutputError('testssl wrote no readable report') from None
-    items = parse_testssl_report(report)[:300]
+    # testssl exits 9 when no server answered and 0 when the scan completed: the code is sent (a killed run is an error, never a report)
+    code = proc.returncode
+    if not isinstance(code, int) or code < 0:
+        raise ToolExitError(f'testssl.sh was killed by the system (status {code})')
+    result = testssl_result(parse_testssl_report(report), code)
+    items = result['items'][:300]
     return {'items': [{'id': str(i.get('id') or ''), 'severity': str(i.get('severity') or ''),
-                       'finding': str(i.get('finding') or ''), 'cve': str(i.get('cve') or '')} for i in items]}
+                       'finding': str(i.get('finding') or ''), 'cve': str(i.get('cve') or '')} for i in items],
+            'handshake': result['handshake'], 'returncode': code}
 
 
 # --- nmap -sU: raw XML returned as-is; the server reads it with cvengine_scanner.nmap.parse_xml -------------------------
@@ -1090,14 +1122,18 @@ def _template_test(path, hosts, register):
             allowed.append(host)
         except TargetError as exc:
             refused[host] = str(exc)[:300]
-    rows, hits, error = {}, {}, ''
+    rows, hits, error, unreached = {}, {}, '', set()
     if allowed:
         proxy = _proxy_args('nuclei', allowed)  # cvENGINE's egress proxy, as the server's own template test (cveFeed.templategen._run_template) takes it
         host_path = _targets_file(allowed)
-        try:
-            code, out, err = _run_status([NUCLEI_BIN, '-t', path, '-l', host_path, *NUCLEI_TEMPLATE_FLAGS, *proxy], NUCLEI_TEMPLATE_TIMEOUT, register)
-        finally:
-            os.unlink(host_path)
+        with tempfile.TemporaryDirectory(prefix='nuclei-test-') as work:
+            errlog = os.path.join(work, 'errors.jsonl')
+            try:
+                code, out, err = _run_status([NUCLEI_BIN, '-t', path, '-l', host_path, *NUCLEI_TEMPLATE_FLAGS, '-elog', errlog, *proxy],
+                                             NUCLEI_TEMPLATE_TIMEOUT, register)
+            finally:
+                os.unlink(host_path)
+            errors = parse_nuclei_errors(_read_error_log(errlog))
         if code != 0:
             error = (err or f'nuclei exited with status {code}').strip()[-300:]
         for line in out.splitlines() if not error else []:
@@ -1115,12 +1151,16 @@ def _template_test(path, hosts, register):
                 key = _host_key(row.get('host') or row.get('matched-at') or row.get('ip'))
                 hits.setdefault(key, []).append(line)
                 rows.setdefault(key, row)
+        if not error:  # a host nothing answered is an error, never a negative test (review H4)
+            unreached = set(unreached_targets(allowed, errors, set(hits)))
     outcomes = []
     for host in hosts:
         if host in refused:
             outcomes.append({'host': host, 'vulnerable': False, 'output': '', 'error': refused[host]})
         elif error:
             outcomes.append({'host': host, 'vulnerable': False, 'output': '', 'error': error})
+        elif host in unreached:
+            outcomes.append({'host': host, 'vulnerable': False, 'output': '', 'error': 'nuclei never reached this host (no answer to any request)'})
         else:
             key = _host_key(host)
             outcomes.append({'host': host, 'vulnerable': bool(hits.get(key)), 'output': '\n'.join(hits.get(key, []))[-2000:],
@@ -1350,10 +1390,11 @@ def detect_tools():
     found = []
     for name, argv in VERSION_ARGS.items():
         try:
-            subprocess.run(argv, capture_output=True, timeout=10, check=False)
-            found.append(name)
+            ran = subprocess.run(argv, capture_output=True, timeout=10, check=False)
         except (OSError, subprocess.TimeoutExpired):
             continue
+        if ran.returncode == 0:  # a binary that starts and then fails its own version probe is broken: declaring it would take tasks it cannot run (review L1)
+            found.append(name)
     if gvm_available():
         found.append('gvm')
     return found

@@ -11,9 +11,6 @@ from urllib.parse import urlparse
 
 MAX_TARGETS = 64  # matches agentapi.sentinel_broker.MAX_ADDRESSES: a task never names more than this many
 
-# -n: no reverse DNS. parse_nmap_xml never reads host names, and the targets are already resolved addresses.
-NMAP_FLAGS = ['-Pn', '-n', '-sV', '--version-intensity', '5', '-O', '--osscan-limit', '-T4', '--open',
-              '--top-ports', '1000', '--host-timeout', '8m', '--max-retries', '2']
 NAABU_FLAGS = ['-p', '-', '-rate', '1000', '-retries', '2', '-c', '25', '-warm-up-time', '2', '-json', '-silent', '-nc']
 # --- nuclei ------------------------------------------------------------------------------------------------------------
 NUCLEI_SEVERITIES = 'info,low,medium,high,critical'  # what a run reports when the task names no severities ('unknown' is left out)
@@ -21,9 +18,9 @@ NUCLEI_SEVERITIES = 'info,low,medium,high,critical'  # what a run reports when t
 NUCLEI_EXCLUDED_TAGS = ('dos',)
 NUCLEI_EXCLUDE_FLAGS = ['-etags', ','.join(NUCLEI_EXCLUDED_TAGS)]
 _NUCLEI_RUN = ['-jsonl', '-silent', '-duc', '-ni', '-nc', '-rl', '150', '-c', '40', '-timeout', '10', '-retries', '1']
-# A Sentinel's run. -omit-raw: no raw request/response pairs in the output (parse_nuclei_jsonl never reads them, and they are most of its size).
-# The severity filter is the task's own (client.tools adds -severity only when the task names one).
-NUCLEI_FLAGS = [*_NUCLEI_RUN, '-omit-raw', *NUCLEI_EXCLUDE_FLAGS]
+# A Sentinel's run. The raw request and response are kept (no -omit-raw): parse_nuclei_jsonl keeps them, clipped and with credentials redacted,
+# as the evidence of a finding (review M2). The severity filter is the task's own (client.tools adds -severity only when the task names one).
+NUCLEI_FLAGS = [*_NUCLEI_RUN, *NUCLEI_EXCLUDE_FLAGS]
 # The server's local run: the default severities up front, raw pairs kept (it stores the matching request and response).
 NUCLEI_BASE_FLAGS = ['-severity', NUCLEI_SEVERITIES, *_NUCLEI_RUN, *NUCLEI_EXCLUDE_FLAGS]
 # A lighter run for when the normal one was stopped for lack of memory: fewer hosts in parallel, a gentler rate.
@@ -96,11 +93,14 @@ def reviewed_scripts(scripts):
     return {sid: text for sid, text in (scripts or {}).items() if sid in NSE_SCRIPT_SET}
 
 
-# The server's fingerprint pass over the top thousand ports, and its full sweep of one address.
-NMAP_FAST_FLAGS = ['-sV', '--version-intensity', '7', '-O', '--osscan-limit', '--top-ports', '1000', '-Pn', '-T4',
-                   '--max-retries', '2', '--min-hostgroup', '32', '--defeat-rst-ratelimit', *NSE_FLAGS]
-NMAP_FULL_PORT_FLAGS = ['-p-', '--open', '-T4', '-Pn']
+# The fingerprint pass (the nmap kind): service detection at intensity 7, the OS guess, the reviewed scripts. The ports come last: the
+# task's own list (nmap_pass_flags), or the top thousand when it names none.
 TOP_PORTS = 1000
+NMAP_HOST_TIMEOUT = '8m'  # nmap gives up on a host after this; the host is then flagged timed_out, never read as clean (review H3)
+_FAST_SCAN_FLAGS = ['-sV', '--version-intensity', '7', '-O', '--osscan-limit', '-Pn', '-T4', '--max-retries', '2', '--min-hostgroup', '32',
+                    '--defeat-rst-ratelimit', *NSE_FLAGS]
+NMAP_FAST_FLAGS = [*_FAST_SCAN_FLAGS, '--top-ports', str(TOP_PORTS)]  # the top thousand, as the server's own fingerprint pass runs it
+NMAP_FULL_PORT_FLAGS = ['-p-', '--open', '-T4', '-Pn']
 # nmap's --top-ports ranks ports by how often they are open across the internet, not by how dangerous an open one is, so the thousand it picks
 # leave out most of the services an exposure check cares about (Redis is 2742th, MongoDB 2169th, the Docker API 3217th, kubelet is not ranked
 # at all). The fingerprint pass scans the top thousand plus these, about 3% more probes.
@@ -132,6 +132,48 @@ def port_argument(ports):
             parts.append(str(start) if start == prev else f'{start}-{prev}')
             start = prev = port
     return ','.join(parts)
+
+
+MAX_NMAP_PORTS = 4096  # the most ports one fingerprint task names (the contract's bound on the nmap target's ports)
+
+
+def nmap_pass_flags(ports=None):
+    """The flags of the fingerprint pass (the address goes after them). With ``ports`` (what naabu found, from the server) the pass scans
+    those plus EXTRA_PORTS and CLOSED_PROBE_PORTS: the extended set the pipeline is meant to fingerprint, and the closed port OS detection
+    needs. Without ``ports`` it scans nmap's top thousand, as NMAP_FAST_FLAGS does. ``-n`` (no reverse DNS, the targets are addresses),
+    ``--open`` and the host timeout are always there."""
+    if ports is None:
+        port_flags = ['--top-ports', str(TOP_PORTS)]
+    else:
+        if not isinstance(ports, (list, tuple, set, frozenset)) or len(ports) > MAX_NMAP_PORTS:
+            raise ValueError(f'a fingerprint task names at most {MAX_NMAP_PORTS} ports')
+        if any(isinstance(p, bool) or not isinstance(p, int) or not 0 < p < 65536 for p in ports):
+            raise ValueError('a port must be a whole number from 1 to 65535')
+        port_flags = ['-p', port_argument({*ports, *EXTRA_PORTS, *CLOSED_PROBE_PORTS})]
+    return [*_FAST_SCAN_FLAGS, '-n', '--open', '--host-timeout', NMAP_HOST_TIMEOUT, *port_flags]
+
+
+# The time one task of a kind may take, by how many hosts it names: ``(smallest, seconds per host, largest)``. nmap's numbers are the ones
+# the Sentinel has always used. naabu's come from a measured full sweep: 65,535 SYN probes at 1000 per second took 138 s on one loopback
+# host (proofs/scan3-lab/naabu-live.txt), so one host gets 150 s and a task of more than 24 hosts is split (review H5). The Sentinel and the
+# server both read a task's limit here, so neither gives up a task the other is still running (review M7).
+TASK_LIMITS = {'nmap': (600, 90, 3600), 'naabu': (900, 150, 3600)}
+NAABU_MAX_SECONDS = TASK_LIMITS['naabu'][2]
+
+
+def task_seconds(kind, count, requested=None):
+    """Seconds one ``kind`` task over ``count`` hosts may take. ``requested``, the task's own time limit when the server sends one, is used
+    inside the kind's range only: a boolean, a float or text is no time at all, and anything out of range is held to the nearest end."""
+    smallest, per_host, largest = TASK_LIMITS[kind]
+    if isinstance(requested, int) and not isinstance(requested, bool):
+        return min(largest, max(smallest, requested))
+    return min(largest, max(smallest, per_host * max(1, int(count))))
+
+
+def hosts_per_task(kind):
+    """How many hosts one ``kind`` task can cover inside its largest time limit: the most a server should put in one chunk for it."""
+    _smallest, per_host, largest = TASK_LIMITS[kind]
+    return max(1, largest // per_host)
 
 
 # The version probe's nmap run on one port (the server's cveFeed.probes): the safe scripts for the service it answered with, all of them in
