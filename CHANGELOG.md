@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Fixed
+- **OpenVAS: the `openvas-scanner` image pin points at an image that exists.** Greenbone replaced the image behind `stable` and removed the pinned digest on 11/10, so `docker compose up` with the OpenVAS profile failed to pull it (`scripts/greenbone-digests.sh`: MISSING). Both pins move to the current `stable` digest.
 - **nuclei now runs on the server's approved template set.** The task names its bundle inside `template_policy`, and the Sentinel looked for it at the top level, so under the default read-only policy every nuclei task failed, and under the all-templates policy the Sentinel ran the templates baked into its image, never refreshed. A read-only task whose bundle is not packed yet is given back to be retried, not failed. The result names the template release the run used (`templates_release`).
 - **A host nuclei never reached is not reported as scanned.** nuclei exits cleanly with no output for a host nothing answered. The run now reads nuclei's error log and names those hosts in `unreachable` (the template test reports them as errors).
 - **nuclei findings keep their evidence.** The raw request and response are kept (clipped, credentials redacted) instead of dropped with `-omit-raw`, with the CVE ids, CVSS score, references and remediation text the template carries.
