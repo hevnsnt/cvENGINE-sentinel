@@ -68,9 +68,22 @@ class Env(unittest.TestCase):
         patch.start()
         self.addCleanup(patch.stop)
         self.procs = []
+        self.tasks = []  # (state, thread) of every task thread run_task started
         self.addCleanup(self.reap)
 
     def reap(self):
+        # Kill every tool group a task thread started, then join the thread: a daemon thread left running past the test would still be
+        # logging when the interpreter exits (after the state directory is gone), and a write to stderr then aborts it with exit 134.
+        for state, _thread in self.tasks:
+            for pgid in list(state.get('pgids') or ()):
+                try:
+                    os.killpg(pgid, signal.SIGKILL)
+                except OSError:
+                    pass
+        for _state, thread in self.tasks:
+            thread.join(timeout=10)
+            if thread.is_alive():
+                self.fail(f'task thread {thread.name} did not stop in teardown')
         for proc in self.procs:
             try:
                 os.killpg(proc.pid, signal.SIGKILL)
@@ -92,6 +105,7 @@ class Env(unittest.TestCase):
             d._in_flight[task_id] = state
         thread = threading.Thread(target=d._run_task, args=({'id': task_id, 'kind': kind, 'target': target or {'targets': ['example.com']}}, state), daemon=True)
         state['thread'] = thread
+        self.tasks.append((state, thread))
         thread.start()
         self.assertTrue(wait_until(lambda: state['pgids']), 'the tool never started')
         return state, thread
