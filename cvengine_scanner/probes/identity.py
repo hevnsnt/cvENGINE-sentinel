@@ -14,7 +14,6 @@ this module only asks. Two lists, both under the task's scope policy:
 
 Every name must pass the policy before it is asked and every address the policy and this Sentinel's floor allow before it is connected to.
 """
-import ipaddress
 import logging
 import socket
 import ssl
