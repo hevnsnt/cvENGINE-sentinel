@@ -1,0 +1,55 @@
+name: Tool releases
+
+# Compares every pin of the Sentinel image (the Dockerfile ARGs, requirements.txt, the pip bootstrap pins, the Ubuntu base image digest and the Greenbone
+# image digests in docker-compose.yml) with the newest upstream release, by scripts/check_tool_versions.py.
+#   weekly (and by hand): keeps one open issue listing what is behind.
+#   pull requests: a warning on the run for each tool that is behind, never a failure.
+# The release gate is a job of tag-release.yml: the same script with --fail-if-behind.
+on:
+  schedule:
+    - cron: '23 5 * * 1'
+  workflow_dispatch:
+  pull_request:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  weekly:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Compare the pins with the newest releases
+        id: check
+        env:
+          GITHUB_TOKEN: ${{ github.token }}  # for api.github.com lookups: unauthenticated they are rate limited on shared runners
+        run: |
+          python3 scripts/check_tool_versions.py | tee "$RUNNER_TEMP/tools.md"
+          if ! python3 scripts/check_tool_versions.py --fail-if-behind >/dev/null; then
+            echo "behind=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Keep one issue open while something is behind
+        if: steps.check.outputs.behind == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          title="Sentinel tools behind their newest release"
+          body="$(printf 'The weekly check found a pinned tool behind its newest release, a pin it could not read or a newest version it could not look up. Bump the pin in the Dockerfile, requirements.txt or docker-compose.yml (with its checksum), rebuild, and run the tests. Tagging a release is blocked by the same check until this is done.\n\n'; cat "$RUNNER_TEMP/tools.md")"
+          number=$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number' || true)
+          if [ -n "$number" ]; then
+            gh issue edit "$number" --body "$body"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi
+
+  pull-request:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Warn about every tool that is behind (never fails the pull request)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 scripts/check_tool_versions.py --github-warnings | tee -a "$GITHUB_STEP_SUMMARY"
