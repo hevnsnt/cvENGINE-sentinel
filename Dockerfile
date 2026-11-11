@@ -18,7 +18,7 @@ RUN apt-get update -y && \
     rm -rf /var/lib/apt/lists/*
 # The build tools are the same pins as the client's venv below; yara-python and the other source packages build with them.
 RUN python3 -m venv /opt/bbot-venv && \
-    /opt/bbot-venv/bin/pip install --no-cache-dir pip==25.2 setuptools==80.9.0 wheel==0.45.1 && \
+    /opt/bbot-venv/bin/pip install --no-cache-dir pip==26.3 setuptools==84.2.1 wheel==0.48.0 && \
     /opt/bbot-venv/bin/pip install --no-cache-dir bbot==${BBOT_VERSION} tzdata==${TZDATA_VERSION} && \
     /opt/bbot-venv/bin/bbot --version
 
@@ -33,7 +33,7 @@ RUN apt-get update -y && \
     rm -rf /var/lib/apt/lists/*
 RUN python3 -m venv /opt/wheelvenv
 COPY requirements.txt /tmp/requirements.txt
-RUN /opt/wheelvenv/bin/pip install --no-cache-dir pip==25.2 setuptools==80.9.0 wheel==0.45.1 && \
+RUN /opt/wheelvenv/bin/pip install --no-cache-dir pip==26.3 setuptools==84.2.1 wheel==0.48.0 && \
     /opt/wheelvenv/bin/pip wheel --no-cache-dir -r /tmp/requirements.txt -w /wheels
 
 FROM ubuntu:26.04@sha256:6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c
@@ -226,7 +226,7 @@ COPY requirements.txt /opt/sentinel/requirements.txt
 # library below without build isolation, so the build tools are these pins and nothing fetched at build time.
 # The client's own packages come from the wheels built in the first stage, and only from there (--no-index).
 COPY --from=wheels /wheels /tmp/wheels
-RUN pip install --no-cache-dir pip==25.2 setuptools==80.9.0 wheel==0.45.1 setuptools-scm==8.3.1 packaging==25.0 && \
+RUN pip install --no-cache-dir pip==26.3 setuptools==84.2.1 wheel==0.48.0 setuptools-scm==10.3.4 packaging==26.3 && \
     pip install --no-cache-dir --no-index --find-links /tmp/wheels -r /opt/sentinel/requirements.txt && \
     rm -rf /tmp/wheels
 

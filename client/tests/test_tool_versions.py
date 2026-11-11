@@ -362,5 +362,22 @@ class WorkflowHardeningTests(unittest.TestCase):
         self.assertRegex(weekly, r'(?s)tee "\$RUNNER_TEMP/tools.md".*-ne 0')  # the first run's failure and a crash of the second stop the step
 
 
+class BootstrapPinTests(unittest.TestCase):
+    def test_the_image_smoke_test_checks_the_installed_scanner_library_version(self):
+        """setuptools-scm builds the library: a bump of it must show in the smoke test as the version the library reports (the pyproject fallback)."""
+        image = (ROOT / '.github' / 'workflows' / 'image.yml').read_text()
+        self.assertIn("metadata.version('cvengine-scanner')", image)
+        self.assertIn('fallback_version', image)
+        self.assertIn('cvengine_scanner.__version__', image)
+        self.assertRegex((ROOT / 'pyproject.toml').read_text(), r'fallback_version = "[^"]+"')
+
+    def test_every_bootstrap_pin_of_the_dockerfile_is_one_version_per_package(self):
+        found = {}
+        for name, version in re.findall(r'\b(pip|setuptools|wheel|setuptools-scm|packaging)==(\d[\d.]*)', (ROOT / 'Dockerfile').read_text()):
+            found.setdefault(name, set()).add(version)
+        self.assertEqual(set(found), set(tools.BOOTSTRAP))
+        self.assertEqual({n: v for n, v in found.items() if len(v) > 1}, {})
+
+
 if __name__ == '__main__':
     unittest.main()
