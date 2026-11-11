@@ -1182,6 +1182,15 @@ def _host_key(value):
     return value.rsplit(':', 1)[0] if value.count(':') == 1 else value
 
 
+def _hit_host(row):
+    """The host a result line is a hit for, or ``None`` when its ``host`` and ``matched-at`` name different hosts (a template that reached somewhere
+    else than the target it was run against) or it names none. Only a host the task named is ever given an outcome (``_template_test``)."""
+    named = {_host_key(row.get(k)) for k in ('host', 'matched-at') if isinstance(row.get(k), str) and row.get(k).strip()}
+    if not named and isinstance(row.get('ip'), str):
+        named = {_host_key(row['ip'])}
+    return named.pop() if len(named) == 1 else None
+
+
 def _trim_hit(row):
     return {k: (v[:8000] if isinstance(v, str) and k in ('request', 'response', 'curl-command') else v) for k, v in row.items()} if row else None
 
@@ -1222,7 +1231,9 @@ def _template_test(path, hosts, register):
                 error = 'nuclei returned malformed JSON output'
                 break
             if is_hit(row):
-                key = _host_key(row.get('host') or row.get('matched-at') or row.get('ip'))
+                key = _hit_host(row)
+                if key is None:
+                    continue  # a line whose host and matched-at disagree, or name no host: never a hit for anyone
                 hits.setdefault(key, []).append(line)
                 rows.setdefault(key, row)
         if not error:  # a host nothing answered is an error, never a negative test (review H4)
@@ -1242,29 +1253,70 @@ def _template_test(path, hosts, register):
     return outcomes
 
 
-def run_nuclei_validate(mode, template, targets=None, register=None):
+def _write_template(path, text):
+    """Write the check's text to its scratch file (its own function, so a test can show what happens when the file is not what was verified)."""
+    with open(path, 'w', encoding='utf-8') as handle:
+        handle.write(text)
+
+
+def _verified_template(path, text, template_sha256, approved, mode, builtin):
+    """Write ``text`` to ``path`` and return only once the file is exactly what the server approved, else raise ``Refused`` with nothing run.
+
+    Outside the built-in scanner every rule applies: the task names a well-formed ``template_sha256``; the server, asked separately for this task
+    (``sentinel/tasks/<id>/check``, the daemon's ``_approved_check``), named the same hash and the same mode (``approved``); the bytes on disk,
+    read back, hash to it (a check altered on the way or on disk does not); and the text passes the server's read-only rules and reaches only the
+    task's own target and port (``cvengine_scanner.checks``). The built-in scanner runs with the server's own trust, as before (an older server
+    sends no hash, the all-templates setting may send an installed template that is not read-only), but a hash or an answer it is given is still
+    checked. The file is left read-only for the run."""
+    from cvengine_scanner import checks
+    if not builtin or template_sha256 is not None:
+        if not isinstance(template_sha256, str) or not checks.SHA256.match(template_sha256):
+            raise Refused('refused: the check names no valid template hash, so this Sentinel cannot tell it is the one the server approved')
+    if not builtin or approved is not None:
+        server_sha, server_mode = approved if isinstance(approved, tuple) and len(approved) == 2 else (None, None)
+        if server_sha != template_sha256 or server_mode != mode:
+            raise Refused('refused: the server did not approve this check for this task (its hash or mode is not the one the server named)')
+    _write_template(path, text)
+    os.chmod(path, 0o400)
+    with open(path, 'rb') as handle:
+        written = handle.read(MAX_TEMPLATE_BYTES + 2)
+    try:
+        on_disk = written.decode('utf-8')
+    except UnicodeDecodeError:
+        on_disk = None
+    if template_sha256 is not None and (on_disk is None or checks.digest(on_disk) != template_sha256):
+        raise Refused('refused: the check does not match its template hash (altered after the server approved it)')
+    if not builtin:
+        problem = checks.check_problem(on_disk)
+        if problem:
+            raise Refused(f'refused: {problem}'[:280])
+
+
+def run_nuclei_validate(mode, template, targets=None, register=None, template_sha256=None, approved=None, builtin=False):
     """Mode ``validate``: ``nuclei -validate`` on a new template and, when it passes, the benign loopback fixture. Mode ``test``: the approved template
     against ``targets`` (each judged by scope, as every nuclei target is), one outcome per target. The template is written to a private scratch
-    directory and nothing else is loaded with it."""
+    directory, verified there (``_verified_template``: hash, the server's approval, read-only, own target and port) and nothing else is loaded
+    with it. ``approved`` is ``(sha256, mode)`` as the server named it for this task; ``builtin`` is whether this is the install's own scanner.
+    The result names the hash it ran (``template_sha256``) when the task named one."""
     text = _template_text(template)
+    if mode not in ('validate', 'test'):
+        raise TargetError(f'not a nuclei_validate mode: {str(mode)[:20]!r}')
+    if mode == 'test' and (not isinstance(targets, list) or not targets or len(targets) > MAX_TARGETS or not all(isinstance(t, str) for t in targets)):
+        raise TargetError(f'a template test names 1 to {MAX_TARGETS} targets')
+    echo = {'template_sha256': template_sha256} if template_sha256 is not None else {}
     with tempfile.TemporaryDirectory(prefix='nuclei-validate-') as work:
         path = os.path.join(work, 'template.yaml')
-        with open(path, 'w', encoding='utf-8') as handle:
-            handle.write(text)
+        _verified_template(path, text, template_sha256, approved, mode, builtin)
         if mode == 'validate':
             code, out, err = _run_status([NUCLEI_BIN, *NUCLEI_VALIDATE_FLAGS[:1], '-t', path, *NUCLEI_VALIDATE_FLAGS[1:]], NUCLEI_VALIDATE_TIMEOUT,
                                          register)
             output = (out + err).strip()
             valid = code == 0 and 'error' not in output.lower()
-            result = {'valid': valid, 'output': output[-2000:], 'fixture_ok': None, 'fixture_note': ''}
+            result = {'valid': valid, 'output': output[-2000:], 'fixture_ok': None, 'fixture_note': '', **echo}
             if valid:
                 result['fixture_ok'], result['fixture_note'] = _benign_fixture(path, register)
             return result
-        if mode == 'test':
-            if not isinstance(targets, list) or not targets or len(targets) > MAX_TARGETS or not all(isinstance(t, str) for t in targets):
-                raise TargetError(f'a template test names 1 to {MAX_TARGETS} targets')
-            return {'outcomes': _template_test(path, targets, register)}
-    raise TargetError(f'not a nuclei_validate mode: {str(mode)[:20]!r}')
+        return {'outcomes': _template_test(path, targets, register), **echo}
 
 
 def run_alive_check(target, register=None):

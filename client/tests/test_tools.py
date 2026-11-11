@@ -10,6 +10,7 @@ import unittest
 from unittest import mock
 
 from client import scope, tools
+from cvengine_scanner import checks
 
 FIXTURES = os.path.join(os.path.dirname(__file__), '..', '..', 'cvengine_scanner', 'tests', 'fixtures')  # the library's samples: the parsers' tests use them too
 
@@ -377,7 +378,9 @@ class NucleiReachTests(unittest.TestCase):
                     handle.write(json.dumps(errors[0]) + '\n')
             return 0, '', ''
         with mock.patch('client.tools._run_status', side_effect=status):
-            outcomes = tools.run_nuclei_validate('test', template, ['closed.example.test', 'www.example.test'])['outcomes']
+            sha = checks.digest(template)  # an approved check (contract 4: client.tests.test_ai_checks covers the refusals)
+            outcomes = tools.run_nuclei_validate('test', template, ['closed.example.test', 'www.example.test'], template_sha256=sha,
+                                                 approved=(sha, 'test'))['outcomes']
         by_host = {o['host']: o for o in outcomes}
         self.assertIn('never reached', by_host['closed.example.test']['error'])
         self.assertEqual(by_host['www.example.test'].get('error', ''), '')

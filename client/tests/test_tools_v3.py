@@ -189,6 +189,12 @@ class PathProbeTests(unittest.TestCase):
 TEMPLATE = 'id: example\ninfo:\n  name: Example\n  severity: info\nhttp:\n  - method: GET\n    path: ["{{BaseURL}}/"]\n'
 
 
+def approved(mode):
+    """The hash of TEMPLATE and the server's answer for it: what a contract-4 task carries (client.tests.test_ai_checks covers each refusal)."""
+    from cvengine_scanner import checks
+    return {'template_sha256': checks.digest(TEMPLATE), 'approved': (checks.digest(TEMPLATE), mode)}
+
+
 class NucleiValidateTests(unittest.TestCase):
     def test_a_template_that_reads_files_or_runs_code_is_refused(self):
         for key in ('code', 'file', 'headless', 'javascript', 'flow', 'workflows'):
@@ -198,12 +204,12 @@ class NucleiValidateTests(unittest.TestCase):
 
     def test_validate_runs_the_fixture_only_after_the_syntax_check_passes(self):
         with mock.patch.object(tools, '_run_status', return_value=(1, '', 'error: bad')), mock.patch.object(tools, '_benign_fixture') as fixture:
-            out = tools.run_nuclei_validate('validate', TEMPLATE)
+            out = tools.run_nuclei_validate('validate', TEMPLATE, **approved('validate'))
         self.assertEqual((out['valid'], out['fixture_ok']), (False, None))
         fixture.assert_not_called()
         with mock.patch.object(tools, '_run_status', return_value=(0, '', '')), \
                 mock.patch.object(tools, '_benign_fixture', return_value=(True, 'no match')):
-            out = tools.run_nuclei_validate('validate', TEMPLATE)
+            out = tools.run_nuclei_validate('validate', TEMPLATE, **approved('validate'))
         self.assertEqual((out['valid'], out['fixture_ok'], out['fixture_note']), (True, True, 'no match'))
 
     def test_test_mode_gives_one_outcome_per_target_and_counts_only_matcher_hits(self):
@@ -211,7 +217,7 @@ class NucleiValidateTests(unittest.TestCase):
         extract_only = {'host': 'https://93.184.215.20', 'matcher-status': False}
         lines = json.dumps(hit) + '\n' + json.dumps(extract_only) + '\n'
         with mock.patch.object(tools, '_run_status', return_value=(0, lines, '')):
-            out = tools.run_nuclei_validate('test', TEMPLATE, ['https://93.184.215.14', 'https://93.184.215.20', 'https://10.0.0.1'])
+            out = tools.run_nuclei_validate('test', TEMPLATE, ['https://93.184.215.14', 'https://93.184.215.20', 'https://10.0.0.1'], **approved('test'))
         first, second, third = out['outcomes']
         self.assertTrue(first['vulnerable'])
         self.assertEqual(len(first['hit']['request']), 8000)
@@ -221,13 +227,13 @@ class NucleiValidateTests(unittest.TestCase):
     def test_the_template_test_takes_the_egress_proxy_and_the_loopback_fixture_does_not(self):
         with mock.patch.object(tools, '_proxy_args', return_value=['-proxy', 'http://proxy.example.test:3128']) as proxy, \
                 mock.patch.object(tools, '_run_status', return_value=(0, '', '')) as run:
-            tools.run_nuclei_validate('test', TEMPLATE, ['https://93.184.215.14'])
+            tools.run_nuclei_validate('test', TEMPLATE, ['https://93.184.215.14'], **approved('test'))
         proxy.assert_called_once_with('nuclei', ['https://93.184.215.14'])
         self.assertEqual(run.call_args[0][0][-2:], ['-proxy', 'http://proxy.example.test:3128'])
 
     def test_a_nuclei_failure_is_an_error_for_every_target(self):
         with mock.patch.object(tools, '_run_status', return_value=(2, '', 'boom')):
-            out = tools.run_nuclei_validate('test', TEMPLATE, ['https://93.184.215.14'])
+            out = tools.run_nuclei_validate('test', TEMPLATE, ['https://93.184.215.14'], **approved('test'))
         self.assertEqual(out['outcomes'][0]['error'], 'boom')
 
     def test_an_unknown_mode_or_oversized_template_is_refused(self):

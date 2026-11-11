@@ -1,0 +1,222 @@
+"""AI-written checks (the ``nuclei_validate`` kind) on a Sentinel that is not the built-in scanner (contract version 4).
+
+What runs is only what the server approved: the task names the sha256 of the template, the Sentinel hashes the text it wrote to disk and read back,
+and asks its own server which hash it approves for that task (``sentinel/tasks/<id>/check``); all three must agree. Then the text must pass the
+same read-only check the server applies (``cvengine_scanner.checks``) and aim only at the task's own target and port. A result line for a host the
+task did not name is never a hit."""
+import json
+import os
+import unittest
+from unittest import mock
+
+from client import config, daemon, httpclient, scope, tools
+from client.tests.test_daemon import FakeClient
+from cvengine_scanner import checks, contract
+
+CORPUS = json.loads((contract.FIXTURES / 'checks' / 'corpus.json').read_text(encoding='utf-8'))['cases']
+TEXT = next(c for c in CORPUS if c['name'] == 'plain_get')['template']
+SHA = checks.digest(TEXT)
+OTHER = 'b' * 64
+
+
+def setUpModule():
+    for patcher in (mock.patch('socket.getaddrinfo', side_effect=OSError('no DNS in these tests')),
+                    mock.patch.object(scope, 'own_addresses', return_value=frozenset({'172.19.0.2'})),
+                    mock.patch.object(scope, 'internal_allowed', return_value=False)):
+        patcher.start()
+        unittest.addModuleCleanup(patcher.stop)
+
+
+def run(mode='validate', text=TEXT, targets=None, sha=SHA, approved=(SHA, 'validate'), builtin=False):
+    return tools.run_nuclei_validate(mode, text, targets, template_sha256=sha, approved=approved, builtin=builtin)
+
+
+class RefusedBeforeAnythingRunsTests(unittest.TestCase):
+    """Each refusal leaves nuclei unstarted: ``_run_status`` is the only way a template reaches it."""
+
+    def assertRefused(self, **kwargs):
+        with mock.patch.object(tools, '_run_status', return_value=(0, '', '')) as started, mock.patch.object(tools, '_benign_fixture') as fixture:
+            with self.assertRaises(tools.Refused) as caught:
+                run(**kwargs)
+        started.assert_not_called()
+        fixture.assert_not_called()
+        self.assertTrue(str(caught.exception).startswith('refused:'), str(caught.exception))
+        return str(caught.exception)
+
+    def test_a_check_whose_hash_the_server_did_not_approve_is_refused(self):
+        why = self.assertRefused(approved=(OTHER, 'validate'))  # the task's hash matches its text, but the server approves another one
+        self.assertIn('did not approve', why)
+
+    def test_a_check_the_server_gave_no_answer_for_is_refused(self):
+        self.assertRefused(approved=None)
+
+    def test_a_check_approved_for_the_other_mode_is_refused(self):
+        self.assertRefused(mode='test', targets=['https://93.184.215.14'], approved=(SHA, 'validate'))
+
+    def test_a_check_altered_in_transit_is_refused(self):
+        altered = TEXT.replace('marker-1.2.3', 'marker-9.9.9')
+        why = self.assertRefused(text=altered)  # the hash and the server's answer are the original's; the text is not
+        self.assertIn('hash', why)
+
+    def test_a_check_with_no_hash_or_a_malformed_one_is_refused(self):
+        for sha in (None, '', SHA.upper(), SHA[:40], 42):
+            with self.subTest(sha=str(sha)[:8]):
+                self.assertRefused(sha=sha)
+
+    def test_a_check_changed_on_disk_after_it_was_written_is_refused(self):
+        def write(path, text):
+            with open(path, 'w', encoding='utf-8') as handle:
+                handle.write(text + '\n# appended\n')
+        with mock.patch.object(tools, '_write_template', side_effect=write):
+            why = self.assertRefused()
+        self.assertIn('hash', why)
+
+    def test_a_check_that_is_not_read_only_is_refused(self):
+        refused = 0
+        for case in CORPUS:
+            if case['read_only']:
+                continue
+            text = case['template']
+            with self.subTest(case=case['name']), mock.patch.object(tools, '_run_status') as started:
+                with self.assertRaises(tools.TargetError):
+                    run(text=text, sha=checks.digest(text), approved=(checks.digest(text), 'validate'))
+                started.assert_not_called()
+                refused += 1
+        self.assertGreater(refused, 25)
+
+    def test_a_check_aimed_at_another_port_of_the_host_is_refused(self):
+        for case in CORPUS:
+            if not case['read_only'] or case['own_target']:
+                continue
+            text = case['template']
+            with self.subTest(case=case['name']):
+                why = self.assertRefused(mode='test', text=text, targets=['https://93.184.215.14'], sha=checks.digest(text),
+                                         approved=(checks.digest(text), 'test'))
+                self.assertIn('port', why)
+
+    def test_a_check_aimed_at_another_host_is_refused(self):
+        for name in ('absolute_url', 'raw_absolute_url', 'raw_other_host_header', 'network_other_host', 'ssl_other_address', 'base_url_then_host'):
+            text = next(c for c in CORPUS if c['name'] == name)['template']
+            with self.subTest(case=name):
+                self.assertRefused(mode='test', text=text, targets=['https://93.184.215.14'], sha=checks.digest(text),
+                                   approved=(checks.digest(text), 'test'))
+
+    def test_a_target_outside_this_sentinels_scope_is_never_handed_to_nuclei(self):
+        with mock.patch.object(tools, '_run_status', return_value=(0, '', '')) as started:
+            out = run(mode='test', targets=['https://10.0.0.1'], approved=(SHA, 'test'))
+        started.assert_not_called()
+        self.assertIn('error', out['outcomes'][0])
+
+
+class ApprovedCheckTests(unittest.TestCase):
+    def test_an_approved_unchanged_read_only_check_runs_on_exactly_the_verified_file(self):
+        seen = {}
+
+        def nuclei(argv, timeout, register):
+            path = argv[argv.index('-t') + 1]
+            with open(path, 'rb') as handle:
+                seen['sha'] = checks.digest(handle.read().decode('utf-8'))
+            seen['mode'] = oct(os.stat(path).st_mode & 0o777)
+            return 0, '', ''
+        with mock.patch.object(tools, '_run_status', side_effect=nuclei), mock.patch.object(tools, '_benign_fixture', return_value=(True, 'no match')):
+            out = run()
+        self.assertEqual(seen['sha'], SHA)
+        self.assertEqual(seen['mode'], '0o400')  # read-only once verified: nothing in this process rewrites it after the check
+        self.assertEqual((out['valid'], out['fixture_ok'], out['template_sha256']), (True, True, SHA))
+
+    def test_a_result_line_for_a_host_the_task_did_not_name_is_never_a_hit(self):
+        asked = ['https://93.184.215.14', 'https://93.184.215.20']
+        lines = [{'host': 'https://93.184.215.99', 'matched-at': 'https://93.184.215.99/x', 'matcher-name': 'word'},  # not a target at all
+                 {'host': 'https://93.184.215.14', 'matched-at': 'https://198.51.100.9/x', 'matcher-name': 'word'},  # filed under a target, but matched elsewhere
+                 {'host': 'https://93.184.215.20', 'matched-at': 'https://93.184.215.20/x', 'matcher-name': 'word'}]
+        out_text = '\n'.join(json.dumps(line) for line in lines) + '\n'
+        with mock.patch.object(tools, '_run_status', return_value=(0, out_text, '')):
+            out = run(mode='test', targets=asked, approved=(SHA, 'test'))
+        self.assertEqual([o['host'] for o in out['outcomes']], asked)
+        first, second = out['outcomes']
+        self.assertFalse(first['vulnerable'])
+        self.assertNotIn('198.51.100.9', json.dumps(first))
+        self.assertTrue(second['vulnerable'])
+        self.assertNotIn('93.184.215.99', json.dumps(out))
+        self.assertEqual(out['template_sha256'], SHA)
+
+
+class BuiltinScannerTests(unittest.TestCase):
+    """The built-in scanner runs with the server's own trust, as before: an older server sends no hash, and the all-templates setting may hand it an
+    installed template that is not read-only. A hash it is given is still checked."""
+
+    def test_an_older_server_without_a_hash_still_gets_its_checks_run(self):
+        with mock.patch.object(tools, '_run_status', return_value=(0, '', '')), mock.patch.object(tools, '_benign_fixture', return_value=(True, '')):
+            out = run(sha=None, approved=None, builtin=True)
+        self.assertTrue(out['valid'])
+        self.assertNotIn('template_sha256', out)
+
+    def test_a_template_that_is_not_read_only_runs_on_the_builtin_scanner_only(self):
+        text = next(c for c in CORPUS if c['name'] == 'post_method')['template']
+        with mock.patch.object(tools, '_run_status', return_value=(0, '', '')):
+            out = run(mode='test', text=text, targets=['https://93.184.215.14'], sha=checks.digest(text), approved=(checks.digest(text), 'test'),
+                      builtin=True)
+        self.assertEqual(len(out['outcomes']), 1)
+
+    def test_a_hash_given_to_the_builtin_scanner_is_still_checked(self):
+        with mock.patch.object(tools, '_run_status') as started, self.assertRaises(tools.Refused):
+            run(text=TEXT + '\n', approved=None, builtin=True)
+        started.assert_not_called()
+
+
+class DaemonAsksTheServerTests(unittest.TestCase):
+    TASK = {'id': 7, 'kind': 'nuclei_validate', 'target': {'mode': 'validate', 'template': TEXT, 'template_sha256': SHA}}
+
+    def setUp(self):
+        saved = config.server_contract()
+        self.addCleanup(config.set_server_contract, {'contract': {'version': saved}})
+        config.set_server_contract({'contract': {'version': 4}})
+
+    def execute(self, fc, builtin=False, task=None):
+        d = daemon.Daemon('https://cve.example.test', 'tok', client=fc)
+        with mock.patch.object(config, 'builtin', return_value=builtin), \
+                mock.patch.object(tools, 'run_nuclei_validate', return_value={'valid': True}) as runner, \
+                mock.patch.dict(tools.RUNNERS, {'nuclei_validate': tools.run_nuclei_validate}):
+            try:
+                return d._execute(task or self.TASK, None), runner
+            except tools.TargetError as exc:
+                return exc, runner
+
+    def test_the_server_is_asked_for_the_approved_hash_of_that_task(self):
+        fc = FakeClient()
+        fc.script[('GET', 'sentinel/tasks/7/check')] = [{'template_sha256': SHA, 'mode': 'validate'}]
+        out, runner = self.execute(fc)
+        self.assertEqual(out, {'outcome': 'done', 'valid': True})
+        self.assertIn(('GET', 'sentinel/tasks/7/check'), fc.paths())
+        kwargs = runner.call_args.kwargs
+        self.assertEqual((kwargs['template_sha256'], kwargs['approved'], kwargs['builtin']), (SHA, (SHA, 'validate'), False))
+
+    def test_a_server_that_does_not_approve_the_task_stops_it_here(self):
+        for answer in (httpclient.ApiError(404, 'no such check'), httpclient.ApiError(403, 'not yours'), {'template_sha256': 'x'}, {}):
+            fc = FakeClient()
+            fc.script[('GET', 'sentinel/tasks/7/check')] = [answer]
+            with self.subTest(answer=str(answer)[:20]):
+                out, runner = self.execute(fc)
+                self.assertIsInstance(out, tools.Refused)
+                runner.assert_not_called()
+
+    def test_an_external_sentinel_never_runs_a_check_for_a_server_older_than_version_four(self):
+        config.set_server_contract({'contract': {'version': 3}})
+        fc = FakeClient()
+        out, runner = self.execute(fc)
+        self.assertIsInstance(out, tools.Refused)
+        runner.assert_not_called()
+        self.assertNotIn(('GET', 'sentinel/tasks/7/check'), fc.paths())
+
+    def test_the_builtin_scanner_of_an_older_server_runs_as_before(self):
+        config.set_server_contract({'contract': {'version': 3}})
+        fc = FakeClient()
+        task = {'id': 7, 'kind': 'nuclei_validate', 'target': {'mode': 'validate', 'template': TEXT}}
+        out, runner = self.execute(fc, builtin=True, task=task)
+        self.assertEqual(out['outcome'], 'done')
+        self.assertEqual(fc.paths(), [])
+        self.assertEqual((runner.call_args.kwargs['approved'], runner.call_args.kwargs['builtin']), (None, True))
+
+
+if __name__ == '__main__':
+    unittest.main()

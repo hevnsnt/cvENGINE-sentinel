@@ -82,6 +82,7 @@ SPOOL_MIN_BACKOFF = 2.0  # seconds between delivery passes while the server is u
 SPOOL_MAX_BACKOFF = 60.0  # ... this, forever within the spool window
 SPOOL_IDLE_SECONDS = 30.0  # how often an empty-handed spool thread looks again
 QUIET_LOG_SECONDS = 600.0  # the same outage is named in the log this often (the first failure at once)
+CHECKS_CONTRACT = 4  # the server contract from which an AI-written check (nuclei_validate) names its hash and the server answers GET sentinel/tasks/<id>/check
 MAX_RESULT_BYTES = 23 * 1024 * 1024  # the server's result route refuses a body over 24 MB with a 400 that would end the task
 RELEASE_WAIT_SECONDS = 10.0  # after the grace period, how long shutdown waits for a task thread that is still delivering its result
 AUTH_STATUSES = (401, 403)  # the server no longer accepts this Sentinel's token
@@ -1239,13 +1240,35 @@ class Daemon:
         elif kind == 'path_probe':
             out = runner(target.get('targets'), register=register)
         elif kind == 'nuclei_validate':
-            out = runner(target.get('mode'), target.get('template'), target.get('targets'), register=register)
+            builtin = config.builtin()
+            sha256 = target.get('template_sha256')
+            approved = None
+            if not builtin and config.server_contract() < CHECKS_CONTRACT:
+                raise tools.Refused('refused: an AI-written check runs here only for a server that names its hash and approves it (contract 4 or newer)')
+            if not builtin or (sha256 is not None and config.server_contract() >= CHECKS_CONTRACT):
+                approved = self._approved_check(task['id'])  # asked of the server separately from the task: the hash it approves for this task
+            out = runner(target.get('mode'), target.get('template'), target.get('targets'), register=register, template_sha256=sha256, approved=approved,
+                         builtin=builtin)
         elif kind == 'secrets_scan':
             out = runner(target, register=register, rules=self._secret_rules(target))
         else:  # openvas, the only other kind with a runner
             out = runner(target.get('hosts') or {}, target.get('excluded_families') or [], target.get('max_hours'), register=register,
                          preferences=target.get('preferences'))
         return {'outcome': 'done', **out}
+
+    def _approved_check(self, task_id):
+        """``(sha256, mode)`` of the check the server approves for the ``nuclei_validate`` task ``task_id`` this Sentinel holds, asked separately from the
+        task (``GET sentinel/tasks/<id>/check``). Any refusal or a malformed answer is ``Refused``: the check is not run."""
+        from cvengine_scanner import checks
+        try:
+            answer = self.client.call('GET', f'sentinel/tasks/{task_id}/check')
+        except httpclient.ApiError as exc:
+            raise tools.Refused(f'refused: the server did not approve this check (HTTP {exc.status})') from None
+        sha256 = answer.get('template_sha256') if isinstance(answer, dict) else None
+        mode = answer.get('mode') if isinstance(answer, dict) else None
+        if not isinstance(sha256, str) or not checks.SHA256.match(sha256) or mode not in ('validate', 'test'):
+            raise tools.Refused('refused: the server did not approve this check (no hash in its answer)')
+        return sha256, mode
 
     def _secret_rules(self, target):
         """The instance's custom secret rules a ``secrets_scan`` task names (``rules_bundle_sha256``), as YAML text, or ``None`` when it names none.

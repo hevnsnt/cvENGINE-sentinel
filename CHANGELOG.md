@@ -39,6 +39,12 @@
   check also fails on a stale watchdog, heartbeat or poll loop. W6 stops taking work under 300 MB of free disk and removes only its own temp and cache files.
   W7 the heartbeat's optional `info.watchdog` (last tick, actions, kills, overcommit, reasons). W8 per-rule variables, one log line per action, and a kind
   stopped 3 times in an hour is not asked for for 30 minutes. No contract change, no new task kind.
+- **AI-written checks run on your own Sentinels (contract version 4).** With no built-in scanner, cvENGINE now sends its AI-written and approved
+  nuclei checks (`nuclei_validate`) and its scan path survey (`path_probe`) to the project's own Sentinels. A Sentinel that is not the built-in scanner
+  runs a check only when all of these hold: the task names the sha256 of the template (`template_sha256`), the file it wrote and read back hashes to it,
+  its server names the same hash and mode for that task when asked separately (`GET sentinel/tasks/<id>/check`), the template passes the server's
+  read-only rules (`cvengine_scanner.checks`, one shared test corpus) and it reaches only the task's own target and port (no literal port, no `port`
+  key). A result line for a host the task did not name is never a hit, and the result echoes the hash it ran. The image gains PyYAML 6.0.3.
 - A durable result spool (`client/spool.py`): a result cvENGINE does not take (an update, a restart, an outage) is written to disk (0600, atomic) and delivered oldest
   first, with a capped backoff, for up to 6 hours (`CVENGINE_SENTINEL_SPOOL_HOURS`, `0` = off; size limit `CVENGINE_SENTINEL_SPOOL_MAX_MB`) instead of being released after
   5 tries in 2 minutes. It is delivered before the first heartbeat after a reconnect or a start, a held result's task still counts as running in the heartbeat, and the

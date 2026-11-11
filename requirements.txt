@@ -2,6 +2,7 @@
 requests==2.34.2
 python-gvm==27.10.1
 xmltodict==1.0.4  # the scanner library reads nmap XML with it (pyproject.toml); installed here so the image pins it
+PyYAML==6.0.3  # the scanner library reads an AI-written check with it before running one (cvengine_scanner/checks.py); the server's pin
 # The contract 3 kinds, pinned like the server's web/requirements.txt: h11 for the vendored node2shell detector (client/vendor), aardwolf and Pillow for
 # the RDP pre-authentication screenshot (client/rdp.py), and the database clients the one credential-less attempt of db_probe uses (client/dbprobe.py;
 # PostgreSQL is spoken directly, so no libpq).

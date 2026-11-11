@@ -1,0 +1,257 @@
+{
+  "description": "AI-written or installed nuclei templates and the verdicts of the read-only check (cvENGINE validation.readonly_problem, cvengine_scanner.checks.readonly_problem) and of the own-target-and-port rule (checks.scope_problem). Both sides test against this file.",
+  "cases": [
+    {
+      "name": "plain_get",
+      "template": "id: c\ninfo:\n  name: c\n  severity: info\nhttp:\n  - method: GET\n    path:\n      - \"{{BaseURL}}/x\"\n    matchers:\n      - type: word\n        words: [\"marker-1.2.3\"]\n",
+      "read_only": true,
+      "own_target": true
+    },
+    {
+      "name": "head_and_options",
+      "template": "id: c\ninfo:\n  name: c\n  severity: info\nhttp:\n  - method: HEAD\n    path: [\"{{BaseURL}}\"]\n  - method: OPTIONS\n    path: [\"{{BaseURL}}/a\"]\n",
+      "read_only": true,
+      "own_target": true
+    },
+    {
+      "name": "raw_get_host_header",
+      "template": "id: c\ninfo:\n  name: c\n  severity: info\nhttp:\n  - raw:\n      - |\n        GET /status HTTP/1.1\n        Host: {{Hostname}}\n",
+      "read_only": true,
+      "own_target": true
+    },
+    {
+      "name": "network_banner",
+      "template": "id: c\ninfo:\n  name: c\n  severity: info\nnetwork:\n  - host:\n      - \"{{Hostname}}\"\n    matchers:\n      - type: word\n        words: [\"SSH-2.0-OpenSSH_7.2\"]\n",
+      "read_only": true,
+      "own_target": true
+    },
+    {
+      "name": "network_host_port_placeholder",
+      "template": "id: c\ninfo:\n  name: c\n  severity: info\ntcp:\n  - host:\n      - \"{{Host}}:{{Port}}\"\n",
+      "read_only": true,
+      "own_target": true
+    },
+    {
+      "name": "ssl_default_address",
+      "template": "id: c\ninfo:\n  name: c\n  severity: info\nssl:\n  - address: \"{{Host}}:{{Port}}\"\n",
+      "read_only": true,
+      "own_target": true
+    },
+    {
+      "name": "dns_fqdn",
+      "template": "id: c\ninfo:\n  name: c\n  severity: info\ndns:\n  - name: \"{{FQDN}}\"\n    type: A\n",
+      "read_only": true,
+      "own_target": true
+    },
+    {
+      "name": "same_host_redirects",
+      "template": "id: c\ninfo:\n  name: c\n  severity: info\nhttp:\n  - method: GET\n    host-redirects: true\n    max-redirects: 2\n    path: [\"{{BaseURL}}/\"]\n",
+      "read_only": true,
+      "own_target": true
+    },
+    {
+      "name": "network_literal_port",
+      "template": "id: c\ninfo:\n  name: c\n  severity: info\nnetwork:\n  - host:\n      - \"{{Hostname}}:22\"\n",
+      "read_only": true,
+      "own_target": false
+    },
+    {
+      "name": "network_port_key",
+      "template": "id: c\ninfo:\n  name: c\n  severity: info\nnetwork:\n  - host:\n      - \"{{Hostname}}\"\n    port: 22\n",
+      "read_only": true,
+      "own_target": false
+    },
+    {
+      "name": "post_method",
+      "template": "id: c\ninfo:\n  name: c\n  severity: info\nhttp:\n  - method: POST\n    path: [\"{{BaseURL}}/login\"]\n",
+      "read_only": false,
+      "own_target": false
+    },
+    {
+      "name": "raw_put",
+      "template": "id: c\ninfo:\n  name: c\n  severity: info\nhttp:\n  - raw:\n      - |\n        PUT /x HTTP/1.1\n        Host: {{Hostname}}\n",
+      "read_only": false,
+      "own_target": false
+    },
+    {
+      "name": "body",
+      "template": "id: c\ninfo:\n  name: c\n  severity: info\nhttp:\n  - method: GET\n    body: \"a=b\"\n    path: [\"{{BaseURL}}/\"]\n",
+      "read_only": false,
+      "own_target": false
+    },
+    {
+      "name": "payloads",
+      "template": "id: c\ninfo:\n  name: c\n  severity: info\nhttp:\n  - method: GET\n    path: [\"{{BaseURL}}/{{p}}\"]\n    payloads:\n      p: [\"a\", \"b\"]\n",
+      "read_only": false,
+      "own_target": false
+    },
+    {
+      "name": "fuzzing",
+      "template": "id: c\ninfo:\n  name: c\n  severity: info\nhttp:\n  - method: GET\n    path: [\"{{BaseURL}}/\"]\n    fuzzing:\n      - part: query\n",
+      "read_only": false,
+      "own_target": false
+    },
+    {
+      "name": "out_of_band",
+      "template": "id: c\ninfo:\n  name: c\n  severity: info\nhttp:\n  - method: GET\n    path: [\"{{BaseURL}}/?u={{interactsh-url}}\"]\n",
+      "read_only": false,
+      "own_target": false
+    },
+    {
+      "name": "code_protocol",
+      "template": "id: c\ninfo:\n  name: c\n  severity: info\ncode:\n  - engine: [sh]\n    source: id\n",
+      "read_only": false,
+      "own_target": false
+    },
+    {
+      "name": "javascript_protocol",
+      "template": "id: c\ninfo:\n  name: c\n  severity: info\njavascript:\n  - code: \"1\"\n",
+      "read_only": false,
+      "own_target": false
+    },
+    {
+      "name": "headless_protocol",
+      "template": "id: c\ninfo:\n  name: c\n  severity: info\nheadless:\n  - steps: []\n",
+      "read_only": false,
+      "own_target": false
+    },
+    {
+      "name": "file_protocol",
+      "template": "id: c\ninfo:\n  name: c\n  severity: info\nfile:\n  - extensions: [all]\n",
+      "read_only": false,
+      "own_target": false
+    },
+    {
+      "name": "workflows",
+      "template": "id: c\ninfo:\n  name: c\n  severity: info\nworkflows:\n  - template: x.yaml\n",
+      "read_only": false,
+      "own_target": false
+    },
+    {
+      "name": "flow",
+      "template": "id: c\ninfo:\n  name: c\n  severity: info\nflow: http(1)\nhttp:\n  - method: GET\n    path:\n      - \"{{BaseURL}}/x\"\n    matchers:\n      - type: word\n        words: [\"marker-1.2.3\"]\n",
+      "read_only": false,
+      "own_target": false
+    },
+    {
+      "name": "absolute_url",
+      "template": "id: c\ninfo:\n  name: c\n  severity: info\nhttp:\n  - method: GET\n    path: [\"http://other.example.com/x\"]\n",
+      "read_only": false,
+      "own_target": false
+    },
+    {
+      "name": "base_url_then_host",
+      "template": "id: c\ninfo:\n  name: c\n  severity: info\nhttp:\n  - method: GET\n    path: [\"{{BaseURL}}@other.example.com/\"]\n",
+      "read_only": false,
+      "own_target": false
+    },
+    {
+      "name": "raw_absolute_url",
+      "template": "id: c\ninfo:\n  name: c\n  severity: info\nhttp:\n  - raw:\n      - |\n        GET http://other.example.com/ HTTP/1.1\n        Host: {{Hostname}}\n",
+      "read_only": false,
+      "own_target": false
+    },
+    {
+      "name": "raw_other_host_header",
+      "template": "id: c\ninfo:\n  name: c\n  severity: info\nhttp:\n  - raw:\n      - |\n        GET / HTTP/1.1\n        Host: other.example.com\n",
+      "read_only": false,
+      "own_target": false
+    },
+    {
+      "name": "network_other_host",
+      "template": "id: c\ninfo:\n  name: c\n  severity: info\nnetwork:\n  - host:\n      - \"other.example.com:22\"\n",
+      "read_only": false,
+      "own_target": false
+    },
+    {
+      "name": "network_sends_data",
+      "template": "id: c\ninfo:\n  name: c\n  severity: info\nnetwork:\n  - host:\n      - \"{{Hostname}}\"\n    inputs:\n      - data: \"HELO\\r\\n\"\n",
+      "read_only": false,
+      "own_target": false
+    },
+    {
+      "name": "ssl_other_address",
+      "template": "id: c\ninfo:\n  name: c\n  severity: info\nssl:\n  - address: \"other.example.com:443\"\n",
+      "read_only": false,
+      "own_target": false
+    },
+    {
+      "name": "dns_other_name",
+      "template": "id: c\ninfo:\n  name: c\n  severity: info\ndns:\n  - name: \"other.example.com\"\n",
+      "read_only": false,
+      "own_target": false
+    },
+    {
+      "name": "redirects_off_host",
+      "template": "id: c\ninfo:\n  name: c\n  severity: info\nhttp:\n  - method: GET\n    redirects: true\n    path: [\"{{BaseURL}}/\"]\n",
+      "read_only": false,
+      "own_target": false
+    },
+    {
+      "name": "variables_override_target",
+      "template": "id: c\ninfo:\n  name: c\n  severity: info\nvariables:\n  BaseURL: \"http://other.example.com\"\nhttp:\n  - method: GET\n    path:\n      - \"{{BaseURL}}/x\"\n    matchers:\n      - type: word\n        words: [\"marker-1.2.3\"]\n",
+      "read_only": false,
+      "own_target": false
+    },
+    {
+      "name": "unknown_variable",
+      "template": "id: c\ninfo:\n  name: c\n  severity: info\nhttp:\n  - method: GET\n    path: [\"{{BaseURL}}/{{secret}}\"]\n",
+      "read_only": false,
+      "own_target": false
+    },
+    {
+      "name": "unknown_top_key",
+      "template": "id: c\ninfo:\n  name: c\n  severity: info\npre-condition: x\nhttp:\n  - method: GET\n    path:\n      - \"{{BaseURL}}/x\"\n    matchers:\n      - type: word\n        words: [\"marker-1.2.3\"]\n",
+      "read_only": false,
+      "own_target": false
+    },
+    {
+      "name": "no_protocol",
+      "template": "id: c\ninfo:\n  name: c\n  severity: info\n",
+      "read_only": false,
+      "own_target": false
+    },
+    {
+      "name": "anchor_alias",
+      "template": "id: c\ninfo:\n  name: c\n  severity: info\nhttp:\n  - method: GET\n    path: &p [\"{{BaseURL}}/\"]\n  - method: GET\n    path: *p\n",
+      "read_only": false,
+      "own_target": false
+    },
+    {
+      "name": "not_yaml",
+      "template": "id: [unclosed\n",
+      "read_only": false,
+      "own_target": false
+    },
+    {
+      "name": "not_a_mapping",
+      "template": "- a\n- b\n",
+      "read_only": false,
+      "own_target": false
+    },
+    {
+      "name": "too_many_requests",
+      "template": "id: c\ninfo:\n  name: c\n  severity: info\nhttp:\n  - method: GET\n    path: [\"{{BaseURL}}/1\", \"{{BaseURL}}/2\", \"{{BaseURL}}/3\", \"{{BaseURL}}/4\", \"{{BaseURL}}/5\", \"{{BaseURL}}/6\", \"{{BaseURL}}/7\"]\n",
+      "read_only": false,
+      "own_target": false
+    },
+    {
+      "name": "cookie_reuse",
+      "template": "id: c\ninfo:\n  name: c\n  severity: info\nhttp:\n  - method: GET\n    cookie-reuse: true\n    path: [\"{{BaseURL}}/\"]\n",
+      "read_only": false,
+      "own_target": false
+    },
+    {
+      "name": "unsafe",
+      "template": "id: c\ninfo:\n  name: c\n  severity: info\nhttp:\n  - unsafe: true\n    raw:\n      - |\n        GET / HTTP/1.1\n        Host: {{Hostname}}\n",
+      "read_only": false,
+      "own_target": false
+    },
+    {
+      "name": "malformed_http",
+      "template": "id: c\ninfo:\n  name: c\n  severity: info\nhttp: \"GET /\"\n",
+      "read_only": false,
+      "own_target": false
+    }
+  ]
+}
