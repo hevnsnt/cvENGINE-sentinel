@@ -157,7 +157,11 @@ def nmap_pass_flags(ports=None):
 # the Sentinel has always used. naabu's come from a measured full sweep: 65,535 SYN probes at 1000 per second took 138 s on one loopback
 # host (proofs/scan3-lab/naabu-live.txt), so one host gets 150 s and a task of more than 24 hosts is split (review H5). The Sentinel and the
 # server both read a task's limit here, so neither gives up a task the other is still running (review M7).
-TASK_LIMITS = {'nmap': (600, 90, 3600), 'naabu': (900, 150, 3600)}
+# (smallest, per host, largest) seconds. The nuclei kinds end 60 seconds before the server stops waiting for them (agentapi.sentinel_dispatch: COMPLETION_CEILING
+# plus PER_TARGET_SECONDS for each target beyond the first), so what a run found reaches the server instead of arriving after it gave up. Before, the daemon
+# passed no limit and every nuclei run could take 3600 s: 13 nuclei_targeted results in two days on the VPS came back after the server had stopped waiting.
+TASK_LIMITS = {'nmap': (600, 90, 3600), 'naabu': (900, 150, 3600),
+               'nuclei_light': (840, 20, 3600), 'nuclei_targeted': (1740, 30, 3600), 'nuclei_deep': (3540, 60, 7200)}
 NAABU_MAX_SECONDS = TASK_LIMITS['naabu'][2]
 
 
