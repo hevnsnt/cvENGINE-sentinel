@@ -20,7 +20,7 @@ from urllib.parse import urljoin, urlsplit
 
 from cvengine_scanner import context as masked_context
 
-KINGFISHER_VERSION = '2.16.0'  # the Dockerfile pin (ARG KINGFISHER_VERSION); a test holds the two together
+KINGFISHER_VERSION = '2.18.1'  # the Dockerfile pin (ARG KINGFISHER_VERSION); a test holds the two together
 WALL_SECONDS = 300
 MAX_REPORT_BYTES = 16 * 1024 * 1024
 MAX_FINDINGS = 500
@@ -290,7 +290,7 @@ def exit_ok(code):
 
 
 def version_of(text):
-    """The version ``kingfisher --version`` prints (``kingfisher 2.16.0``), or ``''``."""
+    """The version ``kingfisher --version`` prints (``kingfisher 2.18.1``), or ``''``."""
     found = re.search(r'(\d+\.\d+\.\d+)', text or '')
     return found.group(1) if found else ''
 

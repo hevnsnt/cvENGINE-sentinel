@@ -12,13 +12,71 @@ on:
         description: "Commit of main to tag (a full SHA); empty tags the tip of main"
         required: false
         default: ""
+      tools_reviewed:
+        description: "A tool is behind its newest release and that was looked at and decided: tag anyway (needs the reason below)"
+        type: boolean
+        required: false
+        default: false
+      tools_reviewed_reason:
+        description: "Why tagging with a tool behind is right (required when tools_reviewed is ticked; recorded in the run summary)"
+        type: string
+        required: false
+        default: ""
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  tag:
+  # The release gate: every pinned tool is at its newest release (scripts/check_tool_versions.py), and a pin it cannot read or a lookup that fails counts
+  # as behind. Checked on the commit being tagged. The script exits 1 for "behind" and 2 for a crash: only "behind" can be overridden, and only with a reason.
+  tools:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.ref || 'main' }}
+      - name: Every pinned tool is at its newest release, or tools_reviewed was ticked with a reason
+        env:
+          REVIEWED: ${{ inputs.tools_reviewed }}
+          REASON: ${{ inputs.tools_reviewed_reason }}
+          TAG_REF: ${{ inputs.ref || 'main' }}
+          ACTOR: ${{ github.actor }}
+          GITHUB_TOKEN: ${{ github.token }}  # for api.github.com lookups: unauthenticated they are rate limited on shared runners
+        run: |
+          status=0
+          python3 scripts/check_tool_versions.py --fail-if-behind --github-warnings || status=$?
+          if [ "$status" -eq 0 ]; then
+            exit 0
+          fi
+          if [ "$status" -ne 1 ]; then
+            echo "::error::The tool check itself failed (exit $status, see the log above). That is not a tool being behind and cannot be overridden: fix the script or the runner."
+            exit "$status"
+          fi
+          if [ "$REVIEWED" = "true" ]; then
+            if [ -z "$(printf '%s' "$REASON" | tr -d '[:space:]')" ]; then
+              echo "::error::tools_reviewed needs tools_reviewed_reason: say why tagging with a tool behind its newest release is right."
+              exit 1
+            fi
+            {
+              echo "### Release with a tool behind its newest release (override)"
+              echo ""
+              echo "- Commit: $TAG_REF"
+              echo "- Run by: $ACTOR"
+              echo "- Reason: $REASON"
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning::A tool is behind its newest release; override recorded in the run summary (by $ACTOR)."
+            exit 0
+          fi
+          echo "::error::A pinned tool is behind its newest release, a pin is missing or a newest version could not be read (table above). Bump the pin or fix the lookup, or run again with tools_reviewed and a reason after deciding not to."
+          exit 1
+
+  tag:
+    needs: tools
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
