@@ -8,7 +8,7 @@ PyYAML==6.0.3  # the scanner library reads an AI-written check with it before ru
 # PostgreSQL is spoken directly, so no libpq).
 h11==0.16.0
 aardwolf==0.2.17
-Pillow>=13.0.0,<14
+Pillow==13.0.0
 redis==8.1.0
 # The browser of the web_screenshot kind (client/shot.py): Playwright drives the headless Chromium installed in the Dockerfile. The same pin the server's
 # web/requirements.txt carried while it took the screenshots itself.

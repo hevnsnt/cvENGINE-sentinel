@@ -18,7 +18,7 @@ RUN apt-get update -y && \
     rm -rf /var/lib/apt/lists/*
 # The build tools are the same pins as the client's venv below; yara-python and the other source packages build with them.
 RUN python3 -m venv /opt/bbot-venv && \
-    /opt/bbot-venv/bin/pip install --no-cache-dir pip==25.2 setuptools==80.9.0 wheel==0.45.1 && \
+    /opt/bbot-venv/bin/pip install --no-cache-dir pip==26.3 setuptools==84.2.1 wheel==0.48.0 && \
     /opt/bbot-venv/bin/pip install --no-cache-dir bbot==${BBOT_VERSION} tzdata==${TZDATA_VERSION} && \
     /opt/bbot-venv/bin/bbot --version
 
@@ -33,7 +33,7 @@ RUN apt-get update -y && \
     rm -rf /var/lib/apt/lists/*
 RUN python3 -m venv /opt/wheelvenv
 COPY requirements.txt /tmp/requirements.txt
-RUN /opt/wheelvenv/bin/pip install --no-cache-dir pip==25.2 setuptools==80.9.0 wheel==0.45.1 && \
+RUN /opt/wheelvenv/bin/pip install --no-cache-dir pip==26.3 setuptools==84.2.1 wheel==0.48.0 && \
     /opt/wheelvenv/bin/pip wheel --no-cache-dir -r /tmp/requirements.txt -w /wheels
 
 FROM ubuntu:26.04@sha256:6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c
@@ -63,9 +63,9 @@ ARG TESTSSL_SHA256=23bb53d50ae093b89631e9fff547c087f632bf35f7a3d7dc78dd4ffff56cd
 # Kingfisher (Apache-2.0, MongoDB; run as a separate program) finds secrets in the pages and scripts of the secrets_scan kind. The release tarball per
 # architecture, pinned by sha256 (its build attestation is verified in CI, .github/workflows/tests.yml); never the PyPI kingfisher-bin. The library's
 # cvengine_scanner/secrets.py KINGFISHER_VERSION is the same pin (a test holds them together), and so is the server's validation allow-list.
-ARG KINGFISHER_VERSION=2.16.0
-ARG KINGFISHER_SHA256_AMD64=97cdbe7706a722ea085d1e83a00a98b0e9432fc58b21c9a3e36f591b5c1446d7
-ARG KINGFISHER_SHA256_ARM64=fece052a018c127f664e96f76c1ad6be39fe3d4df71db91caaa462e92a99aed1
+ARG KINGFISHER_VERSION=2.18.1
+ARG KINGFISHER_SHA256_AMD64=8f29b5ba1818f13bccd0b079c798659cfd2eccf21998003c8aaf75f8a3794529
+ARG KINGFISHER_SHA256_ARM64=37a6341c9899693d6cf2ef18d54bf65395a8ad9b6c6152aea90f8626b4be9d8e
 # sshamble (BSD-2-Clause, runZero; run as a separate program) reads an SSH service's own handshake for the ssh_probe kind: the banner, host keys,
 # algorithms, offered authentication methods and the badkeys blocklist check. Release tarball per architecture, pinned by sha256. The library's
 # cvengine_scanner/probes/ssh_probe.py SSHAMBLE_VERSION is the same pin (a test holds them together). Only the host key check is ever run.
@@ -226,7 +226,7 @@ COPY requirements.txt /opt/sentinel/requirements.txt
 # library below without build isolation, so the build tools are these pins and nothing fetched at build time.
 # The client's own packages come from the wheels built in the first stage, and only from there (--no-index).
 COPY --from=wheels /wheels /tmp/wheels
-RUN pip install --no-cache-dir pip==25.2 setuptools==80.9.0 wheel==0.45.1 setuptools-scm==8.3.1 packaging==25.0 && \
+RUN pip install --no-cache-dir pip==26.3 setuptools==84.2.1 wheel==0.48.0 setuptools-scm==10.3.4 packaging==26.3 && \
     pip install --no-cache-dir --no-index --find-links /tmp/wheels -r /opt/sentinel/requirements.txt && \
     rm -rf /tmp/wheels
 

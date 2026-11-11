@@ -45,6 +45,8 @@
   its server names the same hash and mode for that task when asked separately (`GET sentinel/tasks/<id>/check`), the template passes the server's
   read-only rules (`cvengine_scanner.checks`, one shared test corpus) and it reaches only the task's own target and port (no literal port, no `port`
   key). A result line for a host the task did not name is never a hit, and the result echoes the hash it ran. The image gains PyYAML 6.0.3.
+- Kingfisher 2.18.1 (was 2.16.0): the Dockerfile pin and both checksums (from the release's own files, build attestation verified), the library constant and the README row.
+- **The image's tools are checked against their newest releases.** `scripts/check_tool_versions.py` reads every pin (the Dockerfile versions and base image digest, `requirements.txt`, the pip bootstrap pins, the Greenbone image digests) and prints each one beside the newest upstream release. A weekly run keeps one issue open while something is behind, every pull request gets a warning, and *Tag a release* refuses to tag while a tool is behind or a lookup fails (`--fail-if-behind`).
 - A durable result spool (`client/spool.py`): a result cvENGINE does not take (an update, a restart, an outage) is written to disk (0600, atomic) and delivered oldest
   first, with a capped backoff, for up to 6 hours (`CVENGINE_SENTINEL_SPOOL_HOURS`, `0` = off; size limit `CVENGINE_SENTINEL_SPOOL_MAX_MB`) instead of being released after
   5 tries in 2 minutes. It is delivered before the first heartbeat after a reconnect or a start, a held result's task still counts as running in the heartbeat, and the

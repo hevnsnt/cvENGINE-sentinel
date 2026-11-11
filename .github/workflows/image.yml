@@ -93,6 +93,19 @@ jobs:
           assert {'nmap_full', 'nmap_verify', 'node2shell', 'rdp_shot', 'db_probe', 'path_probe', 'nuclei_validate'} <= set(tools.RUNNERS) & set(config.CAPABILITIES)
           print('contract 3 kinds ready')"
           docker run --rm --entrypoint sh cvengine-sentinel-local:ci -c '! command -v rustc && ! command -v cargo && ! ls /usr/include/python3*/Python.h 2>/dev/null'
+      - name: The scanner library is installed and reports the version its build tools derive (setuptools-scm is its build backend)
+        # The build context has no git tag, so setuptools-scm must fall back to pyproject.toml's fallback_version. A bump of setuptools or setuptools-scm
+        # that changed how the version is derived (or broke the build without failing it) shows here.
+        run: |
+          expected="$(grep -m1 '^fallback_version' pyproject.toml | cut -d'"' -f2)"
+          test -n "$expected"
+          docker run --rm --entrypoint python3 cvengine-sentinel-local:ci -c "
+          from importlib import metadata
+          import cvengine_scanner
+          installed = metadata.version('cvengine-scanner')
+          print('cvengine-scanner', installed)
+          assert installed == '$expected', (installed, '$expected')
+          assert cvengine_scanner.__version__ == '$expected', cvengine_scanner.__version__"
       - name: Kingfisher runs as the image's unprivileged user, with its notices, and the client declares secrets_scan
         run: |
           docker run --rm --entrypoint kingfisher cvengine-sentinel-local:ci --version
