@@ -57,7 +57,7 @@ services:
     mem_limit: 2g
     # Chromium's sandbox for the web_screenshot kind (client/shot.py) needs user namespaces, which Docker's default seccomp profile refuses. This is
     # Playwright's own profile for running Chromium with its sandbox in Docker (Docker's default plus clone, setns and unshare), vendored unchanged from
-    # microsoft/playwright v1.64.1 (SHA-256 cc3e61cabda6bbc1e53e54d27ba4d55a9d3be829b6dd1a596f4a7b31b1cc7849). Without it the sandbox cannot start and this
+    # microsoft/playwright v1.65.0 (unchanged since v1.64.1; SHA-256 cc3e61cabda6bbc1e53e54d27ba4d55a9d3be829b6dd1a596f4a7b31b1cc7849). Without it the sandbox cannot start and this
     # Sentinel takes no screenshot (its log and the result say why); every other kind is unaffected. A host that refuses unprivileged user namespaces
     # (a kernel setting or an AppArmor rule) needs that allowed as well. `docker compose up -d` recreates the container, so an update applies it.
     security_opt:
