@@ -68,9 +68,13 @@ class Env(unittest.TestCase):
         patch.start()
         self.addCleanup(patch.stop)
         self.procs = []
+        self.threads = []
         self.addCleanup(self.reap)
 
     def reap(self):
+        # the fake tools' process groups first, then the task threads that waited on them: a task thread left running writes into this test's
+        # directory and logs while the next test (or the interpreter's shutdown) runs, which failed the directory clean-up and aborted
+        # the interpreter at exit ("could not acquire lock for <stderr> at interpreter shutdown, possibly due to daemon threads")
         for proc in self.procs:
             try:
                 os.killpg(proc.pid, signal.SIGKILL)
@@ -80,6 +84,14 @@ class Env(unittest.TestCase):
                 proc.wait(timeout=2)
             except Exception:  # noqa: BLE001
                 pass
+        for state, thread in self.threads:
+            for pgid in list(state.get('pgids') or ()):
+                try:
+                    os.killpg(pgid, signal.SIGKILL)
+                except OSError:
+                    pass
+            thread.join(10)
+            self.assertFalse(thread.is_alive(), 'a task thread outlived its test')
 
     def run_task(self, d, kind, argv, task_id=7, target=None, secret=None):
         """Run a fake tool (a real process group) as a real task thread of ``d``; returns its state and the thread."""
@@ -92,6 +104,7 @@ class Env(unittest.TestCase):
             d._in_flight[task_id] = state
         thread = threading.Thread(target=d._run_task, args=({'id': task_id, 'kind': kind, 'target': target or {'targets': ['example.com']}}, state), daemon=True)
         state['thread'] = thread
+        self.threads.append((state, thread))
         thread.start()
         self.assertTrue(wait_until(lambda: state['pgids']), 'the tool never started')
         return state, thread
