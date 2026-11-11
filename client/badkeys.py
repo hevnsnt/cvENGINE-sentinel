@@ -222,9 +222,12 @@ def _prune(root, keep):
         entries = [n for n in os.listdir(root) if n.startswith('data-') and os.path.isdir(os.path.join(root, n))]
     except OSError:
         return
-    entries.sort(key=lambda n: os.path.getmtime(os.path.join(root, n)), reverse=True)
+    # The directory just made current is always kept, then the newest of the others fill the remaining places. Ranking all of them by file
+    # time alone let two directories made within one clock tick push it out of the top places, leaving one more than KEEP_VERSIONS behind.
+    others = sorted((n for n in entries if n != keep), key=lambda n: (os.path.getmtime(os.path.join(root, n)), n), reverse=True)
+    kept = set(others[:max(0, KEEP_VERSIONS - 1)]) | {keep}
     for name in entries:
-        if name != keep and name not in entries[:KEEP_VERSIONS]:
+        if name not in kept:
             shutil.rmtree(os.path.join(root, name), ignore_errors=True)
 
 
