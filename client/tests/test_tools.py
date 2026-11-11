@@ -1215,3 +1215,94 @@ class SignedInEvidenceTests(unittest.TestCase):
         self.assertEqual(result['outcome'], 'done')
         self.assertEqual(len(result['findings']), 1)
         self.assertNotIn('request', result['findings'][0])
+
+
+SONIC = 'WARNING: sonic/ast only supports (go1.17~1.26 and amd64 CPU) or (go1.20~1.26 and arm64 CPU), but your environment is not suitable and will fallback to encoding/json\n'
+FINDING = json.dumps({'template-id': 'tech-detect', 'host': 'www.example.test', 'matched-at': 'https://www.example.test/', 'info': {'name': 'n', 'severity': 'info'}})
+
+
+def _exit_error(stderr, partial=''):
+    exc = tools.ToolExitError('nuclei exited with status 1: ' + stderr[:200])
+    exc.stderr, exc.partial = stderr, partial
+    return exc
+
+
+class NucleiToolReviewTests(unittest.TestCase):
+    """The production review of 11/10: what nuclei's two failure modes on the VPS now return."""
+
+    def test_a_tag_filter_no_template_matches_is_nothing_to_check_not_a_failure(self):
+        """The exact message of 29 failed tasks (tags ``haproxy`` at severity ``info``)."""
+        error = _exit_error(SONIC + '[FTL] Could not run nuclei: no templates provided for scan\n')
+        with mock.patch('client.tools._run', side_effect=error):
+            result = tools.run_nuclei(['www.example.test'], tags=['haproxy'], severities=['info'])
+        self.assertEqual((result['findings'], result['unreachable'], result['no_templates']), ([], [], True))
+
+    def test_no_templates_without_any_filter_is_still_an_error(self):
+        """With no filter, an empty set means the templates are missing from this Sentinel: that is broken, and must not read as a clean host."""
+        error = _exit_error('[FTL] Could not run nuclei: no templates provided for scan\n')
+        with mock.patch('client.tools._run', side_effect=error):
+            with self.assertRaises(tools.ToolExitError):
+                tools.run_nuclei(['www.example.test'])
+
+    def test_any_other_exit_is_still_an_error(self):
+        with mock.patch('client.tools._run', side_effect=_exit_error(SONIC + '[FTL] Could not create runner: bad config\n')):
+            with self.assertRaises(tools.ToolExitError):
+                tools.run_nuclei(['www.example.test'], tags=['haproxy'])
+
+    def test_a_run_out_of_time_keeps_its_findings_and_leaves_every_target_due(self):
+        exc = subprocess.TimeoutExpired(['nuclei'], 3600)
+        exc.partial = FINDING + '\n'
+        with mock.patch('client.tools._run', side_effect=exc):
+            result = tools.run_nuclei(['www.example.test', 'api.example.test'], timeout=3600)
+        self.assertEqual(len(result['findings']), 1)
+        self.assertEqual(result['unreachable'], ['www.example.test', 'api.example.test'])  # none is recorded as scanned clean
+        self.assertTrue(result['incomplete'])
+
+    def test_the_failure_message_says_the_error_not_the_json_library_warning(self):
+        proc_err = SONIC + '[FTL] Could not run nuclei: something specific\n'
+        script = f"import sys; sys.stderr.write({proc_err!r}); sys.exit(1)"
+        with self.assertRaises(tools.ToolExitError) as caught:
+            tools._run([sys.executable, '-c', script], 30)
+        self.assertIn('something specific', str(caught.exception))
+        self.assertNotIn('sonic', str(caught.exception))
+        self.assertIn('sonic', caught.exception.stderr)  # kept whole for the caller
+
+
+def _aborted(text):
+    return {'report': {'scan_aborted': text}, 'returncode': 4, 'stderr_tail': ''}
+
+
+class WpscanToolReviewTests(unittest.TestCase):
+    def test_without_a_token_the_scan_does_not_ask_for_vulnerable_plugins_and_themes(self):
+        self.assertIn('p,t,cb,dbe,u1-5', tools.wpscan_args_for(tools.WPSCAN_ARGS, ''))
+        self.assertEqual(tools.wpscan_args_for(tools.WPSCAN_ARGS, 'tok'), list(tools.WPSCAN_ARGS))
+        self.assertEqual(tools.wpscan_args_for(tools.WPSCAN_THOROUGH_ARGS, ''), list(tools.WPSCAN_THOROUGH_ARGS))  # ap,at,tt need no token
+
+    def test_a_redirect_on_the_same_site_is_followed_once(self):
+        msg = 'The URL supplied redirects to https://example.test/. Use the --follow-redirect option to automatically scan the redirected URL'
+        self.assertEqual(tools.same_site_redirect('https://www.example.test', _aborted(msg)), 'https://example.test/')
+        self.assertEqual(tools.same_site_redirect('https://example.test', _aborted(msg.replace('https://example.test/', 'https://example.test/career/'))),
+                         'https://example.test/career/')
+
+    def test_a_redirect_off_the_site_or_to_itself_is_not_followed(self):
+        off = 'The URL supplied redirects to https://login.other.test/. Use the --follow-redirect option'
+        self.assertIsNone(tools.same_site_redirect('https://www.example.test', _aborted(off)))
+        sub = 'The URL supplied redirects to https://shop.example.test/. Use the --follow-redirect option'
+        self.assertIsNone(tools.same_site_redirect('https://www.example.test', _aborted(sub)))  # another host under the domain is another site
+        self.assertIsNone(tools.same_site_redirect('https://example.test/', _aborted('The URL supplied redirects to https://example.test/. Use')))
+        self.assertIsNone(tools.same_site_redirect('https://example.test', {'report': {'scan_aborted': 'The remote website is up, but does not seem to be running WordPress.'}, 'returncode': 4}))
+        self.assertIsNone(tools.same_site_redirect('https://example.test', {'report': {}, 'returncode': 0}))
+
+    def test_the_run_follows_the_redirect_and_returns_the_second_scan(self):
+        calls = []
+
+        def fake(url, token, timeout, register, args):
+            calls.append((url, args))
+            if len(calls) == 1:
+                return _aborted('The URL supplied redirects to https://example.test/. Use the --follow-redirect option')
+            return {'report': {'version': {'number': '6.4'}}, 'returncode': 0, 'stderr_tail': ''}
+        with mock.patch('client.tools._wpscan', side_effect=fake):
+            out = tools.run_wpscan('https://www.example.test', '')
+        self.assertEqual([c[0] for c in calls], ['https://www.example.test', 'https://example.test/'])
+        self.assertEqual(out['returncode'], 0)
+        self.assertTrue(all('p,t,cb,dbe,u1-5' in c[1] for c in calls))

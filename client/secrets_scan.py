@@ -88,7 +88,10 @@ def _address_of(host, resolver):
         return host
     except ValueError:
         pass
-    addresses = sorted({info[4][0].split('%')[0] for info in resolver(host, None)})
+    try:
+        addresses = sorted({info[4][0].split('%')[0] for info in resolver(host, None)})
+    except OSError as exc:  # socket.gaierror: no address for the name. Before, it ended the whole task: 22 batches of up to 25 hosts on the VPS (11/8 to 11/10)
+        raise scope.ScopeError(f'the name does not resolve ({exc.__class__.__name__})') from None
     if not addresses:
         raise scope.ScopeError('the name does not resolve')
     for address in addresses:
@@ -232,6 +235,9 @@ def run(target, register=None, rules=None, fetcher=fetch, resolver=None, sleep=t
                 continue
             try:
                 address = _address_of(host, resolver)
+            except OSError as exc:  # a resolver failure inside the scope check itself: this host is skipped, the rest of the batch is read
+                logger.info('secrets scan: %s skipped, its name did not resolve (%s)', host[:100], exc.__class__.__name__)
+                continue
             except scope.ScopeError as exc:
                 logger.info('secrets scan: %s refused (%s)', host[:100], exc)
                 continue
