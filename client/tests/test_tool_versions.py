@@ -26,6 +26,8 @@ ARG NUCLEI_VERSION=3.11.1
 ARG NAABU_VERSION=2.7.0
 ARG WPSCAN_VERSION=4.2.0
 ARG WAFW00F_VERSION=2.4.2
+ARG PYSOCKS_VERSION=1.7.1
+ARG TZDATA_VERSION=2025.2
 ARG TESTSSL_VERSION=3.2.5
 ARG BBOT_VERSION=3.0.2
 ARG KINGFISHER_VERSION=2.16.0
@@ -36,7 +38,7 @@ ARG KINGFISHER_SHA256_AMD64=%s
 RUN pip install --no-cache-dir pip==25.2 setuptools==80.9.0 wheel==0.45.1
 ''' % (OLD_DIGEST, OLD_DIGEST, 'c' * 64)
 REQUIREMENTS = '''xmltodict==1.0.4  # a comment
-Pillow>=13.0.0,<14
+Pillow==13.0.0
 # playwright==0.0.1 is only a comment
 playwright==1.65.0
 '''
@@ -47,7 +49,7 @@ COMPOSE = '''services:
     image: "registry.community.greenbone.net/community/vulnerability-tests:community"
 ''' % OLD_DIGEST
 
-PYPI = {'xmltodict': '1.0.4', 'playwright': '1.65.0', 'pip': '25.2', 'setuptools': '80.9.0', 'wheel': '0.45.1', 'wafw00f': '2.4.2',
+PYPI = {'PySocks': '1.7.1', 'tzdata': '2025.2', 'Pillow': '13.0.0', 'xmltodict': '1.0.4', 'playwright': '1.65.0', 'pip': '25.2', 'setuptools': '80.9.0', 'wheel': '0.45.1', 'wafw00f': '2.4.2',
         'bbot': '3.0.2'}
 GO = {'nuclei/v3': 'v3.11.1', 'naabu/v2': 'v2.7.0'}
 
@@ -129,7 +131,8 @@ class ComparisonTests(unittest.TestCase):
         for tool in ('go (toolchain)', 'nmap', 'nuclei', 'naabu', 'wpscan', 'wafw00f', 'testssl.sh', 'bbot', 'kingfisher', 'sshamble',
                      'nuclei-templates', 'pip', 'setuptools', 'wheel', 'xmltodict', 'playwright'):
             self.assertIn(tool, rows)
-        self.assertNotIn('Pillow', rows)  # a range, not a pin
+        for tool in ('pysocks', 'tzdata', 'pillow'):
+            self.assertIn(tool, rows)
         self.assertEqual(rows['kingfisher']['pinned'], '2.16.0')
         self.assertEqual(rows['nuclei-templates']['pinned'], '10.5.1')
 
@@ -166,7 +169,33 @@ class ComparisonTests(unittest.TestCase):
         with Checkout() as c:
             rows = rows_of(answers(**{'versionhistory': {'versions': [{'version': '159.0.1.2'}, {'version': '158.0.8127.18'}]}}), c)
         row = rows['chromium (Playwright build)']
-        self.assertEqual((row['behind'], row['ahead'], row['advisory']), (False, True, True))
+        self.assertEqual((row['behind'], row['behind_advisory'], row['advisory']), (False, True, True))
+
+    def test_pysocks_and_tzdata_are_required_pins(self):
+        """Delete or rename either ARG and the row must not just vanish: the gate fails (S2)."""
+        for arg in ('PYSOCKS_VERSION', 'TZDATA_VERSION'):
+            self.assertTrue(tools.DOCKERFILE_ARGS[arg][3], arg)
+            with Checkout() as c:
+                c.write('Dockerfile', re.sub(rf'(?m)^ARG {arg}=\S+\n', '', DOCKERFILE))
+                rows = tools.collect(getter(answers()), root=c.root)
+            missing = [r['tool'] for r in tools.failing(rows) if r['pinned'] is None]
+            self.assertEqual(missing, [{'PYSOCKS_VERSION': 'pysocks', 'TZDATA_VERSION': 'tzdata'}[arg]])
+
+    def test_an_advisory_row_that_is_older_than_the_newest_says_behind_not_newer(self):
+        row = tools.row('chromium', '156.0.8078.4', '157.0.8103.50', True)
+        self.assertTrue(row['behind_advisory'])
+        self.assertFalse(row['behind'])
+        self.assertIn('behind (advisory)', tools.report([row]))
+        self.assertNotIn('newer', tools.report([row]))
+        self.assertIn('::warning::chromium: 156.0.8078.4 is pinned, 157.0.8103.50 is the newest release.', tools.warnings([row]))
+        self.assertEqual(tools.failing([row]), [])
+
+    def test_a_crash_exits_2_so_a_release_override_cannot_cover_it(self):
+        """Python exits 1 on an uncaught error, the same as 'behind': the script turns a crash into 2 (S1)."""
+        with mock.patch.object(tools, 'collect', side_effect=RuntimeError('boom')), redirect_stdout(io.StringIO()):
+            with mock.patch('sys.stderr', io.StringIO()), self.assertRaises(SystemExit) as caught:
+                tools.run(['--fail-if-behind'])
+        self.assertEqual(caught.exception.code, 2)
 
 
 class FailClosedTests(unittest.TestCase):
@@ -262,6 +291,13 @@ class RealCheckoutTests(unittest.TestCase):
         rows = {r['tool'] for r in self.rows()}
         self.assertEqual([n for n in names if n.lower() not in rows], [])
 
+    def test_every_requirement_with_a_version_is_an_exact_pin_the_checker_reads(self):
+        """A range (Pillow>=13,<14) would never be compared: every package line must be name==version (S3)."""
+        lines = [l.split('#')[0].strip() for l in (ROOT / 'requirements.txt').read_text().splitlines()]
+        lines = [l for l in lines if l]
+        self.assertEqual([l for l in lines if '==' not in l], [])
+        self.assertIn('pillow', {r['tool'] for r in self.rows()})
+
     def test_the_urls_are_fixed_https_hosts(self):
         for row in self.rows():
             self.assertTrue(row['pinned'], row['tool'])
@@ -284,6 +320,46 @@ class WorkflowTests(unittest.TestCase):
         text = self.workflow('tag-release.yml')
         self.assertIn('scripts/check_tool_versions.py --fail-if-behind', text)
         self.assertRegex(text, r'(?m)^  tag:\n    needs: tools$')
+
+
+class WorkflowHardeningTests(unittest.TestCase):
+    def workflow(self, name):
+        return (ROOT / '.github' / 'workflows' / name).read_text()
+
+    def job(self, text, name):
+        return re.split(rf'(?m)^  {name}:\n', text, maxsplit=1)[1].split('\n\n  ')[0]
+
+    def test_a_release_override_needs_a_reason_that_is_recorded(self):
+        text = self.workflow('tag-release.yml')
+        self.assertRegex(text, r'(?m)^      tools_reviewed_reason:')
+        gate = self.job(text, 'tools')
+        self.assertIn('REASON: ${{ inputs.tools_reviewed_reason }}', gate)
+        self.assertRegex(gate, r'(?s)-z .*REASON.*::error::')  # an empty reason fails
+        self.assertIn('GITHUB_STEP_SUMMARY', gate)
+        self.assertIn('github.actor', gate)
+        self.assertIn('inputs.ref', gate)
+
+    def test_a_crash_of_the_check_is_not_overridable(self):
+        gate = self.job(self.workflow('tag-release.yml'), 'tools')
+        self.assertRegex(gate, r'status=\$\?')
+        self.assertRegex(gate, r'(?s)"\$status" -ne 1.*exit "\$status"')
+        self.assertLess(gate.index('-ne 1'), gate.index('REVIEWED" = "true"'))
+
+    def test_read_only_jobs_get_a_read_only_token(self):
+        gate = self.job(self.workflow('tag-release.yml'), 'tools')
+        self.assertRegex(gate, r'(?s)permissions:\n\s+contents: read')
+        self.assertRegex(self.job(self.workflow('tag-release.yml'), 'tag'), r'(?s)permissions:\n\s+contents: write')
+        releases = self.workflow('tool-releases.yml')
+        self.assertNotIn('issues: write', releases.split('\njobs:')[0])
+        self.assertRegex(self.job(releases, 'pull-request'), r'(?s)permissions:\n\s+contents: read\n')
+        self.assertNotIn('issues: write', self.job(releases, 'pull-request'))
+        self.assertIn('issues: write', self.job(releases, 'weekly'))
+
+    def test_the_weekly_issue_step_neither_duplicates_nor_files_an_empty_issue(self):
+        weekly = self.job(self.workflow('tool-releases.yml'), 'weekly')
+        self.assertNotIn('|| true', weekly)
+        self.assertIn('set -euo pipefail', weekly)
+        self.assertRegex(weekly, r'(?s)tee "\$RUNNER_TEMP/tools.md".*-ne 0')  # the first run's failure and a crash of the second stop the step
 
 
 if __name__ == '__main__':

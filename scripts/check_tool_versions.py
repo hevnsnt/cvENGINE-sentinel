@@ -8,7 +8,7 @@ test extra of pyproject.toml), the pip bootstrap pins in the Dockerfile, the Ubu
 docker-compose.yml. This reads all of them and compares each with its upstream (GitHub releases and tags, PyPI, proxy.golang.org, go.dev/dl,
 rubygems.org, nmap.org, Docker Hub, the Greenbone registry, Chrome's version history) and prints a table: tool, pinned, latest, state.
 
-Exit status is 0 whatever the answer, or 1 with --fail-if-behind when any tool is behind, a pin cannot be found in its file, a version ARG has no known
+Exit status is 0 whatever the answer, 2 when the script itself crashes, or 1 with --fail-if-behind when any tool is behind, a pin cannot be found in its file, a version ARG has no known
 upstream, or a newest version cannot be read (the gate fails closed: a renamed pin or an unreachable site must not pass a release; the weekly report,
 which runs without the flag, shows such a row as "unknown" and never calls it behind). --github-warnings adds one ``::warning::`` line per problem for
 the pull request job, which reports and never fails. The workflows are .github/workflows/tool-releases.yml (weekly, pull requests) and the release gate
@@ -23,6 +23,7 @@ import json
 import os
 import re
 import sys
+import traceback
 import urllib.request
 from pathlib import Path
 
@@ -130,10 +131,10 @@ DOCKERFILE_ARGS = {
     'NAABU_VERSION': ('naabu', GO_PROXY.format('github.com/projectdiscovery/naabu/v2'), latest_go_module, True, False),
     'WPSCAN_VERSION': ('wpscan', 'https://rubygems.org/api/v1/gems/wpscan.json', latest_rubygem, True, False),
     'WAFW00F_VERSION': ('wafw00f', PYPI.format('wafw00f'), latest_pypi, True, False),
-    'PYSOCKS_VERSION': ('pysocks', PYPI.format('PySocks'), latest_pypi, False, False),
+    'PYSOCKS_VERSION': ('pysocks', PYPI.format('PySocks'), latest_pypi, True, False),
     'TESTSSL_VERSION': ('testssl.sh', 'https://api.github.com/repos/testssl/testssl.sh/tags?per_page=30', latest_github_tag, True, False),
     'BBOT_VERSION': ('bbot', PYPI.format('bbot'), latest_pypi, True, False),
-    'TZDATA_VERSION': ('tzdata', PYPI.format('tzdata'), latest_pypi, False, False),
+    'TZDATA_VERSION': ('tzdata', PYPI.format('tzdata'), latest_pypi, True, False),
     'KINGFISHER_VERSION': ('kingfisher', GITHUB_LATEST.format('mongodb/kingfisher'), latest_github_release, True, False),
     'SSHAMBLE_VERSION': ('sshamble', GITHUB_LATEST.format('runZeroInc/sshamble'), latest_github_release, True, False),
     'NUCLEI_TEMPLATES_VERSION': ('nuclei-templates', GITHUB_LATEST.format('projectdiscovery/nuclei-templates'), latest_github_release, True, False),
@@ -158,7 +159,7 @@ def read(root, name):
 def row(name, have, latest, advisory=False):
     behind = bool(have and latest and version_key(have) < version_key(latest))
     if advisory:
-        return {'tool': name, 'pinned': have, 'latest': latest, 'behind': False, 'ahead': behind, 'advisory': True}
+        return {'tool': name, 'pinned': have, 'latest': latest, 'behind': False, 'behind_advisory': behind, 'advisory': True}
     return {'tool': name, 'pinned': have, 'latest': latest, 'behind': behind}
 
 
@@ -223,8 +224,8 @@ def collect(get=fetch, root=ROOT):
 # ----------------------------------------------------------------------------- output
 
 def state(r):
-    if r.get('ahead'):
-        return 'newer (warning only)'
+    if r.get('behind_advisory'):
+        return 'behind (advisory)'
     if r['behind']:
         return 'behind'
     return 'unknown' if r['pinned'] is None or r['latest'] is None else 'current'
@@ -239,7 +240,7 @@ def report(rows):
 def warnings(rows):
     lines = []
     for r in rows:
-        if r['behind'] or r.get('ahead'):
+        if r['behind'] or r.get('behind_advisory'):
             lines.append(f"::warning::{r['tool']}: {r['pinned']} is pinned, {r['latest']} is the newest release.")
         elif r['pinned'] is None:
             lines.append(f"::warning::{r['tool']}: its pin was not found in the repository.")
@@ -251,6 +252,18 @@ def warnings(rows):
 def failing(rows):
     """The rows the release gate refuses: behind, no pin found or no newest version (advisory rows never)."""
     return [r for r in rows if not r.get('advisory') and (r['behind'] or r['pinned'] is None or r['latest'] is None)]
+
+
+def run(argv=None):
+    """``main``, with a crash turned into exit status 2: Python exits 1 on an uncaught error, which is also the gate's answer "behind", and the release
+    workflow lets a reasoned override pass 1 but never a crash."""
+    try:
+        main(argv)
+    except SystemExit:
+        raise
+    except Exception:  # noqa: BLE001 - whatever went wrong, the gate must not read it as "behind"
+        traceback.print_exc()
+        sys.exit(2)
 
 
 def main(argv=None):
@@ -265,4 +278,4 @@ def main(argv=None):
 
 
 if __name__ == '__main__':
-    main()
+    run()
