@@ -17,6 +17,7 @@ back under ``{'outcome': 'done', **result}``.
 import ipaddress
 import json
 import logging
+import math
 import os
 import platform
 import re
@@ -28,6 +29,7 @@ import threading
 import time
 import xml.etree.ElementTree as ET
 
+from cvengine_scanner import flags
 from cvengine_scanner.flags import (DISCOVER_FLAGS, KERNEL_MARKERS, MAX_DISCOVER_ADDRESSES, MAX_DISCOVER_HOSTS, MAX_OPEN_PER_IP,  # noqa: F401
                                     MAX_PATH_TARGETS, MAX_TARGETS, MAX_TEMPLATE_BYTES, MAX_VERIFY_PORTS, NAABU_FLAGS, NMAP_FULL_FLAGS, TASK_LIMITS,
                                     nmap_pass_flags, task_seconds,
@@ -483,59 +485,137 @@ def nuclei_env():
 _NO_TEMPLATES = re.compile(r'no templates? (?:were )?(?:provided|found|loaded)', re.I)
 
 
-def run_nuclei(targets, tags=None, severities=None, timeout=3600, register=None, templates=None, secret_file=None):
+def _target_port(target):
+    """The port a nuclei target names (``host:port`` or ``[ipv6]:port``), or ``None`` for a bare host, an address or a URL."""
+    if '://' in target:
+        return None
+    bracketed = _BRACKETED.fullmatch(target)
+    if bracketed:
+        return int(bracketed.group(2))
+    if target.count(':') == 1:
+        return int(target.rsplit(':', 1)[1])
+    return None
+
+
+def _service_labels(services):
+    """The server's labels of a task's ``host:port`` targets, keyed as the targets are written (lower case); anything else is no label."""
+    if not isinstance(services, dict):
+        return {}
+    return {k.strip().lower(): v for k, v in services.items() if isinstance(k, str) and isinstance(v, str)}
+
+
+def _split_by_service(targets, services):
+    """``(web, service_runs, nothing)``: the targets that are web (a bare host, an address, a URL, a port that speaks http or one in no table), each
+    non-web ``host:port`` with its class, and the ones that receive nothing because nothing is known about what speaks there. A label this library does not know is
+    ``nothing`` too (``flags.nuclei_service_class``). A target the task does not label is read by its port, so an older server cannot send HTTP to port 22."""
+    labels = _service_labels(services)
+    web, runs, nothing = [], [], []
+    for target in targets:
+        port = _target_port(target)
+        klass = flags.NUCLEI_WEB if port is None else flags.nuclei_service_class(port, labels.get(target.lower()))
+        if klass == flags.NUCLEI_WEB:
+            web.append(target)
+        elif klass == flags.NUCLEI_UNKNOWN:
+            nothing.append(target)
+        else:
+            runs.append((target, klass))
+    return web, runs, nothing
+
+
+def run_nuclei(targets, tags=None, severities=None, timeout=3600, register=None, templates=None, secret_file=None, services=None, budget=None):
     """Host names are passed to nuclei as names, because each finding reports the host it was given. They were judged by scope (and by
     every address they resolved to) just before; nuclei resolves them again, so a name whose DNS answer changes in between is the one gap.
     ``templates`` is a directory of approved templates (the server's verified bundle, ``client.templates``): nuclei then runs exactly that set and
     nothing else; without it nuclei uses the templates baked into this image. ``secret_file`` is a signed-in run's nuclei secrets file
-    (``client.signed_in``): passed with ``-sf`` and ``-dr`` (no redirects, so the sign-in is never carried to wherever one leads), as the server does."""
+    (``client.signed_in``): passed with ``-sf`` and ``-dr`` (no redirects, so the sign-in is never carried to wherever one leads), as the server does.
+
+    A port only receives the templates of the protocol that speaks there. ``services`` is the server's label of each ``host:port`` (``web``, ``unknown``,
+    or a class of ``cvengine_scanner.flags.NUCLEI_SERVICES``: ssh, smtp, imap...). The web targets run together, without the raw tcp and javascript templates;
+    each other host:port runs on its own, one after another, with only the template types and tags of its protocol and the bound ``budget`` puts on one
+    service (``flags.nuclei_service_budget``: a task can lower it, never raise it). A host:port nothing is known about is sent nothing."""
     targets = validate_targets(targets, endpoint=True)
-    flags = nuclei_flags_for_budget(NUCLEI_FLAGS) + _proxy_args('nuclei', targets)
+    web, service_runs, nothing = _split_by_service(targets, services)
+    if nothing:
+        logger.info('nuclei: %d target(s) have no known service and receive no template: %s', len(nothing), ', '.join(nothing[:5]))
+    extra = _proxy_args('nuclei', targets)
     if secret_file is not None:
         if not isinstance(secret_file, str) or not os.path.isabs(secret_file) or not os.path.isfile(secret_file):
             raise TargetError('the signed-in run has no usable secrets file')
-        flags += ['-sf', secret_file, '-dr']
+        extra += ['-sf', secret_file, '-dr']
     if templates is not None:
         if not isinstance(templates, str) or not os.path.isabs(templates) or not os.path.isdir(templates):
             raise TargetError('the approved template directory is not usable')
-        flags += ['-t', templates]
+        extra += ['-t', templates]
     clean_tags = _clean_words(tags, _TAG)
     if tags and not clean_tags:  # a filter was asked for and none of it is usable: never fall back to every template
         raise TargetError('none of the nuclei tags this task names is usable')
-    if clean_tags:
-        flags += ['-tags', ','.join(clean_tags)]
     clean_severities = _clean_words(severities, _SEVERITY)
     if clean_severities:
-        flags += ['-severity', ','.join(clean_severities)]
+        extra += ['-severity', ','.join(clean_severities)]
     # the release a run used: the approved bundle is stored under its sha256 (client.templates.bundle_path), the baked set is the image's
     release = f'approved:{os.path.basename(os.path.normpath(templates))}' if templates is not None else f'image:{IMAGE_TEMPLATES_VERSION}'
+    deadline = time.monotonic() + timeout
+    passes = []  # (targets, argv flags, seconds this pass may take)
+    for target, klass in service_runs:  # each non-web service port by itself: the bound on one host:port is exact
+        service_tags = flags.nuclei_service_tags(klass, clean_tags)
+        if service_tags is None:
+            continue  # the task asked for nothing that speaks this protocol
+        spend = flags.nuclei_service_budget(budget)
+        passes.append(([target], nuclei_flags_for_budget(flags.nuclei_service_flags(klass, spend)) + extra + (['-tags', ','.join(service_tags)] if service_tags else []),
+                       spend['seconds']))
+    if web:
+        passes.append((web, nuclei_flags_for_budget(flags.nuclei_web_flags()) + extra + (['-tags', ','.join(clean_tags)] if clean_tags else []), None))
+    findings, unreachable, incomplete, covered_by_filter = [], [], False, []
+    for pass_targets, pass_flags, limit in passes:
+        left = deadline - time.monotonic()
+        seconds = max(1, math.ceil(left)) if limit is None else max(1, min(limit, math.ceil(left)))
+        if left <= 0:  # the task's own time is spent: what has not run stays due
+            unreachable += pass_targets
+            incomplete = True
+            continue
+        got = _nuclei_pass(pass_targets, pass_flags, seconds, register, secret_file, filtered=bool(clean_tags or clean_severities))
+        findings += got['findings']
+        unreachable += got['unreachable']
+        incomplete = incomplete or got['incomplete']
+        covered_by_filter.append(got['no_templates'])
+    if passes and all(covered_by_filter) and not findings and not incomplete:
+        # the filter this task asked for matches no template in this set: there is nothing to check on these targets, which is an answer, not a failure
+        return {'findings': [], 'templates_release': release, 'unreachable': [], 'no_templates': True}
+    out = {'findings': findings, 'templates_release': release, 'unreachable': [t for t in targets if t in set(unreachable)]}
+    if incomplete:
+        out['incomplete'] = True
+    return out
+
+
+def _nuclei_pass(targets, argv_flags, timeout, register, secret_file, filtered):
+    """One nuclei process over ``targets``: its findings, the targets it never reached, whether it ran out of time and whether its filter matched no
+    template. A non-zero exit is an error (``ToolExitError``), except the no-template answer of a filter."""
     path = _targets_file(targets)
     with tempfile.TemporaryDirectory(prefix='nuclei-run-') as work:
         errlog = os.path.join(work, 'errors.jsonl')
         try:
             # -elog: nuclei logs every request that failed, with its input. A run that exits 0 with no findings says nothing about a target
             # nothing answered, so the error log is what tells the two apart (review H4).
-            output = _run([NUCLEI_BIN, '-l', path, *flags, '-elog', errlog], timeout, register, env=nuclei_env())
+            output = _run([NUCLEI_BIN, '-l', path, *argv_flags, '-elog', errlog], timeout, register, env=nuclei_env())
         except subprocess.TimeoutExpired as exc:
             # out of time: what it found so far is kept, and every target is named unfinished, so none of them is recorded as scanned clean (the server
             # keeps findings and puts each unreachable target back as due). Before, the whole run was lost: two deep passes of one host each ran their full hour
             # on the VPS and returned nothing.
-            findings = parse_nuclei_jsonl(getattr(exc, 'partial', '') or '', evidence=secret_file is None)
-            logger.warning('nuclei ran out of its %s s for %d target(s); %d finding(s) kept, every target stays due', timeout, len(targets), len(findings))
-            return {'findings': findings, 'templates_release': release, 'unreachable': list(targets), 'incomplete': True}
+            found = parse_nuclei_jsonl(getattr(exc, 'partial', '') or '', evidence=secret_file is None)
+            logger.warning('nuclei ran out of its %s s for %d target(s); %d finding(s) kept, every target stays due', timeout, len(targets), len(found))
+            return {'findings': found, 'unreachable': list(targets), 'incomplete': True, 'no_templates': False}
         except ToolExitError as exc:
-            if (clean_tags or clean_severities) and _NO_TEMPLATES.search(getattr(exc, 'stderr', '') or str(exc)):
-                # the filter this task asked for matches no template in this set (``haproxy`` at ``info``): there is nothing to check on these targets, which is
-                # an answer, not a failure. It failed 29 tasks in two days on the VPS, the same tag sets every time, and they stayed due for ever.
-                logger.info('nuclei: no template matches tags %s at severities %s; nothing to check', clean_tags, clean_severities)
-                return {'findings': [], 'templates_release': release, 'unreachable': [], 'no_templates': True}
+            if filtered and _NO_TEMPLATES.search(getattr(exc, 'stderr', '') or str(exc)):
+                # the filter this task asked for matches no template in this set (``haproxy`` at ``info``): it failed 29 tasks in two days on the VPS, the same tag
+                # sets every time, and they stayed due for ever.
+                logger.info('nuclei: no template matches this pass\'s tags and severities; nothing to check')
+                return {'findings': [], 'unreachable': [], 'incomplete': False, 'no_templates': True}
             raise
         finally:
             os.unlink(path)
-        findings = parse_nuclei_jsonl(output, evidence=secret_file is None)  # a signed-in run keeps no request or response (its sign-in is in them)
+        found = parse_nuclei_jsonl(output, evidence=secret_file is None)  # a signed-in run keeps no request or response (its sign-in is in them)
         errors = parse_nuclei_errors(_read_error_log(errlog))
-    return {'findings': findings, 'templates_release': release,
-            'unreachable': unreached_targets(targets, errors, {f['host'] for f in findings})}
+    return {'findings': found, 'unreachable': unreached_targets(targets, errors, {f['host'] for f in found}), 'incomplete': False, 'no_templates': False}
 
 
 def _read_error_log(path):

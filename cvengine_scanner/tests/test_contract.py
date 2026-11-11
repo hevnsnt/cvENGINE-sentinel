@@ -135,3 +135,23 @@ class FrozenFixtureTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class NucleiTargetServiceTests(unittest.TestCase):
+    """The optional ``services`` and ``budget`` of a nuclei task: what speaks on each host:port, and the most one service may receive."""
+
+    def test_the_fixture_names_a_service_and_a_budget_and_an_older_target_without_them_is_still_valid(self):
+        good = fixture('targets', 'nuclei_light')
+        self.assertEqual(good['services'], {'example.com:22': 'ssh'})
+        for kind in ('nuclei_light', 'nuclei_targeted', 'nuclei_deep'):
+            check = validator(contract.target_schema(kind))
+            self.assertTrue(check.is_valid(good), kind)
+            self.assertTrue(check.is_valid({k: v for k, v in good.items() if k not in ('services', 'budget')}), kind)
+
+    def test_a_service_label_or_budget_outside_the_contract_is_rejected(self):
+        good = fixture('targets', 'nuclei_deep') if (contract.FIXTURES / 'targets' / 'nuclei_deep.json').exists() else fixture('targets', 'nuclei_light')
+        check = validator(contract.target_schema('nuclei_deep'))
+        for change in ({'services': ['example.com:22']}, {'services': {'example.com:22': 22}}, {'services': {'example.com:22': 'x' * 21}},
+                       {'budget': {'rate': 0}}, {'budget': {'rate': 1.5}}, {'budget': {'concurrency': 101}}, {'budget': {'seconds': 'long'}}, {'budget': {'surprise': 1}}):
+            self.assertFalse(check.is_valid({**good, **change}), change)
+        self.assertTrue(check.is_valid({**good, 'services': {}, 'budget': {}}))

@@ -4741,6 +4741,40 @@
             },
             "description": "tags the run must always exclude (dos)"
           },
+          "services": {
+            "type": "object",
+            "description": "optional: what speaks on each host:port of targets (a target with no port is web). web: an http or https service, which gets the web templates; unknown: nothing is known and nothing is sent; any other value is a protocol class (ssh, smtp, imap, tls ...), which gets only that protocol's templates. A port with no entry is read by the Sentinel from its port number. Keys are targets, at most 64.",
+            "maxProperties": 64,
+            "propertyNames": {
+              "maxLength": 500
+            },
+            "additionalProperties": {
+              "type": "string",
+              "maxLength": 20
+            }
+          },
+          "budget": {
+            "type": "object",
+            "description": "optional: the most one non-web host:port may receive from this task. rate: requests a second; concurrency: requests in flight; seconds: how long one host:port is kept busy. A Sentinel holds each value to its own ceiling (cvengine_scanner.flags.NUCLEI_SERVICE_BUDGET): a task can lower the bound, never raise it.",
+            "additionalProperties": false,
+            "properties": {
+              "rate": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1000
+              },
+              "concurrency": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100
+              },
+              "seconds": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3600
+              }
+            }
+          },
           "template_policy": {
             "type": "object",
             "required": [
@@ -4815,6 +4849,40 @@
             },
             "description": "tags the run must always exclude (dos)"
           },
+          "services": {
+            "type": "object",
+            "description": "optional: what speaks on each host:port of targets (a target with no port is web). web: an http or https service, which gets the web templates; unknown: nothing is known and nothing is sent; any other value is a protocol class (ssh, smtp, imap, tls ...), which gets only that protocol's templates. A port with no entry is read by the Sentinel from its port number. Keys are targets, at most 64.",
+            "maxProperties": 64,
+            "propertyNames": {
+              "maxLength": 500
+            },
+            "additionalProperties": {
+              "type": "string",
+              "maxLength": 20
+            }
+          },
+          "budget": {
+            "type": "object",
+            "description": "optional: the most one non-web host:port may receive from this task. rate: requests a second; concurrency: requests in flight; seconds: how long one host:port is kept busy. A Sentinel holds each value to its own ceiling (cvengine_scanner.flags.NUCLEI_SERVICE_BUDGET): a task can lower the bound, never raise it.",
+            "additionalProperties": false,
+            "properties": {
+              "rate": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1000
+              },
+              "concurrency": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100
+              },
+              "seconds": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3600
+              }
+            }
+          },
           "template_policy": {
             "type": "object",
             "required": [
@@ -4888,6 +4956,40 @@
               "maxLength": 40
             },
             "description": "tags the run must always exclude (dos)"
+          },
+          "services": {
+            "type": "object",
+            "description": "optional: what speaks on each host:port of targets (a target with no port is web). web: an http or https service, which gets the web templates; unknown: nothing is known and nothing is sent; any other value is a protocol class (ssh, smtp, imap, tls ...), which gets only that protocol's templates. A port with no entry is read by the Sentinel from its port number. Keys are targets, at most 64.",
+            "maxProperties": 64,
+            "propertyNames": {
+              "maxLength": 500
+            },
+            "additionalProperties": {
+              "type": "string",
+              "maxLength": 20
+            }
+          },
+          "budget": {
+            "type": "object",
+            "description": "optional: the most one non-web host:port may receive from this task. rate: requests a second; concurrency: requests in flight; seconds: how long one host:port is kept busy. A Sentinel holds each value to its own ceiling (cvengine_scanner.flags.NUCLEI_SERVICE_BUDGET): a task can lower the bound, never raise it.",
+            "additionalProperties": false,
+            "properties": {
+              "rate": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1000
+              },
+              "concurrency": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100
+              },
+              "seconds": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3600
+              }
+            }
           },
           "template_policy": {
             "type": "object",

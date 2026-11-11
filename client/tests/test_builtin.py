@@ -243,7 +243,7 @@ class SignedInTests(Env):
         client.call.return_value = {'credential': {'headers': [['Authorization', 'Bearer s3cr3t-token']], 'cookie': 'sid=abcdef123'}}
         seen = {}
 
-        def runner(targets, tags=None, severities=None, register=None, templates=None, secret_file=None, timeout=None):
+        def runner(targets, tags=None, severities=None, register=None, templates=None, secret_file=None, timeout=None, services=None, budget=None):
             seen['path'] = secret_file
             seen['mode'] = stat.S_IMODE(os.stat(secret_file).st_mode)
             seen['dir_mode'] = stat.S_IMODE(os.stat(os.path.dirname(secret_file)).st_mode)

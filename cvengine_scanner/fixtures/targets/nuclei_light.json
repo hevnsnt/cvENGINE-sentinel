@@ -1,6 +1,7 @@
 {
   "targets": [
-    "https://example.com"
+    "https://example.com",
+    "example.com:22"
   ],
   "tags": [
     "tech"
@@ -15,5 +16,13 @@
     "rev": "read-only-1",
     "read_only": true,
     "bundle_sha256": null
+  },
+  "services": {
+    "example.com:22": "ssh"
+  },
+  "budget": {
+    "rate": 2,
+    "concurrency": 2,
+    "seconds": 120
   }
 }

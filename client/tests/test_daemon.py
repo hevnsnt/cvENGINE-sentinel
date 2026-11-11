@@ -1088,6 +1088,17 @@ class KindPolicyTests(DaemonTestCase):
         self.assertEqual(runner.call_args.kwargs['timeout'], tools.task_seconds('nuclei_targeted', 9))
         self.assertLess(runner.call_args.kwargs['timeout'], 3600)
 
+    def test_a_nuclei_task_hands_its_service_labels_and_budget_to_the_tool(self):
+        """The server's label of each host:port and the per-service budget reach run_nuclei, which enforces them."""
+        d = self.make()
+        runner = mock.Mock(return_value={'findings': [], 'unreachable': []})
+        target = {'targets': ['www.example.test', 'www.example.test:22'], 'tags': [], 'services': {'www.example.test:22': 'ssh'},
+                  'budget': {'rate': 2, 'concurrency': 2, 'seconds': 120}}
+        with mock.patch.dict(tools.RUNNERS, {'nuclei_deep': runner}), mock.patch.object(d, '_approved_templates', return_value=None):
+            d._execute({'id': 45, 'kind': 'nuclei_deep', 'target': target}, None)
+        self.assertEqual(runner.call_args.kwargs['services'], {'www.example.test:22': 'ssh'})
+        self.assertEqual(runner.call_args.kwargs['budget'], {'rate': 2, 'concurrency': 2, 'seconds': 120})
+
     def test_the_polled_kinds_follow_a_network_setting_from_the_server(self):
         os.environ['CVENGINE_SENTINEL_NETWORK'] = 'internal'
         d = self.make()

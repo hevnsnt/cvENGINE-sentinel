@@ -193,3 +193,57 @@ class NucleiTaskLimitTests(unittest.TestCase):
         for kind, count, longest in (('nuclei_light', 63, 926), ('nuclei_targeted', 9, 1714), ('nuclei_deep', 21, 3008), ('nuclei_deep', 1, 1335)):
             with self.subTest(kind=kind, targets=count):
                 self.assertGreater(task_seconds(kind, count), longest)
+
+
+class NucleiServiceBudgetTests(unittest.TestCase):
+    """What one host:port of a non-web service may receive from one task, and which templates it may receive."""
+
+    def test_the_ceiling_keeps_sshd_far_from_its_default_max_startups(self):
+        spend = flags.nuclei_service_budget(None)
+        self.assertEqual(spend, {'rate': 2, 'concurrency': 2, 'seconds': 120})
+        self.assertLess(spend['concurrency'], 10)  # sshd MaxStartups 10:30:100 starts dropping at ten unauthenticated connections
+        self.assertLessEqual(spend['rate'] * spend['seconds'], 240)  # the most requests one port gets in one task
+
+    def test_a_task_lowers_the_budget_and_never_raises_it(self):
+        self.assertEqual(flags.nuclei_service_budget({'rate': 1, 'concurrency': 1, 'seconds': 30}), {'rate': 1, 'concurrency': 1, 'seconds': 30})
+        self.assertEqual(flags.nuclei_service_budget({'rate': 10 ** 6, 'concurrency': 10 ** 6, 'seconds': 10 ** 6}), flags.NUCLEI_SERVICE_BUDGET)
+        self.assertEqual(flags.nuclei_service_budget({'rate': 0, 'concurrency': -3, 'seconds': 0}), flags.NUCLEI_SERVICE_FLOOR)
+        self.assertEqual(flags.nuclei_service_budget({'rate': True, 'concurrency': '9', 'seconds': 1.5}), flags.NUCLEI_SERVICE_BUDGET)
+        self.assertEqual(flags.nuclei_service_budget('x'), flags.NUCLEI_SERVICE_BUDGET)
+
+    def test_the_service_flags_carry_the_budget_and_only_the_protocol_templates(self):
+        argv = flags.nuclei_service_flags('smtp', {'rate': 1, 'concurrency': 1, 'seconds': 60})
+        at = lambda name: argv[argv.index(name) + 1]  # noqa: E731
+        self.assertEqual([at(f) for f in ('-rl', '-c', '-bs', '-pc', '-jsc', '-retries', '-mhe', '-pt')], ['1', '1', '1', '1', '1', '0', '10', 'tcp,javascript'])
+        self.assertIn('-nh', argv)
+        self.assertEqual(at('-etags'), 'dos')  # the exclusion floor is still there
+        self.assertNotIn('http', at('-pt').split(','))
+        self.assertEqual(flags.nuclei_service_flags('tls', None)[flags.nuclei_service_flags('tls', None).index('-pt') + 1], 'ssl')
+
+    def test_the_web_flags_leave_out_the_raw_socket_templates(self):
+        argv = flags.nuclei_web_flags()
+        self.assertEqual(argv[argv.index('-ept') + 1], 'tcp,javascript')
+        self.assertEqual(argv[:len(flags.NUCLEI_FLAGS)], flags.NUCLEI_FLAGS)  # every other web flag is as it was
+        self.assertNotIn('-pt', argv)
+
+    def test_every_service_name_and_port_points_at_a_class_that_exists(self):
+        for table in (flags.NUCLEI_SERVICE_NAMES, flags.NUCLEI_SERVICE_PORTS):
+            self.assertLessEqual(set(table.values()), set(flags.NUCLEI_SERVICES))
+        for tags, types in flags.NUCLEI_SERVICES.values():
+            self.assertTrue(types and set(types) <= {'tcp', 'javascript', 'ssl'})  # never an http template type
+        self.assertFalse(set(flags.NUCLEI_SERVICE_PORTS) & set(flags.NUCLEI_DEFAULT_PORTS))
+
+    def test_the_class_of_a_port_comes_from_the_label_then_the_port_number(self):
+        self.assertEqual(flags.nuclei_service_class(22, 'web'), 'web')
+        self.assertEqual(flags.nuclei_service_class(8080, 'ssh'), 'ssh')
+        self.assertEqual(flags.nuclei_service_class(22), 'ssh')
+        self.assertEqual(flags.nuclei_service_class(8080), 'web')
+        self.assertEqual(flags.nuclei_service_class(22, 'unknown'), 'unknown')
+        self.assertEqual(flags.nuclei_service_class(22, 'from-a-newer-server'), 'unknown')
+
+    def test_the_tags_of_a_class_are_narrowed_to_the_tags_the_task_asked_for(self):
+        self.assertEqual(flags.nuclei_service_tags('ssh'), ['openssh', 'ssh'])
+        self.assertEqual(flags.nuclei_service_tags('ssh', ['apache', 'ssh']), ['ssh'])
+        self.assertIsNone(flags.nuclei_service_tags('ssh', ['tech']))
+        self.assertEqual(flags.nuclei_service_tags('tls', ['tls']), ['tls'])
+        self.assertEqual(flags.nuclei_service_tags('tls'), [])

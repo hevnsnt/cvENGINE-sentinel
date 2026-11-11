@@ -1306,3 +1306,159 @@ class WpscanToolReviewTests(unittest.TestCase):
         self.assertEqual([c[0] for c in calls], ['https://www.example.test', 'https://example.test/'])
         self.assertEqual(out['returncode'], 0)
         self.assertTrue(all('p,t,cb,dbe,u1-5' in c[1] for c in calls))
+
+
+def _recording_nuclei(findings=None):
+    """A fake nuclei: records each run's argv and the targets file it was given (the file is gone after the run), and answers with the findings
+    ``findings(targets)`` returns as JSONL."""
+    runs = []
+
+    def fake(argv, timeout, register=None, env=None):
+        with open(argv[argv.index('-l') + 1], encoding='utf-8') as handle:
+            targets = handle.read().split()
+        runs.append({'argv': list(argv), 'targets': targets, 'timeout': timeout})
+        return ''.join(json.dumps(row) + '\n' for row in (findings(targets) if findings else []))
+    fake.runs = runs
+    return fake
+
+
+def _flag(argv, name):
+    return argv[argv.index(name) + 1] if name in argv else None
+
+
+HOST_PORTS = ['www.example.test', 'www.example.test:22', 'www.example.test:25', 'www.example.test:143', 'www.example.test:443']
+LABELS = {'www.example.test:22': 'ssh', 'www.example.test:25': 'smtp', 'www.example.test:143': 'imap', 'www.example.test:443': 'web'}
+
+
+class NucleiProtocolSplitTests(unittest.TestCase):
+    """A port only receives the templates of the protocol that speaks there (production: 34,000 non-SSH connections to sshd in 20 minutes)."""
+
+    def _run(self, targets=HOST_PORTS, **kwargs):
+        fake = _recording_nuclei()
+        with mock.patch('client.tools._run', side_effect=fake):
+            result = tools.run_nuclei(targets, **kwargs)
+        return result, fake.runs
+
+    def test_the_web_run_has_no_service_port_and_no_raw_tcp_templates(self):
+        _result, runs = self._run(services=LABELS)
+        web = [r for r in runs if 'www.example.test:443' in r['targets']]
+        self.assertEqual(len(web), 1)
+        self.assertEqual(web[0]['targets'], ['www.example.test', 'www.example.test:443'])
+        self.assertEqual(_flag(web[0]['argv'], '-ept'), 'tcp,javascript')  # a bare host name must not reach the ports the raw templates name
+        self.assertNotIn('-pt', web[0]['argv'])
+        self.assertNotIn('-tags', web[0]['argv'])  # a deep run's web ports keep every template, as before
+
+    def test_each_service_port_gets_its_own_run_with_only_its_protocol_templates(self):
+        _result, runs = self._run(services=LABELS)
+        by_target = {r['targets'][0]: r for r in runs if len(r['targets']) == 1}
+        self.assertEqual(set(by_target), {'www.example.test:22', 'www.example.test:25', 'www.example.test:143'})
+        for target, tag in (('www.example.test:22', 'openssh,ssh'), ('www.example.test:25', 'smtp'), ('www.example.test:143', 'imap')):
+            argv = by_target[target]['argv']
+            self.assertEqual(_flag(argv, '-tags'), tag, target)
+            self.assertEqual(_flag(argv, '-pt'), 'tcp,javascript', target)  # no http template ever reaches it
+            self.assertIn('-nh', argv)  # and no http probe
+            self.assertNotIn('-ept', argv)
+
+    def test_an_unlabelled_target_is_read_by_its_port_so_an_older_server_cannot_flood_ssh(self):
+        _result, runs = self._run(services=None)
+        ssh = [r for r in runs if r['targets'] == ['www.example.test:22']]
+        self.assertEqual(len(ssh), 1)
+        self.assertEqual(_flag(ssh[0]['argv'], '-tags'), 'openssh,ssh')
+        self.assertEqual([r['targets'] for r in runs if 'www.example.test:443' in r['targets']], [['www.example.test', 'www.example.test:443']])
+
+    def test_a_web_port_off_the_defaults_keeps_every_web_template(self):
+        _result, runs = self._run(['www.example.test', 'www.example.test:8080', 'www.example.test:8443'], services={'www.example.test:8080': 'web'})
+        self.assertEqual([r['targets'] for r in runs], [['www.example.test', 'www.example.test:8080', 'www.example.test:8443']])  # 8443 unlabelled: in no table, so web
+
+    def test_a_port_nothing_is_known_about_receives_nothing(self):
+        _result, runs = self._run(['www.example.test', 'www.example.test:9999'], services={'www.example.test:9999': 'unknown'})
+        self.assertEqual([r['targets'] for r in runs], [['www.example.test']])
+        _result, runs = self._run(['www.example.test:22'], services={'www.example.test:22': 'a-class-from-the-future'})
+        self.assertEqual(runs, [])  # a class this Sentinel does not know is never guessed at
+
+    def test_a_tag_filter_that_names_nothing_of_the_protocol_sends_it_nothing(self):
+        _result, runs = self._run(services=LABELS, tags=['tech'], severities=['info'])  # the light pass: technology templates over http only
+        self.assertEqual([r['targets'] for r in runs], [['www.example.test', 'www.example.test:443']])
+        _result, runs = self._run(services=LABELS, tags=['openssh', 'apache'])
+        ssh = [r for r in runs if r['targets'] == ['www.example.test:22']]
+        self.assertEqual(_flag(ssh[0]['argv'], '-tags'), 'openssh')  # only the ssh template tags the task asked for
+        self.assertEqual(len(runs), 2)  # smtp and imap have none of them
+
+    def test_a_tls_wrapped_service_gets_only_the_ssl_templates(self):
+        _result, runs = self._run(['www.example.test:993'], services={'www.example.test:993': 'tls'})
+        self.assertEqual(_flag(runs[0]['argv'], '-pt'), 'ssl')
+        self.assertNotIn('-tags', runs[0]['argv'])
+
+    def test_findings_and_unreachable_targets_of_every_run_are_returned_together(self):
+        def findings(targets):
+            return [{'template-id': 'ssh-t', 'host': 'www.example.test:22', 'matched-at': 'www.example.test:22', 'info': {'name': 'n', 'severity': 'info'}}] \
+                if targets == ['www.example.test:22'] else []
+        fake = _recording_nuclei(findings)
+        with mock.patch('client.tools._run', side_effect=fake):
+            result = tools.run_nuclei(HOST_PORTS, services=LABELS)
+        self.assertEqual([f['template_id'] for f in result['findings']], ['ssh-t'])
+        self.assertEqual(result['unreachable'], [])
+        self.assertEqual(len(fake.runs), 4)  # web, ssh, smtp, imap
+
+    def test_a_service_run_that_runs_out_of_time_leaves_only_its_target_due(self):
+        calls = []
+
+        def fake(argv, timeout, register=None, env=None):
+            calls.append(argv)
+            if '-pt' in argv and 'www.example.test:22' in open(argv[argv.index('-l') + 1]).read():
+                raise subprocess.TimeoutExpired(['nuclei'], timeout)
+            return ''
+        with mock.patch('client.tools._run', side_effect=fake):
+            result = tools.run_nuclei(HOST_PORTS, services=LABELS)
+        self.assertEqual(result['unreachable'], ['www.example.test:22'])
+        self.assertTrue(result['incomplete'])
+        self.assertEqual(len(calls), 4)  # the other runs still happened
+
+
+class NucleiServiceBudgetTests(unittest.TestCase):
+    """One host:port of a non-web service receives a bounded rate, a bounded number of connections in flight and a bounded total from one task."""
+
+    def _ssh_run(self, budget, timeout=3600):
+        fake = _recording_nuclei()
+        with mock.patch('client.tools._run', side_effect=fake):
+            tools.run_nuclei(['www.example.test:22'], services={'www.example.test:22': 'ssh'}, budget=budget, timeout=timeout)
+        return fake.runs[0]
+
+    def test_the_budget_reaches_nuclei(self):
+        run = self._ssh_run({'rate': 2, 'concurrency': 2, 'seconds': 120})
+        argv = run['argv']
+        self.assertEqual([_flag(argv, f) for f in ('-rl', '-c', '-bs', '-pc', '-jsc', '-mhe', '-retries')], ['2', '2', '1', '1', '2', '10', '0'])
+        self.assertEqual(run['timeout'], 120)  # the total: at most rate x seconds requests
+
+    def test_with_no_budget_in_the_task_the_ceiling_applies(self):
+        run = self._ssh_run(None)
+        self.assertEqual((_flag(run['argv'], '-rl'), _flag(run['argv'], '-c'), run['timeout']), ('2', '2', 120))
+
+    def test_a_task_can_lower_the_budget_never_raise_it(self):
+        low = self._ssh_run({'rate': 1, 'concurrency': 1, 'seconds': 30})
+        self.assertEqual((_flag(low['argv'], '-rl'), _flag(low['argv'], '-c'), _flag(low['argv'], '-jsc'), low['timeout']), ('1', '1', '1', 30))
+        high = self._ssh_run({'rate': 5000, 'concurrency': 500, 'seconds': 99999})
+        self.assertEqual((_flag(high['argv'], '-rl'), _flag(high['argv'], '-c'), high['timeout']), ('2', '2', 120))
+        junk = self._ssh_run({'rate': True, 'concurrency': 'many', 'seconds': -5})
+        self.assertEqual((_flag(junk['argv'], '-rl'), _flag(junk['argv'], '-c'), junk['timeout']), ('2', '2', 10))
+
+    def test_the_run_never_outlasts_the_task(self):
+        self.assertEqual(self._ssh_run(None, timeout=45)['timeout'], 45)
+
+    def test_the_in_flight_connections_stay_far_below_sshd_max_startups(self):
+        run = self._ssh_run(None)
+        in_flight = int(_flag(run['argv'], '-c')) * int(_flag(run['argv'], '-bs')) * int(_flag(run['argv'], '-pc'))
+        self.assertLess(in_flight, 10)  # sshd's default MaxStartups is 10:30:100: ten unauthenticated connections start the drops
+
+    def test_a_task_of_many_service_ports_runs_them_one_after_another(self):
+        order, live = [], []
+
+        def fake(argv, timeout, register=None, env=None):
+            live.append(1)
+            order.append(open(argv[argv.index('-l') + 1]).read().split())
+            assert sum(live) == len(order)  # sequential: a run ends before the next starts
+            return ''
+        names = ['www.example.test:22', 'www.example.test:25', 'www.example.test:21']
+        with mock.patch('client.tools._run', side_effect=fake):
+            tools.run_nuclei(names, services={n: c for n, c in zip(names, ('ssh', 'smtp', 'ftp'))})
+        self.assertEqual(order, [[n] for n in names])

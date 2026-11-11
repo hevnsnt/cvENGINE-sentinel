@@ -28,6 +28,105 @@ NUCLEI_LIGHT_FLAGS = {'-rl': '50', '-c': '10'}
 NUCLEI_TECH_FLAGS = ['-tags', 'tech']
 NUCLEI_DEFAULT_PORTS = (80, 443)  # the ports a bare host or address is probed on by the web templates
 
+# --- nuclei: what speaks on a port, and how hard one service may be hit --------------------------------------------------
+# A port only receives the templates of the protocol that speaks there. Before, the whole template set (11,000+ http templates and the network,
+# javascript and ssl ones) was sent to every ``host:port`` of a task, so scanning a host sent tens of thousands of connections to its SSH and mail
+# daemons (sshd answered "banner exchange: invalid format" and throttled new logins for the whole scan). The server labels each ``host:port`` of a task
+# with one of these classes from what it observed (nmap, the http probe, the port inventory); a Sentinel that is sent no label reads the port
+# number in ``NUCLEI_SERVICE_PORTS`` itself.
+NUCLEI_WEB = 'web'  # an http or https service: the http and ssl templates, and every other template type that is not a raw tcp one
+NUCLEI_UNKNOWN = 'unknown'  # an open port nothing says what speaks on: no template is sent to it
+NUCLEI_TCP_TYPES = ('tcp', 'javascript')  # nuclei's raw-socket template types (nuclei calls "network" templates "tcp"): they connect to the template's own ports
+# class -> (the nuclei tags of its templates, the template types that may run on it). An empty tag list means every tag: the class is picked by type
+# alone (a TLS endpoint gets the ssl templates: a handshake and what the certificate says, nothing that speaks a protocol on top).
+NUCLEI_SERVICES = {
+    'ssh': (('ssh', 'openssh'), NUCLEI_TCP_TYPES), 'ftp': (('ftp',), NUCLEI_TCP_TYPES), 'telnet': (('telnet',), NUCLEI_TCP_TYPES),
+    'smtp': (('smtp',), NUCLEI_TCP_TYPES), 'imap': (('imap',), NUCLEI_TCP_TYPES), 'pop3': (('pop3',), NUCLEI_TCP_TYPES),
+    'mysql': (('mysql',), NUCLEI_TCP_TYPES), 'postgres': (('postgres', 'postgresql'), NUCLEI_TCP_TYPES), 'mssql': (('mssql',), NUCLEI_TCP_TYPES),
+    'redis': (('redis',), NUCLEI_TCP_TYPES), 'mongodb': (('mongodb',), NUCLEI_TCP_TYPES), 'memcached': (('memcached',), NUCLEI_TCP_TYPES),
+    'ldap': (('ldap',), NUCLEI_TCP_TYPES), 'smb': (('smb',), NUCLEI_TCP_TYPES), 'rdp': (('rdp',), NUCLEI_TCP_TYPES), 'vnc': (('vnc',), NUCLEI_TCP_TYPES),
+    'tls': ((), ('ssl',)),  # a TLS-wrapped service that is not http (smtps, imaps, pop3s, ldaps, ftps)
+}
+# what nmap calls them (``Port.service_name``, with a leading ``ssl/`` removed by the caller) -> class
+NUCLEI_SERVICE_NAMES = {
+    'ssh': 'ssh', 'ftp': 'ftp', 'telnet': 'telnet', 'smtp': 'smtp', 'submission': 'smtp', 'imap': 'imap', 'pop3': 'pop3',
+    'mysql': 'mysql', 'postgresql': 'postgres', 'ms-sql-s': 'mssql', 'redis': 'redis', 'mongod': 'mongodb', 'mongodb': 'mongodb',
+    'memcached': 'memcached', 'ldap': 'ldap', 'microsoft-ds': 'smb', 'netbios-ssn': 'smb', 'ms-wbt-server': 'rdp', 'vnc': 'vnc',
+    'smtps': 'tls', 'imaps': 'tls', 'pop3s': 'tls', 'ldapssl': 'tls', 'ldaps': 'tls', 'ftps': 'tls',
+}
+# the IANA port of each class, read only when the port has no service name and no web evidence (an older server, a port the port scan found but
+# nmap could not name)
+NUCLEI_SERVICE_PORTS = {
+    22: 'ssh', 21: 'ftp', 23: 'telnet', 25: 'smtp', 587: 'smtp', 2525: 'smtp', 143: 'imap', 110: 'pop3', 465: 'tls', 993: 'tls', 995: 'tls',
+    636: 'tls', 990: 'tls', 3306: 'mysql', 5432: 'postgres', 1433: 'mssql', 6379: 'redis', 27017: 'mongodb', 11211: 'memcached', 389: 'ldap',
+    445: 'smb', 139: 'smb', 3389: 'rdp', 5900: 'vnc',
+}
+# The most one host:port of a non-web service receives from one task: a request rate and a number of connections in flight, and the seconds the
+# Sentinel keeps one run on it. nuclei has no per-host rate flag, so a Sentinel runs each non-web host:port as its own nuclei process, which makes
+# these bounds exact: rate (-rl) and in-flight work (-c templates, 1 host at a time, 1 payload, 1 javascript runtime per template) are per process.
+# sshd's default MaxStartups 10:30:100 starts refusing connections when ten are open and unauthenticated at once, so two in flight is a fifth of the
+# room (the Sentinel runs at most a few nuclei tasks at once, and the budget is per task), and 2 requests a second for 120 seconds is at most 240
+# requests per port per task, against 17,000 and more before.
+NUCLEI_SERVICE_BUDGET = {'rate': 2, 'concurrency': 2, 'seconds': 120}
+NUCLEI_SERVICE_FLOOR = {'rate': 1, 'concurrency': 1, 'seconds': 10}  # a task can ask for less, never for nothing
+# the hosts that stop being scanned after this many failed requests (nuclei -mhe; its default is 30): a port that does not speak the protocol stops being tried
+NUCLEI_SERVICE_HOST_ERRORS = 10
+
+
+def nuclei_service_budget(requested=None):
+    """The per-service budget a run uses: what the task asked for (``{'rate', 'concurrency', 'seconds'}``), each value held between
+    ``NUCLEI_SERVICE_FLOOR`` and ``NUCLEI_SERVICE_BUDGET``. A task can lower the budget, never raise it, so no server can make a Sentinel hit a service harder
+    than this library says. A missing, malformed or boolean value is the ceiling."""
+    asked = requested if isinstance(requested, dict) else {}
+    out = {}
+    for key, ceiling in NUCLEI_SERVICE_BUDGET.items():
+        value = asked.get(key)
+        ok = isinstance(value, int) and not isinstance(value, bool)
+        out[key] = min(ceiling, max(NUCLEI_SERVICE_FLOOR[key], value)) if ok else ceiling
+    return out
+
+
+def nuclei_service_class(port, label=None):
+    """The class of the nuclei target ``host:port`` for a Sentinel: the server's ``label`` when it is one this library knows
+    (``web``, ``unknown`` or a key of ``NUCLEI_SERVICES``); a label it does not know is ``unknown`` (a newer server's class is never guessed at). Without a
+    label the port number decides, and a port that is in no table is taken to be web, as every port was before the classes existed."""
+    if isinstance(label, str):
+        return label if label in NUCLEI_SERVICES or label in (NUCLEI_WEB, NUCLEI_UNKNOWN) else NUCLEI_UNKNOWN
+    return NUCLEI_SERVICE_PORTS.get(port, NUCLEI_WEB)
+
+
+def nuclei_service_tags(service, task_tags=()):
+    """The ``-tags`` a run on a ``service`` class takes: the class's own tags, narrowed to the ones the task asked for when it asked for tags. ``None``
+    when the task's tags and the class's share none: the task named nothing that speaks this protocol, so nothing runs on it. An empty list means the
+    class takes any tag (a TLS endpoint): then the task's tags alone."""
+    own = set(NUCLEI_SERVICES[service][0])
+    asked = {t for t in task_tags or () if isinstance(t, str)}
+    if not own:
+        return sorted(asked)
+    if not asked:
+        return sorted(own)
+    both = own & asked
+    return sorted(both) if both else None
+
+
+def nuclei_service_flags(service, budget=None):
+    """The nuclei flags of a run on one non-web host:port of class ``service``: the shared run flags with the rate, concurrency and time of
+    ``nuclei_service_budget``, one host and one payload at a time, one javascript runtime, no http probing, only the template types of the class and the host
+    dropped after ``NUCLEI_SERVICE_HOST_ERRORS`` failures. No retry: a service that did not answer is not asked again."""
+    spend = nuclei_service_budget(budget)
+    flags = list(NUCLEI_FLAGS)
+    for flag, value in (('-rl', spend['rate']), ('-c', spend['concurrency']), ('-retries', 0), ('-timeout', 5)):
+        flags[flags.index(flag) + 1] = str(value)
+    flags += ['-bs', '1', '-pc', '1', '-jsc', str(spend['concurrency']), '-nh', '-mhe', str(NUCLEI_SERVICE_HOST_ERRORS),
+              '-pt', ','.join(NUCLEI_SERVICES[service][1])]
+    return flags
+
+
+def nuclei_web_flags():
+    """The shared run flags for web targets: raw tcp and javascript templates left out, because they connect to the ports their template names
+    (22, 25, 3306...) whatever the target's own port is, so a bare host name would reach every one of them."""
+    return [*NUCLEI_FLAGS, '-ept', ','.join(NUCLEI_TCP_TYPES)]
+
 
 def nuclei_flags(tags=None, profile='normal', severities=None, tech=False, templates_dir=None, secret_file=None, proxy_args=()):
     """The nuclei flags of the server's local run (``cveFeed.nuclei_scan``), optionally narrowed to ``tags`` (an iterable of tag names the caller
