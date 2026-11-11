@@ -21,8 +21,8 @@
     "example.com:22": "ssh"
   },
   "budget": {
-    "rate": 2,
-    "concurrency": 2,
-    "seconds": 120
+    "pause_ms": 500,
+    "seconds": 300,
+    "web_rate": 25
   }
 }

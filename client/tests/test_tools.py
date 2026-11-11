@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import signal
 import subprocess
@@ -1308,18 +1309,101 @@ class WpscanToolReviewTests(unittest.TestCase):
         self.assertTrue(all('p,t,cb,dbe,u1-5' in c[1] for c in calls))
 
 
-def _recording_nuclei(findings=None):
-    """A fake nuclei: records each run's argv and the targets file it was given (the file is gone after the run), and answers with the findings
-    ``findings(targets)`` returns as JSONL."""
-    runs = []
+class FakeNuclei:
+    """A miniature nuclei for the service runs: ``-tl`` lists the templates its filters (-pt, -tags, -etags) select, a run with ``-t <file>`` answers
+    for that one template, and the clock a test replaces advances by what a run is told to take. Records every listing and every run."""
 
-    def fake(argv, timeout, register=None, env=None):
+    def __init__(self, directory, templates, clock=None):
+        self.dir, self.templates, self.clock = directory, templates, clock  # templates: {relative path: {'type', 'tags', 'text'}}
+        self.listings, self.runs = [], []
+        self.fail, self.duration, self.finding = set(), {}, {}
+        for rel, spec in templates.items():
+            path = os.path.join(directory, rel)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, 'w', encoding='utf-8') as handle:
+                handle.write(spec.get('text', 'id: x\n'))
+
+    def _selected(self, argv):
+        types = set(_flag(argv, '-pt').split(',')) if '-pt' in argv else None
+        tags = set(_flag(argv, '-tags').split(',')) if '-tags' in argv else None
+        etags = set(_flag(argv, '-etags').split(',')) if '-etags' in argv else set()
+        out = []
+        for rel, spec in self.templates.items():
+            if types is not None and spec['type'] not in types:
+                continue
+            if tags is not None and not tags & set(spec['tags']):
+                continue
+            if etags & set(spec['tags']):
+                continue
+            out.append(rel)
+        return out
+
+    def __call__(self, argv, timeout, register=None, env=None):
+        if '-tl' in argv:
+            self.listings.append(list(argv))
+            return f'\nListing available  nuclei templates for {self.dir}\n' + ''.join(f'{rel}\n' for rel in self._selected(argv))
         with open(argv[argv.index('-l') + 1], encoding='utf-8') as handle:
             targets = handle.read().split()
-        runs.append({'argv': list(argv), 'targets': targets, 'timeout': timeout})
-        return ''.join(json.dumps(row) + '\n' for row in (findings(targets) if findings else []))
-    fake.runs = runs
-    return fake
+        own = _flag(argv, '-t')
+        rel = os.path.relpath(own, self.dir) if own and own != self.dir else None
+        self.runs.append({'argv': list(argv), 'targets': targets, 'timeout': timeout, 'template': rel, 'at': self.clock() if self.clock else None})
+        if self.clock:
+            self.clock.advance(min(timeout, self.duration.get(targets[0], self.duration.get(None, 0))))  # a run is stopped at its timeout
+        if (targets[0], rel) in self.fail or (targets[0], None) in self.fail:
+            raise tools.ToolExitError('nuclei exited with status 2')
+        rows = self.finding.get((targets[0], rel), []) if rel else self.finding.get((targets[0], None), [])
+        return ''.join(json.dumps(row) + '\n' for row in rows)
+
+    @property
+    def service_runs(self):
+        return [r for r in self.runs if r['template']]
+
+    @property
+    def web_runs(self):
+        return [r for r in self.runs if not r['template']]
+
+
+class FakeClock:
+    """The clocks of the service passes, replaced: ``advance`` moves the time, a pause (``tools._sleep``) moves it too and is recorded."""
+
+    def __init__(self):
+        self.now, self.pauses = 1000.0, []
+
+    def __call__(self):
+        return self.now
+
+    def advance(self, seconds):
+        self.now += seconds
+
+    def sleep(self, seconds):
+        self.pauses.append(seconds)
+        self.now += seconds
+
+
+def _row(host, template_id='t'):
+    return {'template-id': template_id, 'host': host, 'matched-at': host, 'info': {'name': 'n', 'severity': 'info'}}
+
+
+NO_PARALLEL = 'id: x\njavascript:\n  - code: |\n      x\n'
+TEMPLATES = {
+    'http/exposures/web-one.yaml': {'type': 'http', 'tags': ['exposure']},
+    'http/misconfiguration/web-two.yaml': {'type': 'http', 'tags': ['misconfig']},
+    'http/technologies/tech-detect.yaml': {'type': 'http', 'tags': ['tech']},
+    'network/detection/openssh-detect.yaml': {'type': 'tcp', 'tags': ['ssh', 'openssh', 'detect']},
+    'network/detection/ssh-version.yaml': {'type': 'javascript', 'tags': ['ssh', 'detect']},
+    'javascript/default-logins/ssh-default-logins.yaml': {'type': 'javascript', 'tags': ['ssh', 'default-login'], 'text': 'id: d\njavascript:\n  - threads: 10\n'},
+    'network/detection/ssh-brute.yaml': {'type': 'javascript', 'tags': ['ssh', 'bruteforce']},
+    'network/detection/ftp-detect.yaml': {'type': 'tcp', 'tags': ['ftp', 'detect']},
+    'network/detection/ftp-banner.yaml': {'type': 'tcp', 'tags': ['ftp', 'detect']},
+    'network/detection/smtp-detect.yaml': {'type': 'tcp', 'tags': ['smtp', 'detect']},
+    'network/detection/imap-detect.yaml': {'type': 'tcp', 'tags': ['imap', 'detect']},
+    'network/detection/weblogic-t3.yaml': {'type': 'tcp', 'tags': ['weblogic', 't3', 'detect']},
+    'network/cves/activemq-openwire.yaml': {'type': 'tcp', 'tags': ['activemq', 'cve', 'rce']},
+    'javascript/enumeration/zookeeper.yaml': {'type': 'javascript', 'tags': ['zookeeper', 'enum']},
+    'network/dos/some-dos.yaml': {'type': 'tcp', 'tags': ['dos', 'zookeeper']},
+    'ssl/tls-version.yaml': {'type': 'ssl', 'tags': ['ssl', 'tls']},
+    'http/cves/web-and-raw.yaml': {'type': 'http', 'tags': ['cve', 'ssh']},
+}
 
 
 def _flag(argv, name):
@@ -1328,137 +1412,311 @@ def _flag(argv, name):
 
 HOST_PORTS = ['www.example.test', 'www.example.test:22', 'www.example.test:25', 'www.example.test:143', 'www.example.test:443']
 LABELS = {'www.example.test:22': 'ssh', 'www.example.test:25': 'smtp', 'www.example.test:143': 'imap', 'www.example.test:443': 'web'}
+BUDGET_CAP = {'pause_ms': 500, 'seconds': 300, 'web_rate': 25}
 
 
-class NucleiProtocolSplitTests(unittest.TestCase):
+class NucleiTestCase(unittest.TestCase):
+    def setUp(self):
+        tools._TEMPLATE_LISTINGS.clear()
+        self.addCleanup(tools._TEMPLATE_LISTINGS.clear)
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = os.path.join(self.tmp.name, 'bundle')
+        self.clock = FakeClock()
+        self.nuclei = FakeNuclei(self.dir, TEMPLATES, self.clock)
+        for target, value in (('_run', mock.Mock(side_effect=self.nuclei)), ('_clock', self.clock), ('_sleep', self.clock.sleep)):
+            patcher = mock.patch.object(tools, target, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def run_nuclei(self, targets=HOST_PORTS, **kwargs):
+        kwargs.setdefault('templates', self.dir)
+        return tools.run_nuclei(targets, **kwargs)
+
+    def templates_run_on(self, target):
+        return sorted(r['template'] for r in self.nuclei.service_runs if r['targets'] == [target])
+
+
+class NucleiProtocolSplitTests(NucleiTestCase):
     """A port only receives the templates of the protocol that speaks there (production: 34,000 non-SSH connections to sshd in 20 minutes)."""
 
-    def _run(self, targets=HOST_PORTS, **kwargs):
-        fake = _recording_nuclei()
-        with mock.patch('client.tools._run', side_effect=fake):
-            result = tools.run_nuclei(targets, **kwargs)
-        return result, fake.runs
+    def test_a_deep_task_sends_http_templates_to_the_web_port_only(self):
+        self.run_nuclei(services=LABELS)
+        self.assertEqual(len(self.nuclei.web_runs), 1)
+        web = self.nuclei.web_runs[0]
+        self.assertEqual(web['targets'], ['www.example.test', 'www.example.test:443'])
+        self.assertEqual(_flag(web['argv'], '-ept'), 'tcp,javascript')  # a bare host name must not reach the ports the raw templates name
+        self.assertNotIn('-pt', web['argv'])
+        self.assertNotIn('-tags', web['argv'])  # a deep run's web ports keep every template, as before
+        for run in self.nuclei.service_runs:  # and no service run ever has an http template, or a web port
+            self.assertNotIn('http/', run['template'])
+            self.assertNotIn('www.example.test:443', run['targets'])
 
-    def test_the_web_run_has_no_service_port_and_no_raw_tcp_templates(self):
-        _result, runs = self._run(services=LABELS)
-        web = [r for r in runs if 'www.example.test:443' in r['targets']]
-        self.assertEqual(len(web), 1)
-        self.assertEqual(web[0]['targets'], ['www.example.test', 'www.example.test:443'])
-        self.assertEqual(_flag(web[0]['argv'], '-ept'), 'tcp,javascript')  # a bare host name must not reach the ports the raw templates name
-        self.assertNotIn('-pt', web[0]['argv'])
-        self.assertNotIn('-tags', web[0]['argv'])  # a deep run's web ports keep every template, as before
+    def test_the_ssh_port_gets_only_ssh_protocol_templates(self):
+        self.run_nuclei(services=LABELS)
+        self.assertEqual(self.templates_run_on('www.example.test:22'), ['network/detection/openssh-detect.yaml', 'network/detection/ssh-version.yaml'])
+        self.assertEqual(self.templates_run_on('www.example.test:25'), ['network/detection/smtp-detect.yaml'])
+        self.assertEqual(self.templates_run_on('www.example.test:143'), ['network/detection/imap-detect.yaml'])
+        for run in self.nuclei.service_runs:
+            self.assertEqual(_flag(run['argv'], '-pt'), 'tcp,javascript')
+            self.assertIn('-nh', run['argv'])  # no http probe either
 
-    def test_each_service_port_gets_its_own_run_with_only_its_protocol_templates(self):
-        _result, runs = self._run(services=LABELS)
-        by_target = {r['targets'][0]: r for r in runs if len(r['targets']) == 1}
-        self.assertEqual(set(by_target), {'www.example.test:22', 'www.example.test:25', 'www.example.test:143'})
-        for target, tag in (('www.example.test:22', 'openssh,ssh'), ('www.example.test:25', 'smtp'), ('www.example.test:143', 'imap')):
-            argv = by_target[target]['argv']
-            self.assertEqual(_flag(argv, '-tags'), tag, target)
-            self.assertEqual(_flag(argv, '-pt'), 'tcp,javascript', target)  # no http template ever reaches it
-            self.assertIn('-nh', argv)  # and no http probe
-            self.assertNotIn('-ept', argv)
+    def test_a_service_run_never_has_credential_fuzz_or_intrusive_templates(self):
+        self.run_nuclei(services=LABELS)
+        ran = {r['template'] for r in self.nuclei.service_runs}
+        self.assertNotIn('network/detection/ssh-brute.yaml', ran)
+        self.assertNotIn('javascript/default-logins/ssh-default-logins.yaml', ran)
+        for run in self.nuclei.service_runs:  # the run itself excludes them too, whatever file it is given
+            self.assertEqual(set(_flag(run['argv'], '-etags').split(',')), {'dos', 'default-login', 'bruteforce', 'fuzz', 'intrusive'})
+        for listing in self.nuclei.listings:
+            self.assertEqual(set(_flag(listing, '-etags').split(',')) & {'dos', 'default-login', 'bruteforce', 'fuzz', 'intrusive'},
+                             {'dos', 'default-login', 'bruteforce', 'fuzz', 'intrusive'})
+
+    def test_a_template_that_sets_its_own_parallelism_is_never_run_on_a_service(self):
+        listed = tools._service_templates({'types': ['tcp', 'javascript'], 'tags': ['ssh'], 'etags': ['dos']}, self.dir, [], None)
+        self.assertNotIn(os.path.join(self.dir, 'javascript/default-logins/ssh-default-logins.yaml'), listed)
+        self.assertIn(os.path.join(self.dir, 'network/detection/openssh-detect.yaml'), listed)
+        path = os.path.join(self.dir, 'x.yaml')
+        for text, ok in (('id: a\nhttp:\n  - threads: 10\n', False), ('id: a\nhttp:\n  - threads: 1\n', True), ('info:\n  metadata:\n    max-request: 223\n', False),
+                         ('info:\n  metadata:\n    max-request: 3\n', True), ('id: plain\n', True)):
+            with open(path, 'w', encoding='utf-8') as handle:
+                handle.write(text)
+            self.assertEqual(tools._paced_template(path) is None, ok, text)
 
     def test_an_unlabelled_target_is_read_by_its_port_so_an_older_server_cannot_flood_ssh(self):
-        _result, runs = self._run(services=None)
-        ssh = [r for r in runs if r['targets'] == ['www.example.test:22']]
-        self.assertEqual(len(ssh), 1)
-        self.assertEqual(_flag(ssh[0]['argv'], '-tags'), 'openssh,ssh')
-        self.assertEqual([r['targets'] for r in runs if 'www.example.test:443' in r['targets']], [['www.example.test', 'www.example.test:443']])
+        self.run_nuclei(services=None)
+        self.assertEqual(len(self.templates_run_on('www.example.test:22')), 2)
+        self.assertEqual([r['targets'] for r in self.nuclei.web_runs], [['www.example.test', 'www.example.test:443']])
 
-    def test_a_web_port_off_the_defaults_keeps_every_web_template(self):
-        _result, runs = self._run(['www.example.test', 'www.example.test:8080', 'www.example.test:8443'], services={'www.example.test:8080': 'web'})
-        self.assertEqual([r['targets'] for r in runs], [['www.example.test', 'www.example.test:8080', 'www.example.test:8443']])  # 8443 unlabelled: in no table, so web
+    def test_a_lookup_that_misses_never_falls_back_to_web(self):
+        """The label of 2222 is spelled differently from the target (upper case, trailing dot, a leading zero); and 5000 has no label at all."""
+        names = ['www.example.test', 'www.example.test:2222', 'www.example.test:5000', 'www.example.test:8080']
+        labels = {'WWW.Example.Test.:2222': 'ssh', 'www.example.test:8080': 'web'}
+        self.run_nuclei(names, services=labels)
+        self.assertEqual([r['targets'] for r in self.nuclei.web_runs], [['www.example.test', 'www.example.test:8080']])  # 5000 is not in it
+        self.assertEqual(len(self.templates_run_on('www.example.test:2222')), 2)  # found its label in spite of the spelling: ssh
+        generic = self.templates_run_on('www.example.test:5000')
+        self.assertTrue(generic)  # an unlisted port is the unknown class: generic network templates
+        self.assertTrue(all(not t.startswith('http/') for t in generic))
+        self.assertEqual(tools.flags.nuclei_label_key('[2001:DB8::1]:0080'), ('2001:db8::1', 80))
+        self.assertEqual(tools.flags.nuclei_label_key('www.example.test:22'), tools.flags.nuclei_label_key('WWW.EXAMPLE.TEST.:022'))
 
-    def test_a_port_nothing_is_known_about_receives_nothing(self):
-        _result, runs = self._run(['www.example.test', 'www.example.test:9999'], services={'www.example.test:9999': 'unknown'})
-        self.assertEqual([r['targets'] for r in runs], [['www.example.test']])
-        _result, runs = self._run(['www.example.test:22'], services={'www.example.test:22': 'a-class-from-the-future'})
-        self.assertEqual(runs, [])  # a class this Sentinel does not know is never guessed at
+    def test_a_port_with_no_class_or_an_unknown_one_gets_the_generic_network_templates_never_http(self):
+        self.run_nuclei(['www.example.test:9999', 'www.example.test:61616', 'www.example.test:7001'],
+                        services={'www.example.test:9999': 'unknown', 'www.example.test:61616': 'unknown', 'www.example.test:7001': 'a-class-from-the-future'})
+        expected = ['javascript/enumeration/zookeeper.yaml', 'network/cves/activemq-openwire.yaml', 'network/detection/weblogic-t3.yaml', 'ssl/tls-version.yaml']
+        for target in ('www.example.test:9999', 'www.example.test:61616', 'www.example.test:7001'):
+            self.assertEqual(self.templates_run_on(target), expected)  # not ssh, smtp, imap (they have a class), not a dos one, not http
+        self.assertEqual(self.nuclei.web_runs, [])
+        listing = self.nuclei.listings[0]
+        self.assertEqual(_flag(listing, '-pt'), 'tcp,javascript,ssl')
+        self.assertTrue({'ssh', 'smtp', 'imap', 'ftp'} <= set(_flag(listing, '-etags').split(',')))
 
     def test_a_tag_filter_that_names_nothing_of_the_protocol_sends_it_nothing(self):
-        _result, runs = self._run(services=LABELS, tags=['tech'], severities=['info'])  # the light pass: technology templates over http only
-        self.assertEqual([r['targets'] for r in runs], [['www.example.test', 'www.example.test:443']])
-        _result, runs = self._run(services=LABELS, tags=['openssh', 'apache'])
-        ssh = [r for r in runs if r['targets'] == ['www.example.test:22']]
-        self.assertEqual(_flag(ssh[0]['argv'], '-tags'), 'openssh')  # only the ssh template tags the task asked for
-        self.assertEqual(len(runs), 2)  # smtp and imap have none of them
+        self.run_nuclei(services=LABELS, tags=['tech'], severities=['info'])  # the light pass: technology templates over http only
+        self.assertEqual(len(self.nuclei.web_runs), 1)
+        self.assertEqual(self.nuclei.service_runs, [])  # no process for a class with no template: nothing in the set is tagged tech
+        self.nuclei.runs.clear()
+        self.run_nuclei(services=LABELS, tags=['openssh', 'apache'])
+        self.assertEqual(self.templates_run_on('www.example.test:22'), ['network/detection/openssh-detect.yaml'])  # only the ssh tags the task asked for
+        self.assertEqual(self.templates_run_on('www.example.test:25'), [])
 
     def test_a_tls_wrapped_service_gets_only_the_ssl_templates(self):
-        _result, runs = self._run(['www.example.test:993'], services={'www.example.test:993': 'tls'})
-        self.assertEqual(_flag(runs[0]['argv'], '-pt'), 'ssl')
-        self.assertNotIn('-tags', runs[0]['argv'])
+        self.run_nuclei(['www.example.test:993'], services={'www.example.test:993': 'tls'})
+        self.assertEqual(self.templates_run_on('www.example.test:993'), ['ssl/tls-version.yaml'])
+        self.assertEqual(_flag(self.nuclei.service_runs[0]['argv'], '-pt'), 'ssl')
 
     def test_findings_and_unreachable_targets_of_every_run_are_returned_together(self):
-        def findings(targets):
-            return [{'template-id': 'ssh-t', 'host': 'www.example.test:22', 'matched-at': 'www.example.test:22', 'info': {'name': 'n', 'severity': 'info'}}] \
-                if targets == ['www.example.test:22'] else []
-        fake = _recording_nuclei(findings)
-        with mock.patch('client.tools._run', side_effect=fake):
-            result = tools.run_nuclei(HOST_PORTS, services=LABELS)
+        self.nuclei.finding[('www.example.test:22', 'network/detection/openssh-detect.yaml')] = [_row('www.example.test:22', 'ssh-t')]
+        result = self.run_nuclei(services=LABELS)
         self.assertEqual([f['template_id'] for f in result['findings']], ['ssh-t'])
         self.assertEqual(result['unreachable'], [])
-        self.assertEqual(len(fake.runs), 4)  # web, ssh, smtp, imap
+        self.assertNotIn('not_checked', result)
 
-    def test_a_service_run_that_runs_out_of_time_leaves_only_its_target_due(self):
-        calls = []
-
-        def fake(argv, timeout, register=None, env=None):
-            calls.append(argv)
-            if '-pt' in argv and 'www.example.test:22' in open(argv[argv.index('-l') + 1]).read():
-                raise subprocess.TimeoutExpired(['nuclei'], timeout)
-            return ''
-        with mock.patch('client.tools._run', side_effect=fake):
-            result = tools.run_nuclei(HOST_PORTS, services=LABELS)
-        self.assertEqual(result['unreachable'], ['www.example.test:22'])
-        self.assertTrue(result['incomplete'])
-        self.assertEqual(len(calls), 4)  # the other runs still happened
+    def test_the_web_pass_runs_before_every_service_port(self):
+        self.run_nuclei(services=LABELS)
+        self.assertEqual([bool(r['template']) for r in self.nuclei.runs], [False] + [True] * 4)
 
 
-class NucleiServiceBudgetTests(unittest.TestCase):
-    """One host:port of a non-web service receives a bounded rate, a bounded number of connections in flight and a bounded total from one task."""
+class NucleiServiceBudgetTests(NucleiTestCase):
+    """One host:port of a non-web service receives a bounded number of connections in flight, a bounded pace and a bounded total from one task."""
 
-    def _ssh_run(self, budget, timeout=3600):
-        fake = _recording_nuclei()
-        with mock.patch('client.tools._run', side_effect=fake):
-            tools.run_nuclei(['www.example.test:22'], services={'www.example.test:22': 'ssh'}, budget=budget, timeout=timeout)
-        return fake.runs[0]
+    def ssh(self, budget=None, timeout=3600, **kwargs):
+        self.run_nuclei(['www.example.test:22'], services={'www.example.test:22': 'ssh'}, budget=budget, timeout=timeout, **kwargs)
+        return self.nuclei.service_runs
 
-    def test_the_budget_reaches_nuclei(self):
-        run = self._ssh_run({'rate': 2, 'concurrency': 2, 'seconds': 120})
-        argv = run['argv']
-        self.assertEqual([_flag(argv, f) for f in ('-rl', '-c', '-bs', '-pc', '-jsc', '-mhe', '-retries')], ['2', '2', '1', '1', '2', '10', '0'])
-        self.assertEqual(run['timeout'], 120)  # the total: at most rate x seconds requests
+    def ftp(self, budget=None, timeout=3600, **kwargs):
+        result = self.run_nuclei(['www.example.test:21'], services={'www.example.test:21': 'ftp'}, budget=budget, timeout=timeout, **kwargs)
+        return self.nuclei.service_runs, result
 
-    def test_with_no_budget_in_the_task_the_ceiling_applies(self):
-        run = self._ssh_run(None)
-        self.assertEqual((_flag(run['argv'], '-rl'), _flag(run['argv'], '-c'), run['timeout']), ('2', '2', 120))
+    def test_each_template_is_its_own_run_one_at_a_time_with_a_pause_between(self):
+        runs, _result = self.ftp()
+        self.assertEqual(len(runs), 2)
+        for run in runs:
+            argv = run['argv']
+            self.assertEqual([_flag(argv, f) for f in ('-c', '-bs', '-pc', '-jsc', '-mhe', '-retries')], ['1', '1', '1', '1', '10', '0'])
+        self.assertEqual(self.clock.pauses, [0.5])  # between the two, none after the last
+        self.assertEqual(runs[1]['at'] - runs[0]['at'], 0.5)
 
-    def test_a_task_can_lower_the_budget_never_raise_it(self):
-        low = self._ssh_run({'rate': 1, 'concurrency': 1, 'seconds': 30})
-        self.assertEqual((_flag(low['argv'], '-rl'), _flag(low['argv'], '-c'), _flag(low['argv'], '-jsc'), low['timeout']), ('1', '1', '1', 30))
-        high = self._ssh_run({'rate': 5000, 'concurrency': 500, 'seconds': 99999})
-        self.assertEqual((_flag(high['argv'], '-rl'), _flag(high['argv'], '-c'), high['timeout']), ('2', '2', 120))
-        junk = self._ssh_run({'rate': True, 'concurrency': 'many', 'seconds': -5})
-        self.assertEqual((_flag(junk['argv'], '-rl'), _flag(junk['argv'], '-c'), junk['timeout']), ('2', '2', 10))
+    def test_the_ssh_class_pauses_long_enough_for_openssh_source_penalties(self):
+        """OpenSSH 9.8+ refuses a source after 15 s of penalty, 5 s per failed authentication; each javascript ssh template makes one (measured on OpenSSH
+        10.3: the 4th template at a 500 ms pause got every later connection dropped)."""
+        runs = self.ssh()
+        self.assertEqual(len(runs), 2)
+        self.assertEqual(self.clock.pauses, [5.5])
+        self.assertEqual(runs[1]['at'] - runs[0]['at'], 5.5)
+        self.assertEqual(tools.flags.nuclei_service_pause_ms('ssh'), 5500)
+        self.assertEqual(tools.flags.nuclei_service_pause_ms('ssh', {'pause_ms': 9000}), 9000)  # the task's own pause counts when it is longer
+        self.assertEqual(tools.flags.nuclei_service_pause_ms('ftp'), 500)
+
+    def test_a_task_can_make_the_budget_gentler_never_harsher(self):
+        self.ftp({'pause_ms': 2000, 'seconds': 30})
+        self.assertEqual(self.clock.pauses, [2.0])
+        self.nuclei.runs.clear(); self.clock.pauses.clear()
+        self.ftp({'pause_ms': 1, 'seconds': 99999, 'web_rate': 99999})
+        self.assertEqual(self.clock.pauses, [0.5])  # a task cannot ask for faster than the library's ceiling
+        self.assertEqual(tools.flags.nuclei_service_budget({'pause_ms': True, 'seconds': 'x', 'web_rate': -5}), {**BUDGET_CAP, 'web_rate': 1})
+        self.assertEqual(tools.flags.nuclei_service_budget({'seconds': -5})['seconds'], 10)
+        self.assertEqual(tools.flags.nuclei_service_budget({'pause_ms': 10 ** 9})['pause_ms'], 10000)
+        self.assertEqual(tools.flags.nuclei_service_budget(None), BUDGET_CAP)
+
+    def test_a_port_is_never_kept_busy_longer_than_its_seconds(self):
+        self.nuclei.duration[None] = 30
+        runs, _result = self.ftp({'seconds': 50})
+        self.assertEqual(len(runs), 2)  # the second one starts at 30.5 s: 19.5 s are left, and it is stopped there
+        self.assertEqual(runs[-1]['timeout'], 20)
+        self.nuclei.runs.clear()
+        self.nuclei.duration[None] = 80
+        runs, result = self.ftp({'seconds': 10})
+        self.assertEqual(len(runs), 1)  # out of time after the first
+        self.assertEqual(result['not_checked'][0]['target'], 'www.example.test:21')
+        self.assertEqual(result['not_checked'][0]['reason'], 'its time ran out after 1 of 2 templates')
+
+    def test_in_flight_connections_stay_below_sshd_max_startups_for_every_policy(self):
+        """sshd's default MaxStartups is 10:30:100: ten unauthenticated connections open at once start the drops. A service run has one template running
+        (-c 1) with one host, one payload and one javascript runtime, and it has no template that sets its own parallelism: at most one connection."""
+        for run in self.ssh():
+            in_flight = int(_flag(run['argv'], '-c')) * int(_flag(run['argv'], '-bs')) * int(_flag(run['argv'], '-pc')) * int(_flag(run['argv'], '-jsc'))
+            self.assertEqual(in_flight, 1)
+        listed = tools._service_templates(tools.flags.nuclei_service_selection('ssh'), self.dir, [], None)
+        for path in listed:
+            with open(path, encoding='utf-8') as handle:
+                self.assertNotIn('threads: 10', handle.read())
 
     def test_the_run_never_outlasts_the_task(self):
-        self.assertEqual(self._ssh_run(None, timeout=45)['timeout'], 45)
+        self.assertLessEqual(self.ssh(timeout=45)[0]['timeout'], 30)  # one template run is stopped after 30 s
+        self.nuclei.runs.clear()
+        self.assertEqual(self.ssh(timeout=20)[0]['timeout'], 20)
 
-    def test_the_in_flight_connections_stay_far_below_sshd_max_startups(self):
-        run = self._ssh_run(None)
-        in_flight = int(_flag(run['argv'], '-c')) * int(_flag(run['argv'], '-bs')) * int(_flag(run['argv'], '-pc'))
-        self.assertLess(in_flight, 10)  # sshd's default MaxStartups is 10:30:100: ten unauthenticated connections start the drops
+    def test_the_third_run_in_a_row_that_gets_no_answer_ends_the_port(self):
+        row = {'input': 'www.example.test:9999', 'error': 'dial tcp 192.0.2.1:9999: connect: connection refused'}
+        original = self.nuclei.__call__
 
-    def test_a_task_of_many_service_ports_runs_them_one_after_another(self):
-        order, live = [], []
+        def refused(argv, timeout, register=None, env=None):
+            out = original(argv, timeout, register, env)
+            if '-elog' in argv:
+                with open(argv[argv.index('-elog') + 1], 'w', encoding='utf-8') as handle:
+                    handle.write(json.dumps(row) + '\n')
+            return out
+        with mock.patch.object(tools, '_run', side_effect=refused):
+            result = tools.run_nuclei(['www.example.test:9999'], services={'www.example.test:9999': 'unknown'}, templates=self.dir)
+        self.assertEqual(len(self.nuclei.service_runs), 3)  # the fourth template is not sent to a port that did not answer three times
+        self.assertEqual(result['unreachable'], ['www.example.test:9999'])
+        self.assertEqual(result['not_checked'], [{'target': 'www.example.test:9999', 'reason': 'nothing answered on this port'}])
 
-        def fake(argv, timeout, register=None, env=None):
-            live.append(1)
-            order.append(open(argv[argv.index('-l') + 1]).read().split())
-            assert sum(live) == len(order)  # sequential: a run ends before the next starts
-            return ''
-        names = ['www.example.test:22', 'www.example.test:25', 'www.example.test:21']
-        with mock.patch('client.tools._run', side_effect=fake):
-            tools.run_nuclei(names, services={n: c for n, c in zip(names, ('ssh', 'smtp', 'ftp'))})
-        self.assertEqual(order, [[n] for n in names])
+
+class NucleiResilienceTests(NucleiTestCase):
+    """One small run that fails, or matches no template, never fails the task or loses what was found; a class with no template starts nothing."""
+
+    def test_one_failing_run_keeps_the_findings_and_names_its_port(self):
+        self.nuclei.finding[('www.example.test:22', 'network/detection/openssh-detect.yaml')] = [_row('www.example.test:22', 'ssh-t')]
+        self.nuclei.fail.add(('www.example.test:22', 'network/detection/ssh-version.yaml'))
+        self.nuclei.finding[('www.example.test', None)] = [_row('www.example.test', 'web-t')]
+        result = self.run_nuclei(services=LABELS)
+        self.assertEqual(sorted(f['template_id'] for f in result['findings']), ['ssh-t', 'web-t'])
+        self.assertEqual(len(self.nuclei.runs), 1 + 2 + 1 + 1)  # nothing after the failure was skipped
+        self.assertEqual(result['not_checked'], [{'target': 'www.example.test:22', 'reason': '1 of 2 template runs failed'}])
+        self.assertTrue(result['incomplete'])
+        self.assertNotIn('www.example.test:22', result['unreachable'])  # it answered: it is not an unreachable host
+
+    def test_a_failing_web_run_does_not_lose_the_service_findings(self):
+        self.nuclei.fail.add(('www.example.test', None))
+        self.nuclei.finding[('www.example.test:25', 'network/detection/smtp-detect.yaml')] = [_row('www.example.test:25', 'smtp-t')]
+        result = self.run_nuclei(services=LABELS)
+        self.assertEqual([f['template_id'] for f in result['findings']], ['smtp-t'])
+        self.assertEqual({n['target'] for n in result['not_checked']}, {'www.example.test', 'www.example.test:443'})
+        self.assertIn('web run failed', result['not_checked'][0]['reason'])
+
+    def test_when_every_run_failed_the_task_fails(self):
+        self.nuclei.fail.add(('www.example.test', None))
+        with self.assertRaises(tools.ToolExitError):
+            self.run_nuclei(['www.example.test'])
+
+    def test_a_service_run_that_matches_no_template_is_nothing_to_check_not_a_failure(self):
+        original = self.nuclei.__call__
+
+        def nothing(argv, timeout, register=None, env=None):
+            if '-tl' not in argv:
+                raise tools.ToolExitError('[FTL] Could not run nuclei: no templates provided for scan')
+            return original(argv, timeout, register, env)
+        with mock.patch.object(tools, '_run', side_effect=nothing):
+            result = tools.run_nuclei(['www.example.test:22'], services={'www.example.test:22': 'ssh'}, templates=self.dir)  # no tags, no severities
+        self.assertEqual((result['findings'], result['no_templates']), ([], True))  # an answer (nothing to check), not an error
+
+    def test_a_class_with_no_template_in_the_set_starts_no_process(self):
+        shutil_dir = os.path.join(self.tmp.name, 'empty')
+        os.makedirs(shutil_dir)
+        nuclei = FakeNuclei(shutil_dir, {'http/a.yaml': {'type': 'http', 'tags': ['exposure']}})
+        with mock.patch.object(tools, '_run', side_effect=nuclei):
+            result = tools.run_nuclei(['www.example.test:22', 'www.example.test:25'], services={'www.example.test:22': 'ssh', 'www.example.test:25': 'smtp'},
+                                      templates=shutil_dir)
+        self.assertEqual(nuclei.runs, [])  # listing only, which sends nothing
+        self.assertEqual(len(nuclei.listings), 2)
+        self.assertTrue(result['no_templates'])
+
+    def test_the_listing_is_made_once_per_template_set(self):
+        self.run_nuclei(services=LABELS)
+        listed = len(self.nuclei.listings)
+        self.run_nuclei(services=LABELS)
+        self.assertEqual(len(self.nuclei.listings), listed)
+        self.assertEqual(listed, 3)  # ssh, smtp, imap
+
+
+class NucleiTimeShareTests(NucleiTestCase):
+    """The web pass runs first and a task of many slow service ports still fits its time (30 slow ports, a faked clock)."""
+
+    PORTS = [f'www.example.test:{30000 + n}' for n in range(30)]
+
+    def run_slow(self, cap=None):
+        names = ['www.example.test', *self.PORTS]
+        for port in self.PORTS:
+            self.nuclei.duration[port] = 40
+        self.nuclei.duration['www.example.test'] = 600
+        self.nuclei.finding[('www.example.test', None)] = [_row('www.example.test', 'web-t')]
+        patch = mock.patch.object(tools.flags, 'NUCLEI_SERVICE_MAX_PORTS', cap or 6)
+        with patch:
+            return self.run_nuclei(names, services={p: 'unknown' for p in self.PORTS}, timeout=3540)
+
+    def test_a_task_checks_at_most_six_non_web_ports_and_reports_the_rest(self):
+        result = self.run_slow()
+        ran = {r['targets'][0] for r in self.nuclei.service_runs}
+        self.assertEqual(len(ran), 6)
+        self.assertEqual([f['template_id'] for f in result['findings']], ['web-t'])  # the web pass ran first and its findings are kept
+        self.assertEqual(len(self.nuclei.web_runs), 1)
+        missed = {n['target'] for n in result['not_checked']}
+        self.assertEqual(missed, set(self.PORTS) - ran)
+        self.assertEqual(set(result['unreachable']), missed)  # none is recorded as scanned
+        self.assertIn('another task', result['not_checked'][0]['reason'])
+        self.assertLessEqual(self.clock.now - 1000.0, 3540)
+
+    def test_service_ports_share_a_fixed_part_of_the_time_and_the_web_pass_is_never_starved(self):
+        result = self.run_slow(cap=30)
+        web = self.nuclei.web_runs[0]
+        self.assertEqual(web['timeout'], math.ceil(3540 - 3540 * tools.flags.NUCLEI_SERVICE_TIME_SHARE))  # the web pass leaves the ports their share
+        self.assertLessEqual(self.clock.now - 1000.0, 3540)  # nothing runs past the task's limit
+        reached = {r['targets'][0] for r in self.nuclei.service_runs}
+        self.assertTrue(0 < len(reached) < 30)
+        missed = {n['target'] for n in result['not_checked']}
+        self.assertEqual(missed | reached, set(self.PORTS))  # every port is either checked or named: none is silently lost
+        self.assertTrue(any('ran out of time' in n['reason'] for n in result['not_checked']))
+        self.assertTrue(result['incomplete'])

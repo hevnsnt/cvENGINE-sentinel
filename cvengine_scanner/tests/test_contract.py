@@ -133,10 +133,6 @@ class FrozenFixtureTests(unittest.TestCase):
                     self.assertEqual(list(validator(contract.result_schema(KIND_OF[path.stem])).iter_errors(sent)), [])
 
 
-if __name__ == '__main__':
-    unittest.main()
-
-
 class NucleiTargetServiceTests(unittest.TestCase):
     """The optional ``services`` and ``budget`` of a nuclei task: what speaks on each host:port, and the most one service may receive."""
 
@@ -152,6 +148,25 @@ class NucleiTargetServiceTests(unittest.TestCase):
         good = fixture('targets', 'nuclei_deep') if (contract.FIXTURES / 'targets' / 'nuclei_deep.json').exists() else fixture('targets', 'nuclei_light')
         check = validator(contract.target_schema('nuclei_deep'))
         for change in ({'services': ['example.com:22']}, {'services': {'example.com:22': 22}}, {'services': {'example.com:22': 'x' * 21}},
-                       {'budget': {'rate': 0}}, {'budget': {'rate': 1.5}}, {'budget': {'concurrency': 101}}, {'budget': {'seconds': 'long'}}, {'budget': {'surprise': 1}}):
+                       {'budget': {'pause_ms': 0}}, {'budget': {'pause_ms': 1.5}}, {'budget': {'web_rate': 1001}}, {'budget': {'seconds': 'long'}}, {'budget': {'rate': 2}},
+                       {'budget': {'surprise': 1}}):
             self.assertFalse(check.is_valid({**good, **change}), change)
         self.assertTrue(check.is_valid({**good, 'services': {}, 'budget': {}}))
+
+
+class NucleiNotCheckedResultTests(unittest.TestCase):
+    """A nuclei result names each port it did not fully check, and why, so no port is skipped in silence."""
+
+    def test_the_result_may_name_the_ports_it_did_not_check(self):
+        base = fixture('results', 'nuclei_light')
+        for kind in ('nuclei_light', 'nuclei_targeted', 'nuclei_deep'):
+            check = validator(contract.result_schema(kind))
+            self.assertTrue(check.is_valid(base), kind)  # an older Sentinel's result has none
+            self.assertTrue(check.is_valid({**base, 'not_checked': [{'target': 'example.com:22', 'reason': 'nothing answered on this port'}]}), kind)
+            for bad in ([{'target': 'example.com:22'}], [{'target': 'example.com:22', 'reason': 'x' * 201}], 'example.com:22',
+                        [{'target': 'example.com:22', 'reason': 'x', 'extra': 1}], [{'target': 'a', 'reason': 'b'}] * 65):
+                self.assertFalse(check.is_valid({**base, 'not_checked': bad}), (kind, bad))
+
+
+if __name__ == '__main__':
+    unittest.main()

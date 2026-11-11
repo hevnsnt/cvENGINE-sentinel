@@ -6,6 +6,7 @@ local runs, its targets and reads results with the same values, so a flag change
 Nothing in here runs a tool or reads the environment: it is data and pure functions. A setting the server reads from its environment (the UDP
 port list, the packet rate) is passed in by the caller.
 """
+import ipaddress
 import re
 from urllib.parse import urlparse
 
@@ -35,8 +36,9 @@ NUCLEI_DEFAULT_PORTS = (80, 443)  # the ports a bare host or address is probed o
 # with one of these classes from what it observed (nmap, the http probe, the port inventory); a Sentinel that is sent no label reads the port
 # number in ``NUCLEI_SERVICE_PORTS`` itself.
 NUCLEI_WEB = 'web'  # an http or https service: the http and ssl templates, and every other template type that is not a raw tcp one
-NUCLEI_UNKNOWN = 'unknown'  # an open port nothing says what speaks on: no template is sent to it
+NUCLEI_UNKNOWN = 'unknown'  # an open port whose service has no class of its own, or that nothing says what speaks on: the generic network templates
 NUCLEI_TCP_TYPES = ('tcp', 'javascript')  # nuclei's raw-socket template types (nuclei calls "network" templates "tcp"): they connect to the template's own ports
+NUCLEI_NETWORK_TYPES = (*NUCLEI_TCP_TYPES, 'ssl')  # what a port that is not web may receive: never an http template
 # class -> (the nuclei tags of its templates, the template types that may run on it). An empty tag list means every tag: the class is picked by type
 # alone (a TLS endpoint gets the ssl templates: a handshake and what the certificate says, nothing that speaks a protocol on top).
 NUCLEI_SERVICES = {
@@ -55,77 +57,154 @@ NUCLEI_SERVICE_NAMES = {
     'smtps': 'tls', 'imaps': 'tls', 'pop3s': 'tls', 'ldapssl': 'tls', 'ldaps': 'tls', 'ftps': 'tls',
 }
 # the IANA port of each class, read only when the port has no service name and no web evidence (an older server, a port the port scan found but
-# nmap could not name)
+# nmap could not name); the well-known web ports are here too, so a task with no labels still sends HTTP to a web port and to nothing else
 NUCLEI_SERVICE_PORTS = {
     22: 'ssh', 21: 'ftp', 23: 'telnet', 25: 'smtp', 587: 'smtp', 2525: 'smtp', 143: 'imap', 110: 'pop3', 465: 'tls', 993: 'tls', 995: 'tls',
     636: 'tls', 990: 'tls', 3306: 'mysql', 5432: 'postgres', 1433: 'mssql', 6379: 'redis', 27017: 'mongodb', 11211: 'memcached', 389: 'ldap',
     445: 'smb', 139: 'smb', 3389: 'rdp', 5900: 'vnc',
+    **{p: 'web' for p in (80, 443, 3000, 8000, 8008, 8080, 8081, 8443, 8888, 9443)},
 }
-# The most one host:port of a non-web service receives from one task: a request rate and a number of connections in flight, and the seconds the
-# Sentinel keeps one run on it. nuclei has no per-host rate flag, so a Sentinel runs each non-web host:port as its own nuclei process, which makes
-# these bounds exact: rate (-rl) and in-flight work (-c templates, 1 host at a time, 1 payload, 1 javascript runtime per template) are per process.
-# sshd's default MaxStartups 10:30:100 starts refusing connections when ten are open and unauthenticated at once, so two in flight is a fifth of the
-# room (the Sentinel runs at most a few nuclei tasks at once, and the budget is per task), and 2 requests a second for 120 seconds is at most 240
-# requests per port per task, against 17,000 and more before.
-NUCLEI_SERVICE_BUDGET = {'rate': 2, 'concurrency': 2, 'seconds': 120}
-NUCLEI_SERVICE_FLOOR = {'rate': 1, 'concurrency': 1, 'seconds': 10}  # a task can ask for less, never for nothing
+# What one host:port of a non-web service receives from one task. nuclei paces only its http and dns requests (its rate limiter, ``-rl``, is called by
+# the http and dns protocols and by nothing else: measured on nuclei 3.11.1, an ``-rl 2`` run opened 47 to 141 connections to one port within a tenth
+# of a second), and a template that sets its own ``threads`` ignores the concurrency flags. So a Sentinel paces the connections itself: each
+# template of a service runs as its own nuclei process, one at a time (-c 1, one host, one payload, one javascript runtime), and a new one starts no
+# sooner than ``pause_ms`` after the previous one ended. A template that sets its own parallelism is not run. The bound on one host:port is therefore:
+# one connection in flight per template run, one template run per ``pause_ms``, and ``seconds`` in all. Measured numbers are in docs/SENTINELS.md.
+# ``pause_ms`` is the one value a task can raise but never lower; ``seconds`` and ``web_rate`` it can lower but never raise.
+NUCLEI_SERVICE_BUDGET = {'pause_ms': 500, 'seconds': 300, 'web_rate': 25}
+NUCLEI_SERVICE_FLOOR = {'seconds': 10, 'web_rate': 1}  # a task can ask for less, never for nothing
+NUCLEI_SERVICE_PAUSE_MAX = 10000
+# The pause a class needs of its own. OpenSSH 9.8 and later (PerSourcePenalties, on by default) adds 5 seconds of penalty to a source for each failed
+# authentication and refuses the source once 15 seconds have built up. Each of the 15 javascript ssh templates opens a session and makes one authentication
+# attempt with no credential (an unknown user, to read the methods the server offers), so a pause of 500 ms made a real OpenSSH 10.3 refuse the
+# Sentinel after the fourth template (measured: "drop connection ... penalty: attempted authentication by invalid user"). A pause of 5.5 seconds between
+# template runs keeps the penalty from building up (measured: no penalty over the whole class). The task's own pause counts when it is longer.
+NUCLEI_SERVICE_CLASS_PAUSE_MS = {'ssh': 5500}
+# Tags no service run ever has: the web floor (``dos``) and every template that guesses credentials, fuzzes or says it is intrusive. A credential attempt
+# is off unless the owner turns it on: the same rule the OpenVAS and nmap runs follow (no brute force family, no intrusive script).
+NUCLEI_SERVICE_EXCLUDED_TAGS = (*NUCLEI_EXCLUDED_TAGS, 'default-login', 'bruteforce', 'fuzz', 'intrusive')
 # the hosts that stop being scanned after this many failed requests (nuclei -mhe; its default is 30): a port that does not speak the protocol stops being tried
 NUCLEI_SERVICE_HOST_ERRORS = 10
+NUCLEI_SERVICE_SILENT_RUNS = 3  # template runs that get no answer at all before the port is given up on (one can fail for its own reasons)
+NUCLEI_SERVICE_TEMPLATE_SECONDS = 30  # one template run is stopped after this long
+NUCLEI_SERVICE_MAX_REQUESTS = 50  # a template that declares more requests than this (``max-request``) is not run on a service: it is a spray, not a check
+# The share of a task's time the non-web ports may use together: the web pass runs first and is stopped when only this share is left, so a task with
+# many slow service ports cannot starve the web scan. Ports not reached are reported (``not_checked``), never silently dropped.
+NUCLEI_SERVICE_TIME_SHARE = 0.35
+NUCLEI_SERVICE_MAX_PORTS = 6  # the most non-web ports the server puts in one task (it splits the rest): kept equal in cveFeed.nuclei_services
+# the most one web host receives per second: nuclei's per-host rate limit (``-per-host-rate-limit``) with ``-rl`` as the per-host rate. The global rate
+# is shared out among the hosts of a pass so no host gets more than its share and the pass as a whole stays at the global rate (``nuclei_web_flags``).
+NUCLEI_WEB_HOST_RATE = 25
 
 
 def nuclei_service_budget(requested=None):
-    """The per-service budget a run uses: what the task asked for (``{'rate', 'concurrency', 'seconds'}``), each value held between
-    ``NUCLEI_SERVICE_FLOOR`` and ``NUCLEI_SERVICE_BUDGET``. A task can lower the budget, never raise it, so no server can make a Sentinel hit a service harder
-    than this library says. A missing, malformed or boolean value is the ceiling."""
+    """The per-service budget a run uses: what the task asked for (``{'pause_ms', 'seconds', 'web_rate'}``) held to this library's bounds. A task can
+    lower ``seconds`` and ``web_rate`` and raise ``pause_ms`` (a gentler run), never the other way, so no server can make a Sentinel hit a service harder
+    than this library says. A missing, malformed or boolean value is the library's own."""
     asked = requested if isinstance(requested, dict) else {}
-    out = {}
-    for key, ceiling in NUCLEI_SERVICE_BUDGET.items():
+
+    def number(key):
         value = asked.get(key)
-        ok = isinstance(value, int) and not isinstance(value, bool)
-        out[key] = min(ceiling, max(NUCLEI_SERVICE_FLOOR[key], value)) if ok else ceiling
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+    out = dict(NUCLEI_SERVICE_BUDGET)
+    pause = number('pause_ms')
+    if pause is not None:
+        out['pause_ms'] = min(NUCLEI_SERVICE_PAUSE_MAX, max(NUCLEI_SERVICE_BUDGET['pause_ms'], pause))
+    for key in ('seconds', 'web_rate'):
+        value = number(key)
+        if value is not None:
+            out[key] = min(NUCLEI_SERVICE_BUDGET[key], max(NUCLEI_SERVICE_FLOOR[key], value))
     return out
+
+
+def nuclei_label_key(target):
+    """``(host, port)`` of a ``host:port`` or ``[ipv6]:port`` nuclei target in one canonical spelling (lower case, no trailing dot, an address as
+    ``ipaddress`` writes it, a name in its ASCII form, the port as a number), or ``None`` for a bare host, an address or a URL. Both the server's labels and the
+    targets a Sentinel validated are keyed with it, so a spelling the validation changed still finds its label."""
+    if not isinstance(target, str) or '://' in target:
+        return None
+    text = target.strip()
+    if text.startswith('['):
+        host, _, rest = text[1:].partition(']')
+        port = rest[1:] if rest.startswith(':') else ''
+    elif text.count(':') == 1:
+        host, _, port = text.partition(':')
+    else:
+        return None
+    if not port.isdigit() or not host:
+        return None
+    host = host.strip().lower().rstrip('.')
+    try:
+        host = str(ipaddress.ip_address(host))
+    except ValueError:
+        try:
+            host = host.encode('idna').decode('ascii')
+        except UnicodeError:
+            pass
+    return host, int(port)
+
+
+def nuclei_service_pause_ms(service, budget=None):
+    """The pause between two template runs on a port of class ``service``: the budget's, or the class's own when it needs more (``NUCLEI_SERVICE_CLASS_PAUSE_MS``)."""
+    return max(NUCLEI_SERVICE_CLASS_PAUSE_MS.get(service, 0), nuclei_service_budget(budget)['pause_ms'])
 
 
 def nuclei_service_class(port, label=None):
     """The class of the nuclei target ``host:port`` for a Sentinel: the server's ``label`` when it is one this library knows
     (``web``, ``unknown`` or a key of ``NUCLEI_SERVICES``); a label it does not know is ``unknown`` (a newer server's class is never guessed at). Without a
-    label the port number decides, and a port that is in no table is taken to be web, as every port was before the classes existed."""
+    label the port number decides, and a port that is in no table is ``unknown``, never web: HTTP goes only to a port that is known to speak it."""
     if isinstance(label, str):
         return label if label in NUCLEI_SERVICES or label in (NUCLEI_WEB, NUCLEI_UNKNOWN) else NUCLEI_UNKNOWN
-    return NUCLEI_SERVICE_PORTS.get(port, NUCLEI_WEB)
+    return NUCLEI_SERVICE_PORTS.get(port, NUCLEI_UNKNOWN)
 
 
-def nuclei_service_tags(service, task_tags=()):
-    """The ``-tags`` a run on a ``service`` class takes: the class's own tags, narrowed to the ones the task asked for when it asked for tags. ``None``
-    when the task's tags and the class's share none: the task named nothing that speaks this protocol, so nothing runs on it. An empty list means the
-    class takes any tag (a TLS endpoint): then the task's tags alone."""
-    own = set(NUCLEI_SERVICES[service][0])
-    asked = {t for t in task_tags or () if isinstance(t, str)}
+def nuclei_service_selection(service, task_tags=()):
+    """``{'types', 'tags', 'etags'}`` of the templates one service class takes, or ``None`` when the task's tags name nothing that speaks this protocol.
+    The class's own tags, narrowed to the ones the task asked for when it asked for tags. A class with no tags of its own (a TLS endpoint) takes the task's
+    tags alone. The unknown class takes every network template that belongs to no class of its own (it excludes every class's tags) and the task's tags.
+    ``etags`` are ``NUCLEI_SERVICE_EXCLUDED_TAGS``, always."""
+    asked = sorted({t for t in task_tags or () if isinstance(t, str)})
+    etags = list(NUCLEI_SERVICE_EXCLUDED_TAGS)
+    if service == NUCLEI_UNKNOWN:
+        owned = sorted({tag for tags, _types in NUCLEI_SERVICES.values() for tag in tags})
+        return {'types': list(NUCLEI_NETWORK_TYPES), 'tags': asked, 'etags': [*etags, *[t for t in owned if t not in asked]]}
+    own, types = set(NUCLEI_SERVICES[service][0]), list(NUCLEI_SERVICES[service][1])
     if not own:
-        return sorted(asked)
+        return {'types': types, 'tags': asked, 'etags': etags}
     if not asked:
-        return sorted(own)
-    both = own & asked
-    return sorted(both) if both else None
+        return {'types': types, 'tags': sorted(own), 'etags': etags}
+    both = own & set(asked)
+    return {'types': types, 'tags': sorted(both), 'etags': etags} if both else None
 
 
-def nuclei_service_flags(service, budget=None):
-    """The nuclei flags of a run on one non-web host:port of class ``service``: the shared run flags with the rate, concurrency and time of
-    ``nuclei_service_budget``, one host and one payload at a time, one javascript runtime, no http probing, only the template types of the class and the host
-    dropped after ``NUCLEI_SERVICE_HOST_ERRORS`` failures. No retry: a service that did not answer is not asked again."""
-    spend = nuclei_service_budget(budget)
+def nuclei_service_flags(selection, budget=None):
+    """The nuclei flags of one template run on one non-web host:port: the shared run flags, one template at a time (-c 1), one host, one payload, one
+    javascript runtime, no http probing, the template types of the class, the excluded tags of ``selection`` and the host dropped after
+    ``NUCLEI_SERVICE_HOST_ERRORS`` failures. No retry: a service that did not answer is not asked again. ``-rl`` stays at one: nuclei applies it to http
+    and dns only (see ``NUCLEI_SERVICE_BUDGET``); the pacing is the pause between runs."""
     flags = list(NUCLEI_FLAGS)
-    for flag, value in (('-rl', spend['rate']), ('-c', spend['concurrency']), ('-retries', 0), ('-timeout', 5)):
+    for flag, value in (('-rl', 1), ('-c', 1), ('-retries', 0), ('-timeout', 5), ('-etags', ','.join(selection['etags']))):
         flags[flags.index(flag) + 1] = str(value)
-    flags += ['-bs', '1', '-pc', '1', '-jsc', str(spend['concurrency']), '-nh', '-mhe', str(NUCLEI_SERVICE_HOST_ERRORS),
-              '-pt', ','.join(NUCLEI_SERVICES[service][1])]
+    flags += ['-bs', '1', '-pc', '1', '-jsc', '1', '-nh', '-mhe', str(NUCLEI_SERVICE_HOST_ERRORS), '-pt', ','.join(selection['types'])]
     return flags
 
 
-def nuclei_web_flags():
+def nuclei_service_listing_flags(selection):
+    """The flags of the listing (``nuclei -tl``: no network) of the templates one service class would run, for the Sentinel to cache once per bundle."""
+    flags = ['-tl', '-silent', '-duc', '-nc', '-pt', ','.join(selection['types']), '-etags', ','.join(selection['etags'])]
+    return flags + (['-tags', ','.join(selection['tags'])] if selection['tags'] else [])
+
+
+def nuclei_web_flags(hosts=1, budget=None):
     """The shared run flags for web targets: raw tcp and javascript templates left out, because they connect to the ports their template names
-    (22, 25, 3306...) whatever the target's own port is, so a bare host name would reach every one of them."""
-    return [*NUCLEI_FLAGS, '-ept', ','.join(NUCLEI_TCP_TYPES)]
+    (22, 25, 3306...) whatever the target's own port is, so a bare host name would reach every one of them. The rate is per host
+    (``-per-host-rate-limit``): ``NUCLEI_WEB_HOST_RATE`` (the task can lower it), or the global rate shared among ``hosts`` when that is less, so one host
+    never receives the whole global rate and a pass of many hosts stays near it."""
+    flags = [*NUCLEI_FLAGS, '-ept', ','.join(NUCLEI_TCP_TYPES)]
+    global_rate = int(flags[flags.index('-rl') + 1])
+    per_host = max(1, min(nuclei_service_budget(budget)['web_rate'], global_rate // max(1, int(hosts))))
+    flags[flags.index('-rl') + 1] = str(per_host)
+    return flags + ['-per-host-rate-limit']
 
 
 def nuclei_flags(tags=None, profile='normal', severities=None, tech=False, templates_dir=None, secret_file=None, proxy_args=()):
