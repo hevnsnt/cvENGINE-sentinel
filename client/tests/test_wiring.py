@@ -19,11 +19,18 @@ def run_threads_inline(**_kwargs):
 class SweepTests(unittest.TestCase):
     def test_leftover_gvm_objects_are_swept_once_when_the_stack_is_ready(self):
         d = make_daemon()
+        callers = []
+
+        def sweep(*args, **kwargs):
+            callers.append(threading.current_thread())
+            return {'tasks': 1, 'targets': 1}
+        # The patches are process wide. A heartbeat thread another test's Daemon still has in flight can run its own sweep inside them (it was
+        # seen to: "called 3 times" on CI), so only the calls this test made, on this thread, are counted.
         with mock.patch('client.tools.gvm_available', return_value=True), mock.patch('client.tools.gvm_ready', return_value=True), \
-                mock.patch('client.openvas.cleanup_orphans', return_value={'tasks': 1, 'targets': 1}) as sweep, run_threads_inline():
+                mock.patch('client.openvas.cleanup_orphans', side_effect=sweep), run_threads_inline():
             d._sweep_gvm_orphans()
             d._sweep_gvm_orphans()
-        sweep.assert_called_once_with()
+        self.assertEqual(callers.count(threading.current_thread()), 1)
 
     def test_nothing_is_swept_while_the_stack_is_absent_or_not_ready(self):
         d = make_daemon()
