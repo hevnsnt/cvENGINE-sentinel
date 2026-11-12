@@ -372,7 +372,7 @@ class NucleiReachTests(unittest.TestCase):
         template = 'id: t\ninfo:\n  name: t\n  severity: info\nhttp:\n  - method: GET\n    path:\n      - "{{BaseURL}}/"\n    matchers:\n      - type: status\n        status:\n          - 200\n'
         errors = [{'input': 'closed.example.test', 'error': 'dial tcp: connect: connection refused'}]
 
-        def status(argv, timeout, register=None):
+        def status(argv, timeout, register=None, work=None):
             if '-elog' in argv:
                 with open(argv[argv.index('-elog') + 1], 'w', encoding='utf-8') as handle:
                     handle.write(json.dumps(errors[0]) + '\n')
@@ -380,7 +380,7 @@ class NucleiReachTests(unittest.TestCase):
         with mock.patch('client.tools._run_status', side_effect=status):
             sha = checks.digest(template)  # an approved check (contract 4: client.tests.test_ai_checks covers the refusals)
             outcomes = tools.run_nuclei_validate('test', template, ['closed.example.test', 'www.example.test'], template_sha256=sha,
-                                                 approved=(sha, 'test'))['outcomes']
+                                                 approved=(sha, 'test', ['closed.example.test', 'www.example.test']))['outcomes']
         by_host = {o['host']: o for o in outcomes}
         self.assertIn('never reached', by_host['closed.example.test']['error'])
         self.assertEqual(by_host['www.example.test'].get('error', ''), '')

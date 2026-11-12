@@ -1257,8 +1257,10 @@ class Daemon:
         return {'outcome': 'done', **out}
 
     def _approved_check(self, task_id):
-        """``(sha256, mode)`` of the check the server approves for the ``nuclei_validate`` task ``task_id`` this Sentinel holds, asked separately from the
-        task (``GET sentinel/tasks/<id>/check``). Any refusal or a malformed answer is ``Refused``: the check is not run."""
+        """``(sha256, mode, sorted targets)`` of the check the server approves for the ``nuclei_validate`` task ``task_id`` this Sentinel holds, asked
+        separately from the task (``GET sentinel/tasks/<id>/check``). ``tools._verified_template`` holds the task to all three. Any refusal or a
+        malformed answer is ``Refused``: the check is not run. This catches a task changed in transit or edited after dispatch; it does not protect
+        against a compromised server, which answers for itself (this Sentinel's own allowlist and target limit are the defence there)."""
         from cvengine_scanner import checks
         try:
             answer = self.client.call('GET', f'sentinel/tasks/{task_id}/check')
@@ -1266,9 +1268,12 @@ class Daemon:
             raise tools.Refused(f'refused: the server did not approve this check (HTTP {exc.status})') from None
         sha256 = answer.get('template_sha256') if isinstance(answer, dict) else None
         mode = answer.get('mode') if isinstance(answer, dict) else None
+        targets = answer.get('targets') if isinstance(answer, dict) else None
         if not isinstance(sha256, str) or not checks.SHA256.match(sha256) or mode not in ('validate', 'test'):
             raise tools.Refused('refused: the server did not approve this check (no hash in its answer)')
-        return sha256, mode
+        if not isinstance(targets, list) or len(targets) > tools.MAX_TARGETS or not all(isinstance(t, str) for t in targets):
+            raise tools.Refused('refused: the server did not approve this check (its answer names no targets)')
+        return sha256, mode, sorted(targets)
 
     def _secret_rules(self, target):
         """The instance's custom secret rules a ``secrets_scan`` task names (``rules_bundle_sha256``), as YAML text, or ``None`` when it names none.

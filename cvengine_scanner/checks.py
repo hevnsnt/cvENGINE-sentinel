@@ -9,7 +9,8 @@ templates (``fixtures/checks/corpus.json``), so the two cannot drift apart witho
 
 ``scope_problem`` is stricter than the server's read-only check: a check may reach only the task's own target and port. A literal port on a network
 host (``{{Hostname}}:22``) or a ``port`` key would reach another port of the same host (or another loopback port of this machine during the benign
-fixture run), so neither is accepted. ``check_problem`` is both.
+fixture run), so neither is accepted. ``check_problem`` is both, then the allowlist of ``check_allowlist`` (the whole document: YAML that
+nuclei's parser reads alike, known keys only, only side-effect-free helpers in any expression, plain requests).
 
 Pure: text in, a reason out (``''`` when acceptable). PyYAML is imported only when a template is read.
 """
@@ -242,5 +243,8 @@ def scope_problem(text):
 
 
 def check_problem(text):
-    """``readonly_problem``, then ``scope_problem``: the whole rule for a check a Sentinel that is not the built-in scanner runs."""
-    return readonly_problem(text) or scope_problem(text)
+    """``readonly_problem``, then ``scope_problem``, then the allowlist (``check_allowlist.allowlist_problem``: one YAML document nuclei and PyYAML read
+    alike, known keys only, only side-effect-free helpers and listed names in every expression, plain requests with no body, annotation,
+    credential or steering header): the whole rule for a check a Sentinel that is not the built-in scanner runs."""
+    from cvengine_scanner import check_allowlist
+    return readonly_problem(text) or scope_problem(text) or check_allowlist.allowlist_problem(text)

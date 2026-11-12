@@ -189,10 +189,11 @@ class PathProbeTests(unittest.TestCase):
 TEMPLATE = 'id: example\ninfo:\n  name: Example\n  severity: info\nhttp:\n  - method: GET\n    path: ["{{BaseURL}}/"]\n'
 
 
-def approved(mode):
-    """The hash of TEMPLATE and the server's answer for it: what a contract-4 task carries (client.tests.test_ai_checks covers each refusal)."""
+def approved(mode, targets=()):
+    """The hash of TEMPLATE and the server's answer for it (hash, mode, sorted targets): what a contract-4 task carries (client.tests.test_ai_checks
+    covers each refusal)."""
     from cvengine_scanner import checks
-    return {'template_sha256': checks.digest(TEMPLATE), 'approved': (checks.digest(TEMPLATE), mode)}
+    return {'template_sha256': checks.digest(TEMPLATE), 'approved': (checks.digest(TEMPLATE), mode, sorted(targets))}
 
 
 class NucleiValidateTests(unittest.TestCase):
@@ -217,7 +218,8 @@ class NucleiValidateTests(unittest.TestCase):
         extract_only = {'host': 'https://93.184.215.20', 'matcher-status': False}
         lines = json.dumps(hit) + '\n' + json.dumps(extract_only) + '\n'
         with mock.patch.object(tools, '_run_status', return_value=(0, lines, '')):
-            out = tools.run_nuclei_validate('test', TEMPLATE, ['https://93.184.215.14', 'https://93.184.215.20', 'https://10.0.0.1'], **approved('test'))
+            out = tools.run_nuclei_validate('test', TEMPLATE, ['https://93.184.215.14', 'https://93.184.215.20', 'https://10.0.0.1'],
+                                            **approved('test', ['https://93.184.215.14', 'https://93.184.215.20', 'https://10.0.0.1']))
         first, second, third = out['outcomes']
         self.assertTrue(first['vulnerable'])
         self.assertEqual(len(first['hit']['request']), 8000)
@@ -227,13 +229,13 @@ class NucleiValidateTests(unittest.TestCase):
     def test_the_template_test_takes_the_egress_proxy_and_the_loopback_fixture_does_not(self):
         with mock.patch.object(tools, '_proxy_args', return_value=['-proxy', 'http://proxy.example.test:3128']) as proxy, \
                 mock.patch.object(tools, '_run_status', return_value=(0, '', '')) as run:
-            tools.run_nuclei_validate('test', TEMPLATE, ['https://93.184.215.14'], **approved('test'))
+            tools.run_nuclei_validate('test', TEMPLATE, ['https://93.184.215.14'], **approved('test', ['https://93.184.215.14']))
         proxy.assert_called_once_with('nuclei', ['https://93.184.215.14'])
         self.assertEqual(run.call_args[0][0][-2:], ['-proxy', 'http://proxy.example.test:3128'])
 
     def test_a_nuclei_failure_is_an_error_for_every_target(self):
         with mock.patch.object(tools, '_run_status', return_value=(2, '', 'boom')):
-            out = tools.run_nuclei_validate('test', TEMPLATE, ['https://93.184.215.14'], **approved('test'))
+            out = tools.run_nuclei_validate('test', TEMPLATE, ['https://93.184.215.14'], **approved('test', ['https://93.184.215.14']))
         self.assertEqual(out['outcomes'][0]['error'], 'boom')
 
     def test_an_unknown_mode_or_oversized_template_is_refused(self):

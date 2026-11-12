@@ -130,6 +130,7 @@ def _resolver():
         if isinstance(answers[name], Exception):
             raise answers[name]
         return answers[name]
+    resolve.answers = answers
     return resolve
 
 
@@ -1113,16 +1114,138 @@ def _template_text(text):
     return text
 
 
-def _run_status(argv, timeout, register):
-    """``(returncode, stdout, stderr)`` of a run whose non-zero exit is an answer (nuclei -validate), each stream bounded."""
-    proc = _start(argv, register, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL)
+# The environment of an AI-written check's nuclei run (review D6): nothing of the Sentinel's own (its enrollment blob, token file, server address or any
+# other secret), only what nuclei needs to start, find its own files and go through a configured proxy.
+_CHECK_ENV_KEYS = ('PATH', 'HOME', 'LANG', 'LC_ALL', 'TZ', 'SSL_CERT_FILE', 'SSL_CERT_DIR', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY',
+                   'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy')
+CHECK_MEMORY_BYTES = 2 * 1024 * 1024 * 1024  # a hard cap on the data a check's nuclei may map (RLIMIT_DATA); GOMEMLIMIT keeps it near 500 MB first
+CHECK_OUTPUT_BYTES = 16 * 1024 * 1024  # stdout of a check's nuclei run: at most 64 targets of one template, far below this
+
+
+def _check_env(work):
+    """The minimal environment of a check's nuclei run: ``_CHECK_ENV_KEYS`` from this one, the Go memory limit, and the run's own scratch
+    directory as ``TMPDIR``."""
+    env = {k: os.environ[k] for k in _CHECK_ENV_KEYS if k in os.environ}
+    env.setdefault('PATH', '/usr/local/bin:/usr/bin:/bin')
+    env['GOMEMLIMIT'] = f'{admission.NUCLEI_GOMEMLIMIT_MB}MiB'
+    if work:
+        env['TMPDIR'] = work
+    return env
+
+
+def _limit_memory():
+    """In the child, before nuclei starts: a hard limit on its data segment (``CHECK_MEMORY_BYTES``), so a template that makes nuclei grow is stopped
+    by the kernel, not by this container's out-of-memory killer."""
+    import resource
+    resource.setrlimit(resource.RLIMIT_DATA, (CHECK_MEMORY_BYTES, CHECK_MEMORY_BYTES))
+
+
+def _run_status(argv, timeout, register, work=None):
+    """``(returncode, stdout, stderr)`` of a check's nuclei run, whose non-zero exit is an answer (nuclei -validate). It runs with the minimal
+    environment of ``_check_env`` (no secret of this Sentinel), under the memory cap of ``_limit_memory``, killed with its whole group at ``timeout``,
+    and stdout is read through a cap (``CHECK_OUTPUT_BYTES``: more stops the run and raises ``ToolOutputError``), stderr through ``_STDERR_KEPT``."""
+    proc = _start(argv, register, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, env=_check_env(work),
+                  preexec_fn=_limit_memory)
+    out, err, too_big = bytearray(), bytearray(), threading.Event()
+
+    def overflow():
+        too_big.set()
+        _kill_group(proc)
+    readers = [threading.Thread(target=_drain, args=(proc.stdout, out, CHECK_OUTPUT_BYTES, overflow), daemon=True),
+               threading.Thread(target=_drain, args=(proc.stderr, err, _STDERR_KEPT), daemon=True)]
+    for reader in readers:
+        reader.start()
     try:
-        out, err = proc.communicate(timeout=timeout)
+        proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
         _kill_group(proc)
-        proc.communicate()
+        proc.wait()
+        _join(proc, readers)
         raise
-    return proc.returncode, out[-MAX_TOOL_OUTPUT:].decode('utf-8', 'replace'), err[-_STDERR_KEPT:].decode('utf-8', 'replace')
+    _join(proc, readers)
+    if too_big.is_set():
+        raise ToolOutputError(f'{os.path.basename(argv[0])} wrote more than {CHECK_OUTPUT_BYTES} bytes of output; the run was stopped')
+    return proc.returncode, out.decode('utf-8', 'replace'), err.decode('utf-8', 'replace')
+
+
+class PinnedResolver:
+    """A DNS server on a loopback port of this Sentinel that nuclei is pointed at with ``-r`` for a check's run (review D5): it answers each name
+    the task named with exactly the addresses that name resolved to when scope judged it (``pins``: ``{name: [address, ...]}``), and every other
+    question with \"no such name\". A target name whose DNS answer changes after it was judged (DNS rebinding) still reaches only the judged
+    address, and a template's own name lookups reach no outside resolver. A context manager; ``path`` is the resolvers file for ``-r``."""
+
+    def __init__(self, pins, work):
+        self.pins = {str(k).rstrip('.').lower(): list(v) for k, v in (pins or {}).items()}
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.bind(('127.0.0.1', 0))
+        self.sock.settimeout(0.5)
+        self.path = os.path.join(work, 'resolvers.txt')
+        with open(self.path, 'w', encoding='ascii') as handle:
+            handle.write(f'127.0.0.1:{self.sock.getsockname()[1]}\n')
+        self.stopped = threading.Event()
+        self.thread = threading.Thread(target=self._serve, daemon=True)
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self.stopped.set()
+        self.thread.join(2)
+        self.sock.close()
+
+    def answer(self, query):
+        """The reply to one DNS query (bytes), or ``None`` for something that is not one."""
+        if len(query) < 17:
+            return None
+        pos, labels = 12, []
+        while pos < len(query) and query[pos]:
+            size = query[pos]
+            if size > 63 or pos + 1 + size > len(query):
+                return None
+            labels.append(query[pos + 1:pos + 1 + size].decode('ascii', 'replace'))
+            pos += 1 + size
+        end = pos + 5
+        if end > len(query):
+            return None
+        qtype = int.from_bytes(query[pos + 1:pos + 3], 'big')
+        name = '.'.join(labels).lower()
+        question = query[12:end]
+        if name not in self.pins:
+            return query[:2] + b'\x81\x83' + b'\x00\x01\x00\x00\x00\x00\x00\x00' + question  # NXDOMAIN
+        records = b''
+        count = 0
+        for address in self.pins[name]:
+            ip = ipaddress.ip_address(address)
+            if (qtype, ip.version) in ((1, 4), (28, 6)):
+                records += b'\xc0\x0c' + qtype.to_bytes(2, 'big') + b'\x00\x01\x00\x00\x00\x3c' + len(ip.packed).to_bytes(2, 'big') + ip.packed
+                count += 1
+        return query[:2] + b'\x81\x80' + b'\x00\x01' + count.to_bytes(2, 'big') + b'\x00\x00\x00\x00' + question + records
+
+    def _serve(self):
+        while not self.stopped.is_set():
+            try:
+                query, peer = self.sock.recvfrom(4096)
+            except socket.timeout:
+                continue
+            except OSError:
+                return
+            reply = self.answer(query)
+            if reply is not None:
+                try:
+                    self.sock.sendto(reply, peer)
+                except OSError:
+                    pass
+
+
+def _pins(answers):
+    """``{name: [address, ...]}`` from a ``_resolver``'s remembered answers: every address each name resolved to when it was judged."""
+    pins = {}
+    for name, infos in answers.items():
+        if isinstance(infos, Exception) or _is_ip(name):
+            continue
+        pins[name] = list(dict.fromkeys(info[4][0].split('%')[0] for info in infos if _is_ip(info[4][0].split('%')[0])))
+    return pins
 
 
 def is_hit(row):
@@ -1152,8 +1275,11 @@ def _benign_fixture(path, register):
     server.daemon_threads = True
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
+    work = os.path.dirname(path)
     try:
-        code, out, _err = _run_status([NUCLEI_BIN, '-t', path, '-u', f'http://127.0.0.1:{server.server_port}', *NUCLEI_FIXTURE_FLAGS], 30, register)
+        with PinnedResolver({}, work) as stub:  # the loopback page is an address: no name needs an answer, and a template's own lookups get none
+            code, out, _err = _run_status([NUCLEI_BIN, '-t', path, '-u', f'http://127.0.0.1:{server.server_port}', *NUCLEI_FIXTURE_FLAGS,
+                                           '-r', stub.path], 30, register, work=work)
         if code != 0:
             return False, 'local fixture execution failed'
         for line in out.splitlines():
@@ -1196,7 +1322,12 @@ def _trim_hit(row):
 
 
 def _template_test(path, hosts, register):
-    """One outcome per host, in order (cveFeed.templategen._run_template's shape). A host scope refuses is not tested, never run."""
+    """One outcome per host, in order (cveFeed.templategen._run_template's shape). A host scope refuses is not tested, never run.
+
+    Each name is resolved once, here, and every address it resolved to is judged by scope (``_validate_one``); nuclei is then pointed at a resolver
+    of this Sentinel's own that answers each name with exactly those addresses (``PinnedResolver``, ``-r``), so a DNS answer that changes after the
+    check (rebinding to an internal or metadata address) is never reached. ``_pinned`` (names replaced by their first IPv4 address) is not used:
+    nuclei would then send the address as the Host header and SNI and file each hit under the address, not the host the task named."""
     allowed, refused = [], {}
     resolve = _resolver()
     for host in hosts:
@@ -1212,8 +1343,9 @@ def _template_test(path, hosts, register):
         with tempfile.TemporaryDirectory(prefix='nuclei-test-') as work:
             errlog = os.path.join(work, 'errors.jsonl')
             try:
-                code, out, err = _run_status([NUCLEI_BIN, '-t', path, '-l', host_path, *NUCLEI_TEMPLATE_FLAGS, '-elog', errlog, *proxy],
-                                             NUCLEI_TEMPLATE_TIMEOUT, register)
+                with PinnedResolver(_pins(resolve.answers), work) as stub:
+                    code, out, err = _run_status([NUCLEI_BIN, '-t', path, '-l', host_path, *NUCLEI_TEMPLATE_FLAGS, '-elog', errlog, '-r', stub.path,
+                                                  *proxy], NUCLEI_TEMPLATE_TIMEOUT, register, work=work)
             finally:
                 os.unlink(host_path)
             errors = parse_nuclei_errors(_read_error_log(errlog))
@@ -1259,23 +1391,47 @@ def _write_template(path, text):
         handle.write(text)
 
 
-def _verified_template(path, text, template_sha256, approved, mode, builtin):
+def _approval(approved):
+    """``(sha256, mode, sorted targets)`` of the server's answer for the task (``daemon._approved_check``), or ``(None, None, None)``. An answer of
+    two (no targets) names none: it can approve only a ``validate`` check, which has none."""
+    if isinstance(approved, tuple) and len(approved) == 3 and isinstance(approved[2], list):
+        return approved[0], approved[1], sorted(approved[2])
+    if isinstance(approved, tuple) and len(approved) == 2:
+        return approved[0], approved[1], []
+    return None, None, None
+
+
+def _same_hash(a, b):
+    """Whether two sha256 hex strings are equal, compared in constant time (``hmac.compare_digest``)."""
+    import hmac
+    return isinstance(a, str) and isinstance(b, str) and a.isascii() and b.isascii() and hmac.compare_digest(a, b)
+
+
+def _verified_template(path, text, template_sha256, approved, mode, builtin, targets=None):
     """Write ``text`` to ``path`` and return only once the file is exactly what the server approved, else raise ``Refused`` with nothing run.
 
     Outside the built-in scanner every rule applies: the task names a well-formed ``template_sha256``; the server, asked separately for this task
-    (``sentinel/tasks/<id>/check``, the daemon's ``_approved_check``), named the same hash and the same mode (``approved``); the bytes on disk,
-    read back, hash to it (a check altered on the way or on disk does not); and the text passes the server's read-only rules and reaches only the
-    task's own target and port (``cvengine_scanner.checks``). The built-in scanner runs with the server's own trust, as before (an older server
-    sends no hash, the all-templates setting may send an installed template that is not read-only), but a hash or an answer it is given is still
-    checked. The file is left read-only for the run."""
+    (``sentinel/tasks/<id>/check``, the daemon's ``_approved_check``), named the same hash, the same mode and the same sorted targets (``approved``);
+    the bytes on disk, read back, hash to it; and the text passes this Sentinel's own rules (``cvengine_scanner.checks.check_problem``: read-only,
+    only the task's own target and port, and the whole-document allowlist). The built-in scanner runs with the server's own trust, as before (an
+    older server sends no hash, the all-templates setting may send an installed template that is not read-only), but a hash or an answer it is
+    given is still checked. The file is left read-only for the run.
+
+    What the hash does and does not protect (review D4): it catches a check changed in transit, a task edited after the server made it (the server
+    hashes its stored text again before it answers), and a file changed on disk between this write and the run. It does NOT protect against a
+    compromised or malicious server: the task and the answer come from the same server, which can name any hash it likes. Against that, this
+    Sentinel's own allowlist (``check_problem``) and its target limit (scope, one task's own hosts and ports, ``_template_test``) are the defence."""
     from cvengine_scanner import checks
     if not builtin or template_sha256 is not None:
         if not isinstance(template_sha256, str) or not checks.SHA256.match(template_sha256):
             raise Refused('refused: the check names no valid template hash, so this Sentinel cannot tell it is the one the server approved')
     if not builtin or approved is not None:
-        server_sha, server_mode = approved if isinstance(approved, tuple) and len(approved) == 2 else (None, None)
-        if server_sha != template_sha256 or server_mode != mode:
+        server_sha, server_mode, server_targets = _approval(approved)
+        asked = sorted(targets or []) if mode == 'test' else []
+        if not _same_hash(server_sha, template_sha256) or server_mode != mode:
             raise Refused('refused: the server did not approve this check for this task (its hash or mode is not the one the server named)')
+        if server_targets != asked:
+            raise Refused('refused: the server did not approve this check for these targets (its answer names other targets than the task)')
     _write_template(path, text)
     os.chmod(path, 0o400)
     with open(path, 'rb') as handle:
@@ -1284,8 +1440,9 @@ def _verified_template(path, text, template_sha256, approved, mode, builtin):
         on_disk = written.decode('utf-8')
     except UnicodeDecodeError:
         on_disk = None
-    if template_sha256 is not None and (on_disk is None or checks.digest(on_disk) != template_sha256):
-        raise Refused('refused: the check does not match its template hash (altered after the server approved it)')
+    if template_sha256 is not None and (on_disk is None or not _same_hash(checks.digest(on_disk), template_sha256)):
+        raise Refused('refused: the check does not match its template hash (changed in transit, edited after the server approved it, or changed on '
+                      'disk before the run)')
     if not builtin:
         problem = checks.check_problem(on_disk)
         if problem:
@@ -1295,8 +1452,8 @@ def _verified_template(path, text, template_sha256, approved, mode, builtin):
 def run_nuclei_validate(mode, template, targets=None, register=None, template_sha256=None, approved=None, builtin=False):
     """Mode ``validate``: ``nuclei -validate`` on a new template and, when it passes, the benign loopback fixture. Mode ``test``: the approved template
     against ``targets`` (each judged by scope, as every nuclei target is), one outcome per target. The template is written to a private scratch
-    directory, verified there (``_verified_template``: hash, the server's approval, read-only, own target and port) and nothing else is loaded
-    with it. ``approved`` is ``(sha256, mode)`` as the server named it for this task; ``builtin`` is whether this is the install's own scanner.
+    directory, verified there (``_verified_template``: hash, the server's approval, read-only, own target and port, the allowlist) and nothing else
+    is loaded with it. ``approved`` is ``(sha256, mode, sorted targets)`` as the server named it for this task; ``builtin`` is whether this is the install's own scanner.
     The result names the hash it ran (``template_sha256``) when the task named one."""
     text = _template_text(template)
     if mode not in ('validate', 'test'):
@@ -1306,10 +1463,10 @@ def run_nuclei_validate(mode, template, targets=None, register=None, template_sh
     echo = {'template_sha256': template_sha256} if template_sha256 is not None else {}
     with tempfile.TemporaryDirectory(prefix='nuclei-validate-') as work:
         path = os.path.join(work, 'template.yaml')
-        _verified_template(path, text, template_sha256, approved, mode, builtin)
+        _verified_template(path, text, template_sha256, approved, mode, builtin, targets)
         if mode == 'validate':
             code, out, err = _run_status([NUCLEI_BIN, *NUCLEI_VALIDATE_FLAGS[:1], '-t', path, *NUCLEI_VALIDATE_FLAGS[1:]], NUCLEI_VALIDATE_TIMEOUT,
-                                         register)
+                                         register, work=work)
             output = (out + err).strip()
             valid = code == 0 and 'error' not in output.lower()
             result = {'valid': valid, 'output': output[-2000:], 'fixture_ok': None, 'fixture_note': '', **echo}
