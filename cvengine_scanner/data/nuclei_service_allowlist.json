@@ -1,5 +1,5 @@
 {
- "nuclei_templates": "v10.5.1",
+ "nuclei_templates": "v10.5.2",
  "generated_by": "scripts/generate_service_allowlist.py",
  "reviewed_exceptions": [
   "mongodb-unauth",
@@ -24,7 +24,7 @@
    ]
   },
   "CVE-2001-1473": {
-   "sha256": "6c3ada6f5610a2021c3eb314d968071b5193b7c14256603f686dba4b2b8da42f",
+   "sha256": "e7fc9699b6588f4474e07572408a0e31f36ab72f9e40debbb4e43842d56c2dd1",
    "path": "network/cves/2001/CVE-2001-1473.yaml",
    "severity": "high",
    "classes": [
@@ -32,7 +32,7 @@
    ]
   },
   "CVE-2004-0437": {
-   "sha256": "15bec471be57ef759a267ea35587d5939e9082bc731cf4d4875c948c18d72d88",
+   "sha256": "9e524ef10bfd5fa440ba7df85d825b8188c8466dcaf04a408227b3c1de513618",
    "path": "network/cves/2004/CVE-2004-0437.yaml",
    "severity": "medium",
    "classes": [
@@ -40,7 +40,7 @@
    ]
   },
   "CVE-2004-0656": {
-   "sha256": "091e53b28aba918d2db4fa5a5a0940f0911d8d92302bab23fd4039e2776e8be7",
+   "sha256": "2ffb3c60d0015e4c0877bdd55d1d963ad26089e5bd27038336536e55dfa8a8a4",
    "path": "network/cves/2004/CVE-2004-0656.yaml",
    "severity": "medium",
    "classes": [
@@ -48,7 +48,7 @@
    ]
   },
   "CVE-2004-1602": {
-   "sha256": "aa8777a6c2a66cacd59b0b853e349c12ca14618525ebc3e98d347dd840f4f355",
+   "sha256": "c2d1782802264b999dfda578ba43d4798278843d9960dcb474f4b80a63380563",
    "path": "network/cves/2004/CVE-2004-1602.yaml",
    "severity": "medium",
    "classes": [
@@ -56,7 +56,7 @@
    ]
   },
   "CVE-2004-1641": {
-   "sha256": "ce1acbbe0c124a5f695fdba41d56de9dd0418ad3bb754a492e1048f47454d6db",
+   "sha256": "40bfbea0593cd1210a35187c5aed31af6ae50111a1130bcdc1a36c2cc6d56554",
    "path": "network/cves/2004/CVE-2004-1641.yaml",
    "severity": "medium",
    "classes": [
@@ -64,7 +64,7 @@
    ]
   },
   "CVE-2005-0850": {
-   "sha256": "49d1a1940584cd6bbc30ccac425d7ce703dc9ecce94a6e5029dff40b6b2bf0a6",
+   "sha256": "701f0c4f9f4ba07440417ab98d94bbaaad1b7a7bb1b8c75640b58cd682f779d0",
    "path": "network/cves/2005/CVE-2005-0850.yaml",
    "severity": "medium",
    "classes": [
@@ -72,7 +72,7 @@
    ]
   },
   "CVE-2005-0851": {
-   "sha256": "61249f64452e9d758bd9220ea66493489a05a0efadee794699aa0a439f049d5d",
+   "sha256": "cf113cc6e45031aa99cfbdf30c275a353fd03aadd4fe98844e696b4e199a7cb1",
    "path": "network/cves/2005/CVE-2005-0851.yaml",
    "severity": "medium",
    "classes": [
@@ -80,7 +80,7 @@
    ]
   },
   "CVE-2006-2173": {
-   "sha256": "52aeba8f92d6cf6d5ddc7c9f0477bec86407fdebf7b8043dea7e8cceb0ff6c70",
+   "sha256": "4b952ed84e05ca3cae1fbcff9bd40c26cf819f8eb8d67c7aa033432318164bab",
    "path": "network/cves/2006/CVE-2006-2173.yaml",
    "severity": "medium",
    "classes": [
@@ -88,7 +88,7 @@
    ]
   },
   "CVE-2006-6565": {
-   "sha256": "3217cc60b03204ac71b23fcad08116d9b010ec5d9f6477bcaa3347bbdc62d68a",
+   "sha256": "ca56e0dce89903ede98a163326e82b4d86463261a3529eaf18836261d7e02b34",
    "path": "network/cves/2006/CVE-2006-6565.yaml",
    "severity": "medium",
    "classes": [
@@ -96,7 +96,7 @@
    ]
   },
   "CVE-2008-0702": {
-   "sha256": "d867f7925c4fd76a1b3dddaed033c77ccd828ec2b82f8410b80f57e06bb577b3",
+   "sha256": "c72e5a3b9f85c70bfd5a2b49da0c351bce605e020679e0f038350b7ed60197ee",
    "path": "network/cves/2008/CVE-2008-0702.yaml",
    "severity": "critical",
    "classes": [
@@ -104,7 +104,7 @@
    ]
   },
   "CVE-2008-5281": {
-   "sha256": "285896846526490eff9812b67d7cb0df003b517c7438ef26c136902157397325",
+   "sha256": "0e2cd200e1a65dbeb21773e11a57c52af4c75cbcd031f555a93a8c390593ea1b",
    "path": "network/cves/2008/CVE-2008-5281.yaml",
    "severity": "critical",
    "classes": [
@@ -112,7 +112,7 @@
    ]
   },
   "CVE-2009-0884": {
-   "sha256": "1693ceda39a7aff7f6f14f43353bb6e03e835a855b19df06c6bb424db78933ae",
+   "sha256": "158962461ab63bb7fb189e3a0d8c3b8255d257f0d4f8e403c0eb1873944ae764",
    "path": "network/cves/2009/CVE-2009-0884.yaml",
    "severity": "medium",
    "classes": [
@@ -120,7 +120,7 @@
    ]
   },
   "CVE-2010-3867": {
-   "sha256": "1b19789cb982fe9c82441202567ae3a23ef9bea2310f3cfbdcf41cc48e6768f1",
+   "sha256": "3e05f3123244aaa2b27a007a575f8ecb5b18b26ceb7bd9d74f049b5707ef20e7",
    "path": "network/cves/2010/CVE-2010-3867.yaml",
    "severity": "high",
    "classes": [
@@ -128,7 +128,7 @@
    ]
   },
   "CVE-2011-0762": {
-   "sha256": "108d027ea016710d1f5b679c6bd83f8c1b1e07c376955b16c27da9968ae56bfa",
+   "sha256": "0eb39bcc8d0644f9827117230eca4c2170548024f85bb1449a741dc72ae4d097",
    "path": "network/cves/2011/CVE-2011-0762.yaml",
    "severity": "medium",
    "classes": [
@@ -136,7 +136,7 @@
    ]
   },
   "CVE-2011-3171": {
-   "sha256": "003bdea5d456c2e142d748947274638c8bfa13854caeb15307286dc919f782f6",
+   "sha256": "c1aba76ec2652bccbdeb311e1fe0fd54313f84ab27cb00bbf13c184ae59df3b4",
    "path": "network/cves/2011/CVE-2011-3171.yaml",
    "severity": "low",
    "classes": [
@@ -144,7 +144,7 @@
    ]
   },
   "CVE-2014-1841": {
-   "sha256": "7e3fb9170c20dadd754cdd7b93420fda3c987e9df177801e16376724f82f2e46",
+   "sha256": "b04225368b5027931079c374002305a763a84aa85f28d1bc57c11cbc519a321f",
    "path": "network/cves/2014/CVE-2014-1841.yaml",
    "severity": "medium",
    "classes": [
@@ -152,7 +152,7 @@
    ]
   },
   "CVE-2014-1842": {
-   "sha256": "d53c7dc9fce2b4712e46acf8ab788abc4dbd2d106b72d28428829489b5ce5836",
+   "sha256": "97bb4bc81b0bb3a124072341279fb55405b1bb478dd6c4f0c413f000c7b66502",
    "path": "network/cves/2014/CVE-2014-1842.yaml",
    "severity": "medium",
    "classes": [
@@ -160,7 +160,7 @@
    ]
   },
   "CVE-2014-1843": {
-   "sha256": "793324019a21c2032ec1d738d7ae74e6b4733cafcdb15c810baa8fb7b59a5180",
+   "sha256": "b84d13bceaf61347e8913f77b174d5b60146b3083270fa3099b06e57195dc735",
    "path": "network/cves/2014/CVE-2014-1843.yaml",
    "severity": "medium",
    "classes": [
@@ -168,7 +168,7 @@
    ]
   },
   "CVE-2015-1419": {
-   "sha256": "88f427f5e3689811eb2a0f40472cba6ef290a32b1f46dcc5b29035b54b94ae67",
+   "sha256": "d0610405b5765983096a60369de840cdf1640ac51d6ae5724c04551bcfe60747",
    "path": "network/cves/2015/CVE-2015-1419.yaml",
    "severity": "medium",
    "classes": [
@@ -176,7 +176,7 @@
    ]
   },
   "CVE-2019-18217": {
-   "sha256": "73182fded0bf22b31d6ee50f9fcb5bc94e17765334e9c5cab19e6e43dc07c355",
+   "sha256": "5ce5b771228ec299abe6f6efc67a848e316f39da83049cbe3b770b4708aec7bd",
    "path": "network/cves/2019/CVE-2019-18217.yaml",
    "severity": "high",
    "classes": [
@@ -184,7 +184,7 @@
    ]
   },
   "CVE-2019-20176": {
-   "sha256": "d4358d9008c3827c3c0cf36691abd087972032bdad1e81c26e9bc7db6fe2ab45",
+   "sha256": "e3690dd64a0499cb380eb59cd50577c4cdcd30d08bda1f654fce31984ca7e532",
    "path": "network/cves/2019/CVE-2019-20176.yaml",
    "severity": "high",
    "classes": [
@@ -192,7 +192,7 @@
    ]
   },
   "CVE-2020-35359": {
-   "sha256": "43b1e4a3ca3db365c11dc60db6b49604ab41a79aa09d645ff11d2015b0a98dc5",
+   "sha256": "860e70d149cc10e328aacca129f850cad514716aaf028d1e5512a09a6cda73d6",
    "path": "network/cves/2020/CVE-2020-35359.yaml",
    "severity": "high",
    "classes": [
@@ -200,7 +200,7 @@
    ]
   },
   "CVE-2020-9274": {
-   "sha256": "01e8fba232e3aec1ede01bed42276426828d5573946355ec14008883bc60f5ed",
+   "sha256": "9aac03d9ffd0aecac888aca19aee983aef4ec7e68caed1568ab00ac1d38e946b",
    "path": "network/cves/2020/CVE-2020-9274.yaml",
    "severity": "high",
    "classes": [
@@ -216,7 +216,7 @@
    ]
   },
   "CVE-2021-30047": {
-   "sha256": "524e87930f764b249b4df2c8bd54f53a6a949c067092b99511f8c5da0aabb702",
+   "sha256": "9091118f12d54a2d71ead7154b952ce035e8509e90675f2139048b6b897feb77",
    "path": "network/cves/2021/CVE-2021-30047.yaml",
    "severity": "high",
    "classes": [
@@ -232,7 +232,7 @@
    ]
   },
   "CVE-2021-40524": {
-   "sha256": "b4567cd377ba9fb3fda45cac670871ca43476c32e54cd9c88d0b03e7f41d5ad3",
+   "sha256": "332f6f84b7262bf44c50e3a1de170a24b76ac0509ce2eeb00776e6412c47d7c2",
    "path": "network/cves/2021/CVE-2021-40524.yaml",
    "severity": "high",
    "classes": [
@@ -240,7 +240,7 @@
    ]
   },
   "CVE-2023-22629": {
-   "sha256": "918e189b095b930af632d0b9541b79b2054f5bfe6ebdf0e5ed32210a6a35fba2",
+   "sha256": "b3ba8521a5463a55a7326316538d437dfbf71b797b0f7fa2d573cbb182ea5423",
    "path": "network/cves/2023/CVE-2023-22629.yaml",
    "severity": "high",
    "classes": [
@@ -248,7 +248,7 @@
    ]
   },
   "CVE-2023-48795": {
-   "sha256": "51b029e971a39153585ff21c058256910ac0ee8fd129924de5d8d540dad733c2",
+   "sha256": "f0442d27c3c74b29a139e4cf095f88617ea90dc382ab154058466e8264ccc23c",
    "path": "javascript/cves/2023/CVE-2023-48795.yaml",
    "severity": "medium",
    "classes": [
@@ -256,7 +256,7 @@
    ]
   },
   "CVE-2023-51713": {
-   "sha256": "4b381d3ec198afafa255b7c4e66a7dff2a48b9ccfab161dd7761253254d8b9ae",
+   "sha256": "0ed50421d217808bab30d23bebb652b8691c2e3aca2d3d94dbaf40267c7ee58c",
    "path": "network/cves/2023/CVE-2023-51713.yaml",
    "severity": "high",
    "classes": [
@@ -264,7 +264,7 @@
    ]
   },
   "CVE-2024-48208": {
-   "sha256": "4df3c60c75fbb2ddf0967a2be0785f74d5b6fe2143a33daf452b03b8281a68a2",
+   "sha256": "eac3ce6f6f4510650ccdc781ea2ab998e4105c28a70ac29cddc0bbb36b2abbc3",
    "path": "network/cves/2024/CVE-2024-48208.yaml",
    "severity": "high",
    "classes": [
@@ -272,7 +272,7 @@
    ]
   },
   "CVE-2024-48651": {
-   "sha256": "18dbd05cb7f0ce74e69c0f48c5b87de6d0541d5eabd96a49103acec912c7a9f9",
+   "sha256": "b793858d9470f394c5e8b0e4244ce0e054de6f8a05b90848b551fea54a49b522",
    "path": "network/cves/2024/CVE-2024-48651.yaml",
    "severity": "high",
    "classes": [
@@ -280,7 +280,7 @@
    ]
   },
   "CVE-2026-4480": {
-   "sha256": "82d981ce4304861b22e55af8e23761834f19e195a9bc9e83a0b2191811ed9648",
+   "sha256": "c7a0f021d9821f9f537269a4120aec82397a80d23e6977b85306c0a69b2f1c5e",
    "path": "javascript/cves/2026/CVE-2026-4480.yaml",
    "severity": "critical",
    "classes": [
@@ -722,15 +722,6 @@
    "severity": "info",
    "classes": [
     "ftp"
-   ]
-  },
-  "deprecated-tls": {
-   "sha256": "eddb5bd44d68955aab0ef060083271db8ea0fd495bdf50859d5d1d54ea421531",
-   "path": "ssl/deprecated-tls.yaml",
-   "severity": "info",
-   "classes": [
-    "tls",
-    "unknown"
    ]
   },
   "detect-addpac-voip-gateway": {

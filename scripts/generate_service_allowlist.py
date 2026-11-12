@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Make the nuclei service-port allowlist from a nuclei-templates release.
 
-  python3 scripts/generate_service_allowlist.py --templates DIR [--release v10.5.1] [--write | --check] [--summary]
+  python3 scripts/generate_service_allowlist.py --templates DIR [--release v10.5.2] [--write | --check] [--summary]
 
 A nuclei run on a service port (every port that is not web) runs only the templates on this list (``cvengine_scanner/nuclei_allowlist.py``): default deny.
 This script decides what is on it. Start: every template of the library that has a tcp, javascript or ssl block (the types a service run selects). A template

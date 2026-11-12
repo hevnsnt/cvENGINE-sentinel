@@ -22,7 +22,7 @@ def _templates():
 class ShippedListTests(unittest.TestCase):
     def test_the_list_records_the_release_and_a_sha256_for_every_template(self):
         data = al.load_allowlist()
-        self.assertEqual(data['nuclei_templates'], 'v10.5.1')
+        self.assertEqual(data['nuclei_templates'], 'v10.5.2')
         self.assertGreater(len(data['templates']), 250)
         for tid, entry in data['templates'].items():
             with self.subTest(template=tid):
