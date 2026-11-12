@@ -192,7 +192,8 @@ class ContractTests(unittest.TestCase):
 
     def test_the_contract_version_is_not_bumped_for_an_optional_field(self):
         doc = contract.load()
-        self.assertEqual((doc['contract_version'], doc['min_supported_contract_version']), (3, 1))
+        # 4 since the AI-written checks' template hash (a required target field of nuclei_validate), not for this optional field
+        self.assertEqual((doc['contract_version'], doc['min_supported_contract_version']), (4, 1))
 
 
 if __name__ == '__main__':

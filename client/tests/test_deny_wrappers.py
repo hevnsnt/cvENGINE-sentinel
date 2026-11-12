@@ -126,6 +126,7 @@ def fixture(kind):
 PAGE_READ = {'reads': [{'id': '1', 'op': 'head', 'host': 'www.example.com', 'url': 'https://www.example.com/'}],
              'scope': {'hosts': ['www.example.com'], 'domains': [], 'excluded': [], 'excluded_trees': [], 'private': False, 'addresses': [], 'blocked': []}}
 TEMPLATE = fixture('nuclei_validate')['template']
+TEMPLATE_SHA = fixture('nuclei_validate')['template_sha256']
 SIGNED_TARGET = {'hosts': [{'host': 'www.example.com', 'urls': ['https://www.example.com/', 'https://www.example.com/account']}], 'scope': PAGE_READ['scope']}
 
 
@@ -171,7 +172,8 @@ CASES = {
     'rdp_shot': lambda: tools.RUNNERS['rdp_shot'](PUBLIC, 3389),
     'db_probe': lambda: tools.RUNNERS['db_probe'](PUBLIC, 6379, 'redis'),
     'path_probe': lambda: tools.RUNNERS['path_probe']([{'ip': PUBLIC, 'port': 81}], pause=0),
-    'nuclei_validate': lambda: tools.RUNNERS['nuclei_validate']('test', TEMPLATE, ['https://www.example.com/']),
+    'nuclei_validate': lambda: tools.RUNNERS['nuclei_validate']('test', TEMPLATE, ['https://www.example.com/'], template_sha256=TEMPLATE_SHA,
+                                                                 approved=(TEMPLATE_SHA, 'test', ['https://www.example.com/'])),  # an approved check (contract 4), so the address is what refuses it
     # the in-process probes take the whole target, scope policy included
     'http_probe': lambda: tools.RUNNERS['http_probe'](fixture('http_probe')),
     'dns_resolve': lambda: tools.RUNNERS['dns_resolve'](fixture('dns_resolve')),

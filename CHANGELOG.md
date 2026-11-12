@@ -48,6 +48,29 @@
   check also fails on a stale watchdog, heartbeat or poll loop. W6 stops taking work under 300 MB of free disk and removes only its own temp and cache files.
   W7 the heartbeat's optional `info.watchdog` (last tick, actions, kills, overcommit, reasons). W8 per-rule variables, one log line per action, and a kind
   stopped 3 times in an hour is not asked for for 30 minutes. No contract change, no new task kind.
+- **AI-written checks run on your own Sentinels (contract version 4).** With no built-in scanner, cvENGINE now sends its AI-written and approved
+  nuclei checks (`nuclei_validate`) and its scan path survey (`path_probe`) to the project's own Sentinels. A Sentinel that is not the built-in scanner
+  runs a check only when all of these hold: the task names the sha256 of the template (`template_sha256`), the file it wrote and read back hashes to it,
+  its server names the same hash and mode for that task when asked separately (`GET sentinel/tasks/<id>/check`), the template passes the server's
+  read-only rules (`cvengine_scanner.checks`, one shared test corpus) and it reaches only the task's own target and port (no literal port, no `port`
+  key). A result line for a host the task did not name is never a hit, and the result echoes the hash it ran. The image gains PyYAML 6.0.3.
+  Second security pass: the whole template is held to an allowlist (`cvengine_scanner.check_allowlist`): one YAML document that PyYAML and
+  nuclei's yaml.v3 read alike (no duplicate keys, second document, anchors, merge keys, tags, YAML 1.1 words, U+2028), known keys only, and every
+  `{{...}}` expression, `dsl` string and variable may call only side-effect-free string, encoding, hash and compare helpers (no `resolve`, `jarm`,
+  `public_ip`, `wait_for`, `print_debug`, clock or random helpers); a raw request is exactly one GET, HEAD or OPTIONS request with no body or `@`
+  annotation, and no request sets `Host` (outside raw), `Authorization`, `Cookie`, a forwarding header or a credential-looking value. The server's
+  check answer names the task's sorted targets too, compared with the task's (hashes with `hmac.compare_digest`). nuclei is pointed with `-r` at a
+  resolver of the Sentinel's own that answers each target name only with the addresses scope judged and nothing else (a name whose answer changes after
+  it was judged still reaches only the judged address; an install proxy resolves the name itself, outside this resolver, and a name with non-ASCII
+  letters is pinned in its Unicode form while nuclei asks in punycode, so it gets no answer), and
+  runs with a minimal environment (no Sentinel secret), a 2 GiB data limit, its time limit and a 16 MiB cap on the output read. The hash protects
+  against a check changed in transit, edited after dispatch or changed on disk before the run; not against a compromised server, against which the
+  Sentinel's own allowlist and target limit are the defence.
+  Third security pass: a string literal in an expression may not contain a quote character of either kind (nuclei before 3.9.0 ended a string at either
+  kind, which hid a `resolve()` call from the allowlist), and a Sentinel refuses to run an AI-written check on a nuclei older than 3.9.0 or with no
+  readable version; the gate refuses with a reason instead of raising on a deeply nested document or a value of an unexpected type (nesting is capped at
+  20); names are matched whole (no trailing newline); control characters and U+00A7 are refused in decoded strings too; a plain decimal such as
+  `cvss-score: 9.8`, CRLF line ends, upper-case metadata keys and a list of authors are accepted (both YAML readers read them the same way).
 - Kingfisher 2.18.1 (was 2.16.0): the Dockerfile pin and both checksums (from the release's own files, build attestation verified), the library constant and the README row.
 - **The image's tools are checked against their newest releases.** `scripts/check_tool_versions.py` reads every pin (the Dockerfile versions and base image digest, `requirements.txt`, the pip bootstrap pins, the Greenbone image digests) and prints each one beside the newest upstream release. A weekly run keeps one issue open while something is behind, every pull request gets a warning, and *Tag a release* refuses to tag while a tool is behind or a lookup fails (`--fail-if-behind`).
 - A durable result spool (`client/spool.py`): a result cvENGINE does not take (an update, a restart, an outage) is written to disk (0600, atomic) and delivered oldest
