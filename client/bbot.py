@@ -70,6 +70,27 @@ _CONFIG_REJECTED = re.compile(r'Error parsing command-line (?:config option|pres
 _PRESETS = ('subdomain-enum', 'web', 'web-screenshots', 'kitchen-sink')
 _FLAGS = ('passive', 'safe')
 _EXCLUDE = re.compile(r'^[a-z0-9_]{1,40}$')
+# bbot 3.1.0 must not be more aggressive than 3.0.2 was (the owner's network was once blocked by a CDN for aggressive scanning). What 3.1.0 changed, and what
+# holds it back here (the command carries these after the task's own values, and nothing in a task can change them):
+#  - lightfuzz probes hosts behind a WAF by default (avoid_wafs: try_bypasses) and nowafpls pads request bodies to get past the WAF: lightfuzz is told to
+#    skip WAF hosts as 3.0.2 did, and nowafpls never runs (neither is part of the presets a task may name, so this is a guard against a future preset);
+#  - js_unpacker (new, in the web flag) requests every source map a script names: not run, 3.0.2 sent nothing of the kind;
+#  - dnsdumpster and otilabs (a keyed RapidAPI) now need an API key and soft-fail without one: left out unless the project stored a key for them.
+_HELD_OUT = ('nowafpls', 'js_unpacker')
+_NEEDS_KEY = ('dnsdumpster', 'otilabs')
+# DNS. 3.0.2 ran dns.threads 25 under subdomain-enum (its preset set it) and 10 otherwise, per resolver; 3.1.0 raised the default to 50, added a 256 ceiling over
+# all resolvers and brute force through up to 600 resolvers with no rate limit and 20 retries a name. dns.max_concurrency is the same number as threads, so the
+# total never exceeds what one 3.0.2 resolver was given; the brute force keeps the preset's 1000 in flight but is capped at 1000 queries a second, retried 3 times.
+_DNS_THREADS = {'subdomain-enum': 25, 'kitchen-sink': 25}
+_DNS_THREADS_OTHER = 10
+_BRUTE_RATE = 1000
+_BRUTE_RETRIES = 3
+# baddns 2.5.0 added DELEGATION to its defaults (_acme-challenge, _dmarc and 15 DKIM selectors a host): the lists below are 3.0.2's, without it.
+_BADDNS = '[CNAME,MX,TXT]'
+_BADDNS_HEAVY = '[CNAME,NS,MX,TXT,references,DMARC,SPF,MTA-STS,WILDCARD]'
+# bbot 3.1 names a technology by its product ("openssh") and carries the CPE in a ``cpe`` field; the server reads a product and a version out of a CPE
+# (``cveFeed.correlation.split_name_version``), not out of the bare product, so an application CPE is stored as 3.0.2's shodan_idb sent it.
+_APP_CPE = re.compile(r'^cpe:(?:/a:|2\.3:a:)[^:\s]*:[^:\s*-][^:\s]*', re.I)
 
 
 class Stopped(Exception):
@@ -263,6 +284,9 @@ class Collector:
         elif etype in ('TECHNOLOGY', 'WAF') and isinstance(payload, dict):
             where = p.host(payload.get('host') or host)
             name = payload.get('technology') if etype == 'TECHNOLOGY' else re.sub(r'\s*\([^)]*\)\s*$', '', str(payload.get('waf') or '')).strip()
+            cpe = payload.get('cpe') if etype == 'TECHNOLOGY' else None
+            if isinstance(cpe, str) and _APP_CPE.match(cpe.strip()):
+                name = cpe.strip().lower()
             name = _text(name, 500)
             if where and name and name.lower() not in ('generic detection', 'unknown', 'none'):
                 self._add('technologies', {'host': where, 'technology': name}, (where, name))
@@ -478,7 +502,7 @@ def redact(text, secrets):
 
 # --- running bbot ------------------------------------------------------------------------------------------------------------------------
 
-def build_command(target, out_dir, blacklist_file, keys_file=None):
+def build_command(target, out_dir, blacklist_file, keys_file=None, keys=None):
     """The bbot command line for ``target`` (``$defs/targets/bbot_discovery``): what the server's own local run of the same mode runs. Every value is
     checked against the contract's enums and patterns: nothing from the task reaches the command line as free text but the target's domain, which
     must be a plain host name."""
@@ -494,9 +518,14 @@ def build_command(target, out_dir, blacklist_file, keys_file=None):
     scope = target.get('scope') if isinstance(target.get('scope'), dict) else {}
     if (scope.get('bounty') is True or target.get('trufflehog') is not True) and 'trufflehog' not in exclude:
         exclude.append('trufflehog')  # it verifies a found secret against its issuer: never for a bug bounty project, never unless allowed
+    keyed = (keys or {}).get('modules') if isinstance((keys or {}).get('modules'), dict) else {}
+    exclude += [m for m in _HELD_OUT + tuple(m for m in _NEEDS_KEY if not (isinstance(keyed.get(m), dict) and keyed[m].get('api_key'))) if m not in exclude]
     cmd = [BBOT_BIN, '-t', domain, '-p', *presets, *([keys_file] if keys_file else [])]
     if exclude:
         cmd += ['-em', *exclude]
+    threads = max([_DNS_THREADS.get(p, _DNS_THREADS_OTHER) for p in presets])
+    cmd += ['-c', f'dns.threads={threads}', f'dns.max_concurrency={threads}', f'dns.brute_rate_limit={_BRUTE_RATE}', f'dns.brute_retries={_BRUTE_RETRIES}',
+            f"modules.baddns.enabled_submodules={_BADDNS_HEAVY if 'kitchen-sink' in presets else _BADDNS}", 'modules.lightfuzz.avoid_wafs=always']
     if target.get('strict_scope') is True:
         cmd.append('--strict-scope')
     if flags:
@@ -600,7 +629,7 @@ def run_bbot_discovery(target, client, task_id, register=None, internal=False, h
         out_dir = os.path.join(work, 'scans')
         os.mkdir(out_dir, 0o700)
         collector = Collector(policy, out_dir)
-        proc = popen(build_command(target, out_dir, blacklist_file, keys_file), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        proc = popen(build_command(target, out_dir, blacklist_file, keys_file, keys), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                      bufsize=1, start_new_session=True)
         if register is not None:
             register(_Handle(proc))

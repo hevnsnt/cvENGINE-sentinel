@@ -4,6 +4,7 @@ import io
 import ipaddress
 import json
 import os
+import re
 import tempfile
 import threading
 import unittest
@@ -118,6 +119,75 @@ class CommandTests(unittest.TestCase):
                 bbot.build_command({**TARGET, 'domain': bad}, '/o', '/b')
 
 
+    def config_of(self, cmd):
+        """The ``-c key=value ...`` options of a command as a dict."""
+        self.assertIn('-c', cmd)
+        out = {}
+        for part in cmd[cmd.index('-c') + 1:]:
+            if part.startswith('-'):
+                break
+            key, _, value = part.partition('=')
+            out[key] = value
+        return out
+
+    def excluded(self, cmd):
+        if '-em' not in cmd:
+            return []
+        out = []
+        for part in cmd[cmd.index('-em') + 1:]:
+            if part.startswith('-'):
+                break
+            out.append(part)
+        return out
+
+    def test_bbot_3_1_is_held_to_the_3_0_2_dns_pace(self):
+        """3.1.0 raised dns.threads from 10 to 50 (and 25 for subdomain-enum, which no longer sets it), added a 256 ceiling and brute force through up to 600
+        resolvers with no rate limit and 20 retries. A Sentinel inside a customer network must not send more DNS than 3.0.2 did."""
+        for presets, threads in ((['subdomain-enum', 'web'], '25'), (['kitchen-sink'], '25'), (['web'], '10'), (['web-screenshots'], '10')):
+            config = self.config_of(bbot.build_command({**TARGET, 'presets': presets}, '/o', '/b'))
+            self.assertEqual(config['dns.threads'], threads, presets)
+            self.assertEqual(config['dns.max_concurrency'], threads, presets)  # the ceiling over all resolvers is one resolver's 3.0.2 share
+            self.assertLessEqual(float(config['dns.brute_rate_limit']), 1000, presets)
+            self.assertGreater(float(config['dns.brute_rate_limit']), 0, presets)  # 0 is unlimited
+            self.assertLessEqual(int(config['dns.brute_retries']), 3, presets)
+
+    def test_the_baddns_delegation_check_stays_off(self):
+        """baddns 2.5.0 turned DELEGATION on by default (_acme-challenge, _dmarc and 15 DKIM selectors a host): more DNS queries than 3.0.2 sent."""
+        light = self.config_of(bbot.build_command({**TARGET, 'presets': ['subdomain-enum', 'web']}, '/o', '/b'))
+        self.assertEqual(light['modules.baddns.enabled_submodules'], '[CNAME,MX,TXT]')  # 3.0.2's default
+        deep = self.config_of(bbot.build_command({**TARGET, 'presets': ['kitchen-sink'], 'require_flags': []}, '/o', '/b'))
+        self.assertEqual(deep['modules.baddns.enabled_submodules'], '[CNAME,NS,MX,TXT,references,DMARC,SPF,MTA-STS,WILDCARD]')  # 3.0.2's baddns-heavy
+        for config in (light, deep):
+            self.assertNotIn('DELEGATION', config['modules.baddns.enabled_submodules'])
+
+    def test_a_deep_scan_keeps_waf_fronted_hosts_out_of_lightfuzz(self):
+        """3.1.0 fuzzes WAF-tagged hosts by default (avoid_wafs: try_bypasses) and pads request bodies with nowafpls to get past the WAF; 3.0.2 skipped them."""
+        for presets in (['subdomain-enum'], ['kitchen-sink']):
+            cmd = bbot.build_command({**TARGET, 'presets': presets, 'require_flags': []}, '/o', '/b')
+            self.assertEqual(self.config_of(cmd)['modules.lightfuzz.avoid_wafs'], 'always')
+            self.assertIn('nowafpls', self.excluded(cmd))
+
+    def test_modules_new_in_3_1_that_send_more_than_3_0_2_or_need_a_key_are_left_out(self):
+        cmd = bbot.build_command(TARGET, '/o', '/b')
+        for module in ('js_unpacker', 'dnsdumpster', 'otilabs', 'nowafpls', 'trufflehog'):
+            self.assertIn(module, self.excluded(cmd), module)
+        # a project that stored a key for one of them gets it back; the other stays out
+        keyed = bbot.build_command(TARGET, '/o', '/b', None, {'modules': {'dnsdumpster': {'api_key': 'k'}, 'shodan_dns': {'api_key': 'j'}}})
+        self.assertNotIn('dnsdumpster', self.excluded(keyed))
+        self.assertIn('otilabs', self.excluded(keyed))
+        self.assertIn('nowafpls', self.excluded(keyed))
+        # a key under another name does not count, and a task that excludes a module itself does not list it twice
+        dup = bbot.build_command({**TARGET, 'exclude_modules': ['otilabs', 'dnsdumpster']}, '/o', '/b')
+        self.assertEqual(self.excluded(dup).count('otilabs'), 1)
+        self.assertEqual(self.excluded(dup).count('dnsdumpster'), 1)
+
+    def test_the_settings_never_come_from_the_task(self):
+        odd = {**TARGET, 'config': {'dns': {'threads': 500}}, 'dns_threads': 500, 'exclude_modules': ['x=1']}
+        cmd = bbot.build_command(odd, '/o', '/b')
+        self.assertNotIn('500', ' '.join(cmd))
+        self.assertEqual(self.config_of(cmd)['dns.threads'], '25')
+
+
 class CollectorTests(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp()
@@ -168,6 +238,28 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(base64.b64decode(batch['screenshots'][0]['data']), PNG)
         self.assertEqual(batch['scan_name'], 'demo_scan')
         self.assertEqual(c.waiting(), 0)
+
+    def test_a_technology_that_bbot_3_1_names_by_product_still_carries_its_version_for_the_server(self):
+        """bbot 3.1 sends ``technology: openssh`` and the CPE in a new ``cpe`` field; 3.0.2 sent the CPE itself. The server reads a product and version out of a
+        CPE (``correlation.split_name_version``) but would see only a product name with no version, so an application CPE is stored as before."""
+        c = bbot.Collector(bbot.Policy(TARGET['scope']), self.dir)
+        for e in (event('TECHNOLOGY', {'host': 'www.example.com', 'technology': 'openssh', 'cpe': 'cpe:/a:openbsd:openssh:7.2p2'}, 'www.example.com'),
+                  event('TECHNOLOGY', {'host': 'www.example.com', 'technology': 'tomcat', 'cpe': 'cpe:2.3:a:apache:tomcat:9.0.50:*:*:*:*:*:*:*'}, 'www.example.com'),
+                  event('TECHNOLOGY', {'host': 'www.example.com', 'technology': 'linux_kernel', 'cpe': 'cpe:/o:linux:linux_kernel:5.4'}, 'www.example.com'),
+                  event('TECHNOLOGY', {'host': 'www.example.com', 'technology': 'nginx'}, 'www.example.com'),
+                  event('TECHNOLOGY', {'host': 'www.example.com', 'technology': 'odd', 'cpe': 'not a cpe'}, 'www.example.com')):
+            c.add(e)
+        names = sorted(t['technology'] for t in c.take(1)['technologies'])
+        self.assertEqual(names, ['cpe:/a:openbsd:openssh:7.2p2', 'cpe:2.3:a:apache:tomcat:9.0.50:*:*:*:*:*:*:*', 'linux_kernel', 'nginx', 'odd'])
+
+    def test_every_technology_name_the_collector_stores_is_one_the_server_can_split(self):
+        """The server's own parser, ``cveFeed.correlation.split_name_version`` (copied here: the Sentinel library does not import the server), on what is stored."""
+        cpe = re.compile(r"^cpe:(?:/a:|2\.3:a:)([^:\s]*):([^:\s]+)(?::([^:\s]+))?", re.IGNORECASE)
+        c = bbot.Collector(bbot.Policy(TARGET['scope']), self.dir)
+        c.add(event('TECHNOLOGY', {'host': 'www.example.com', 'technology': 'openssh', 'cpe': 'cpe:/a:openbsd:openssh:7.2p2'}, 'www.example.com'))
+        stored = c.take(1)['technologies'][0]['technology']
+        match = cpe.match(stored)
+        self.assertEqual((match.group(2), match.group(3)), ('openssh', '7.2p2'))
 
     def test_a_list_over_its_cap_spills_into_the_next_batch(self):
         c = bbot.Collector(bbot.Policy(TARGET['scope']), self.dir)

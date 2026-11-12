@@ -1,11 +1,11 @@
 {
- "nuclei_templates": "v10.5.1",
+ "nuclei_templates": "v10.5.2",
  "generated_by": "scripts/generate_service_allowlist.py",
  "templates": {
   "CVE-2004-2687": {
    "path": "network/cves/2004/CVE-2004-2687.yaml",
    "severity": "high",
-   "sha256": "0d640c5b61bc901319a9dd6ba7b84ffc54836701753a6d5d4c4b35134b2d9e67",
+   "sha256": "28a49335085d62df2fe265fb9462e1a55827065065cc215abbcf73c72e36dc25",
    "reasons": [
     "read by a person and refused: executes a command (sh -c id) through distccd"
    ]
@@ -21,7 +21,7 @@
   "CVE-2011-2523": {
    "path": "network/cves/2011/CVE-2011-2523.yaml",
    "severity": "critical",
-   "sha256": "301c380f3fde6fc3b116a7ef48cdfd66ef1f49bb5eaac5ffe18c28e57a5aebd2",
+   "sha256": "b903c7eefdb4b2026faa5ca420bb9d84865f5ff40f43b5cde19a5c5ef88080aa",
    "reasons": [
     "content rule: the template performs a login or an authentication step (a service run never sends credentials)",
     "decode: plain /variables/cmd: passwd; plain /tcp[0]/inputs[0]/data: user",
@@ -31,7 +31,7 @@
   "CVE-2012-2122": {
    "path": "javascript/cves/2012/CVE-2012-2122.yaml",
    "severity": "medium",
-   "sha256": "44c9479c83ff285557aa863addfd89e8ee13786f3bb87bb15b3fafec6a9f2a6e",
+   "sha256": "d0643bb45689a0497f7dbcaa37638431bb88aa6be482408119f061c909be59af",
    "reasons": [
     "carries the excluded tag fuzz",
     "calls ExecuteQuery, which is not on the read-only list of library calls",
@@ -43,7 +43,7 @@
   "CVE-2015-3306": {
    "path": "network/cves/2015/CVE-2015-3306.yaml",
    "severity": "critical",
-   "sha256": "100014bb9b1a676382400c8311df40203b12302887de8fbc5e29a03da1c3515d",
+   "sha256": "5cb051def4cfe7ecff8c63fcf6a2dd4d4bae0594c14b9c04a8458508be2a0b20",
    "reasons": [
     "read by a person and refused: writes files on the target (site cpfr/cpto into the web root)"
    ]
@@ -51,7 +51,7 @@
   "CVE-2016-2004": {
    "path": "network/cves/2016/CVE-2016-2004.yaml",
    "severity": "critical",
-   "sha256": "fe9ef3fd7623ee7a2fd9558da7d89ebfb0216a856b4f17a689691bf56959c9eb",
+   "sha256": "f03859956ad1c8a6140ebfb584241fb71d789a690cf41444100bf87ad4976270",
    "reasons": [
     "read by a person and refused: executes a command (perl -esystem whoami) through HP Data Protector"
    ]
@@ -59,7 +59,7 @@
   "CVE-2016-3510": {
    "path": "network/cves/2016/CVE-2016-3510.yaml",
    "severity": "critical",
-   "sha256": "8d0efbab99f1f530458b92c6b9d3b90442979f32cfae28b202311bc1968bca30",
+   "sha256": "b3f76614497c328d46794d69886426e14ab87078143944807b49ec91c0ba199e",
    "reasons": [
     "read by a person and refused: sends a Java deserialization gadget (runs code on the target) and also connects to port 7001"
    ]
@@ -67,7 +67,7 @@
   "CVE-2016-8706": {
    "path": "javascript/cves/2016/CVE-2016-8706.yaml",
    "severity": "high",
-   "sha256": "7ceab250d023470f784dc4d2e3bfaa7fec9e3e77837fce9fddc86a2980fd3858",
+   "sha256": "0bb229a6827b90bae7a1a87477c03fcb016841da36a21ace24ea0abcd7e525fa",
    "reasons": [
     "read by a person and refused: sends an overflow-sized SASL packet to memcached (an exploit attempt that can crash it)"
    ]
@@ -75,7 +75,7 @@
   "CVE-2017-3881": {
    "path": "network/cves/2017/CVE-2017-3881.yaml",
    "severity": "critical",
-   "sha256": "422692592390f7b77711e042fd4c9d647d506d638f7185354966d0d40e90edec",
+   "sha256": "68a14e21f3172d752891acbfd7dc68cecceeaa7478fcbc7920b426e5f1ace42e",
    "reasons": [
     "read by a person and refused: sends the Cisco telnet overflow payload and connects to port 23"
    ]
@@ -83,7 +83,7 @@
   "CVE-2017-5645": {
    "path": "network/cves/2017/CVE-2017-5645.yaml",
    "severity": "critical",
-   "sha256": "464e5059501a94f46f2d649aec899612dc292a6a2999b6da16ebf7da493eba5e",
+   "sha256": "9ed1abbb5ddbe4a29d0cd0fa666f7819744bbf4b43023e7b5d8702da2cd6ad2f",
    "reasons": [
     "read by a person and refused: sends a Java deserialization gadget (runs code on the target) and connects to port 4712"
    ]
@@ -91,7 +91,7 @@
   "CVE-2018-0171": {
    "path": "javascript/cves/2018/CVE-2018-0171.yaml",
    "severity": "critical",
-   "sha256": "52df4f898afbdb0c527fb6a79908cd7193524e912b49eced1687e4f739caa152",
+   "sha256": "3f09acc85c38d6c58b2ab0cb0af8a203c04c6aea6a01029fcde7bf9f41c5acf8",
    "reasons": [
     "sends UDP: a service port is a TCP port, so the datagrams would go to a port nobody named",
     "read by a person and refused: asks the switch to copy its startup configuration to a TFTP server (Smart Install config download) and sends UDP"
@@ -109,7 +109,7 @@
   "CVE-2018-2893": {
    "path": "network/cves/2018/CVE-2018-2893.yaml",
    "severity": "critical",
-   "sha256": "3e313fae6a0cf0932466935699a669f54084f0b5cd17fc0ca5f29a7d6fd62105",
+   "sha256": "2f686b74a421826b261616de23e891e5da6f836e46d1507cbd48f3e02970e2df",
    "reasons": [
     "decode: hex /tcp[0]/inputs[2]/data: authenticate",
     "exploit class (tags cve, deserialization, rce, vkev, severity critical) and not reviewed as read-only for this file content"
@@ -118,7 +118,7 @@
   "CVE-2018-6882": {
    "path": "http/cves/2018/CVE-2018-6882.yaml",
    "severity": "medium",
-   "sha256": "f20ffd5e9d446b1f49106dcc51274bfbbf7704442a9365467c0a8553b8578196",
+   "sha256": "888f6eac7cf6c7f5fd4946963d08b3e2f113f5b86b6fd58a39c640450aeb7f34",
    "reasons": [
     "carries the excluded tag intrusive",
     "also has a block of another protocol (http), which a service port never receives",
@@ -130,7 +130,7 @@
   "CVE-2018-8011": {
    "path": "javascript/cves/2018/CVE-2018-8011.yaml",
    "severity": "high",
-   "sha256": "14955ffab3bc669ed70904c44803ed7768ce9c25fc37efaf7e5d5d2933e2a1ff",
+   "sha256": "31ca68d36630044e218a34cc260c5fb03896429cc9cf1023b93230ba7b053275",
    "reasons": [
     "carries the excluded tag dos",
     "exploit class (tags cve, vkev, severity high) and not reviewed as read-only for this file content"
@@ -139,7 +139,7 @@
   "CVE-2019-5544": {
    "path": "network/cves/2019/CVE-2019-5544.yaml",
    "severity": "critical",
-   "sha256": "871fc61711c54089f9c7959fd4d965d3849e7e8735da0199d2f18dd16e3e289c",
+   "sha256": "96f2537109139dfbafd7e06f429ced7b86a19d9251de8dfc517707df30cbf93f",
    "reasons": [
     "carries the excluded tag dos, intrusive",
     "decode: hex /tcp[0]/inputs[0]/data: default (an account name in a packet)",
@@ -149,7 +149,7 @@
   "CVE-2019-6443": {
    "path": "javascript/cves/2019/CVE-2019-6443.yaml",
    "severity": "critical",
-   "sha256": "fb654d290fce878dbc9aca69de7fe2c866511e9140a3a675051ff13bcdfc4759",
+   "sha256": "eeea6cc939d5f8e0dff5412caacdcf98e9c43b441ff9388871b79836247d8ea6",
    "reasons": [
     "sends UDP: a service port is a TCP port, so the datagrams would go to a port nobody named",
     "read by a person and refused: sends a crafted NTP control packet that triggers the out-of-bounds read (UDP)"
@@ -158,7 +158,7 @@
   "CVE-2019-9193": {
    "path": "javascript/cves/2019/CVE-2019-9193.yaml",
    "severity": "high",
-   "sha256": "e7e5a1722789e461403a1fd3f34f59daa38f6e0b862e6d374dc81fff18b46eeb",
+   "sha256": "18eb67b52656cb5f5c8b2e6eaae35d6d2ac1f20614e5fe44f81152361ca9a79d",
    "reasons": [
     "carries the excluded tag intrusive",
     "uses the javascript library postgres",
@@ -180,7 +180,7 @@
   "CVE-2020-11981": {
    "path": "network/cves/2020/CVE-2020-11981.yaml",
    "severity": "critical",
-   "sha256": "b2bc6e9e139a04cd3b2538a376d56d52a02ebc4318a6972ca5fa02f6ff769e35",
+   "sha256": "08cc0c41c6397e4c9aa50a9e4a33abb1a9d3443385739badddee18075ecef639",
    "reasons": [
     "carries the excluded tag intrusive",
     "exploit class (tags cve, intrusive, severity critical) and not reviewed as read-only for this file content"
@@ -189,7 +189,7 @@
   "CVE-2020-14644": {
    "path": "javascript/cves/2020/CVE-2020-14644.yaml",
    "severity": "critical",
-   "sha256": "2c440cd43c7e1761de1cb66edf536c44bb2dfc6d53cea85eb7484bb292569302",
+   "sha256": "8a8c4b56347fb618c96a366ed89b2646ce15595a0590f413735fbb50b82b59b7",
    "reasons": [
     "read by a person and refused: sends a Java deserialization gadget that runs curl on the target"
    ]
@@ -197,7 +197,7 @@
   "CVE-2020-1938": {
    "path": "network/cves/2020/CVE-2020-1938.yaml",
    "severity": "critical",
-   "sha256": "9bd99bef781d9e8ebf934183d913ac0a82cc752fa6224d32d1880253f56ed389",
+   "sha256": "7b7f0f54d67767d1c8944b99afef356cf59b44e3a7dc04b56dc2068cf8e9390f",
    "reasons": [
     "read by a person and refused: reads a file through the Ghostcat AJP flaw (WEB-INF/web.xml) and connects to port 8009"
    ]
@@ -205,7 +205,7 @@
   "CVE-2020-2883": {
    "path": "javascript/cves/2020/CVE-2020-2883.yaml",
    "severity": "critical",
-   "sha256": "6e7ce964c3ebb73a4f2ce1ddc56b9bcc97239b66de77285db1de71e5f19a76ed",
+   "sha256": "4e320791eeab8c29c5b3b7266532730ba80d6884176375db7e145827a0af38d9",
    "reasons": [
     "carries the excluded tag intrusive",
     "also has a block of another protocol (http), which a service port never receives",
@@ -216,7 +216,7 @@
   "CVE-2020-4429": {
    "path": "javascript/cves/2020/CVE-2020-4429.yaml",
    "severity": "critical",
-   "sha256": "860d1a0789f46a8f23cb593b6b64f40ed6927f89e862b06440d85fed2e925924",
+   "sha256": "b61d6a3770c0195ee810724ceafce5c9272917820f16fbabed066b69e2620543",
    "reasons": [
     "carries the excluded tag default-login",
     "calls Connect, which is not on the read-only list of library calls",
@@ -228,7 +228,7 @@
   "CVE-2020-7247": {
    "path": "javascript/cves/2020/CVE-2020-7247.yaml",
    "severity": "critical",
-   "sha256": "d8f179c70ba0b39a5e26516bd65c53d9ad7981e66aad7026371de07d30ec73d4",
+   "sha256": "0a851a73a0aba02774843803da74ec6cfd0724c18b06203d7660656f2c5c6acc",
    "reasons": [
     "uses the javascript library smtp",
     "calls Body, From, SMTPMessage, SendMail, To, which is not on the read-only list of library calls",
@@ -239,7 +239,7 @@
   "CVE-2021-2135": {
    "path": "http/cves/2021/CVE-2021-2135.yaml",
    "severity": "critical",
-   "sha256": "39ac55be672dd3604770ff598c90808bb79ff684ac08d9d6e39e73e868527c4e",
+   "sha256": "a2aa3498aa14b128ec9c93c93fee3aa9d3ea9427555a9bfb1cc031a63e6076ad",
    "reasons": [
     "read by a person and refused: sends a Java deserialization gadget that runs curl on the target"
    ]
@@ -247,7 +247,7 @@
   "CVE-2021-27877": {
    "path": "javascript/cves/2021/CVE-2021-27877.yaml",
    "severity": "high",
-   "sha256": "429fb5626d0ba78ff3a79fb75bef46338441dfdffd683dfa2dea937feeb0d51d",
+   "sha256": "4c514db5da6d16297fea3047cf48e1c8c63ad872935075db00bd567ad9bbfc70",
    "reasons": [
     "read by a person and refused: an NDMP request to Veritas Backup Exec port 10000; the request type was not confirmed read-only, left out"
    ]
@@ -255,7 +255,7 @@
   "CVE-2021-3122": {
    "path": "network/cves/2021/CVE-2021-3122.yaml",
    "severity": "critical",
-   "sha256": "62f1b3e0ad68d78820869ecae4d1247909ff8f654a637dfb7f8c2d308e475457",
+   "sha256": "460f93867bcd402805fa77bc29e50da7bfea5567e2a0ce57c9a4a0db225b3e26",
    "reasons": [
     "carries the excluded tag intrusive",
     "exploit class (tags cve, intrusive, rce, vkev, severity critical) and not reviewed as read-only for this file content"
@@ -264,7 +264,7 @@
   "CVE-2021-35394": {
    "path": "javascript/cves/2021/CVE-2021-35394.yaml",
    "severity": "critical",
-   "sha256": "5a533778264385f564a17a6394556417694ba7da7963f912226a81b0d9728dc5",
+   "sha256": "2aac5a7ece18d74fcf3f4555736ba86c6bdb4ba8c5dfaa5646db1211652cb7a8",
    "reasons": [
     "sends UDP: a service port is a TCP port, so the datagrams would go to a port nobody named",
     "read by a person and refused: command injection (nslookup) over UDP"
@@ -273,7 +273,7 @@
   "CVE-2021-36754": {
    "path": "javascript/cves/2021/CVE-2021-36754.yaml",
    "severity": "high",
-   "sha256": "d7fbfd42811199dcf6c77315eba28d122df8923e9c600400a1b1d7d2c49d10b7",
+   "sha256": "515123206eda9f00485789eae582c5cddaa874c62edbf079cc6e76632431e58c",
    "reasons": [
     "carries the excluded tag dos, intrusive",
     "sends UDP: a service port is a TCP port, so the datagrams would go to a port nobody named",
@@ -284,7 +284,7 @@
   "CVE-2021-44521": {
    "path": "network/cves/2021/CVE-2021-44521.yaml",
    "severity": "critical",
-   "sha256": "d3ef7df8813f4869bdc5280bf41c528a34f954326ed949927cbd3029807eaf10",
+   "sha256": "721e7da739b0752612c824626a3451c6862f1469fa58569006dcbe86b9be3497",
    "reasons": [
     "decode: hex /tcp[0]/inputs[2]/data: test (an account name in a packet)",
     "exploit class (tags cve, rce, severity critical) and not reviewed as read-only for this file content"
@@ -293,7 +293,7 @@
   "CVE-2022-0543": {
    "path": "network/cves/2022/CVE-2022-0543.yaml",
    "severity": "critical",
-   "sha256": "0e4d495544d41c0ef99dc154da65a270cc0d5c87ddf8942dfbf2966a598aa039",
+   "sha256": "cded8bc70a07c5067f134e3ae4406497e0f2ab6b0f9899bd438093980034e8ef",
    "reasons": [
     "decode: plain /tcp[0]/inputs[0]/data: usr",
     "exploit class (tags cve, kev, rce, vkev, severity critical) and not reviewed as read-only for this file content"
@@ -302,19 +302,19 @@
   "CVE-2022-24637": {
    "path": "http/cves/2022/CVE-2022-24637.yaml",
    "severity": "critical",
-   "sha256": "909f7edc7d721be9afdf0cfa8825e293511c8fa5f9d29b75837bce79512bdf01",
+   "sha256": "c970d58652a138c0e5065533db4ad8c1b1bf9660f2c27e97a7a873c1dcfd045b",
    "reasons": [
     "carries the excluded tag intrusive",
     "also has a block of another protocol (http), which a service port never receives",
     "content rule: the template performs a login or an authentication step (a service run never sends credentials)",
     "decode: key /variables/password; key /variables/secret; key /variables/secret_b64; plain /variables/secret_b64: secret (+4 more)",
-    "exploit class (tags cve, intrusive, rce, severity critical) and not reviewed as read-only for this file content"
+    "exploit class (tags cve, intrusive, rce, vkev, severity critical) and not reviewed as read-only for this file content"
    ]
   },
   "CVE-2022-24706": {
    "path": "network/cves/2022/CVE-2022-24706.yaml",
    "severity": "critical",
-   "sha256": "7739fb0c8caf7ec2874ac6b07fdc51f5852676c29b2eb854579d88a1c2617cfe",
+   "sha256": "1bb513e1151cf992e64e6338613740040b1ddc38bc38f4705161867ca1c61af6",
    "reasons": [
     "decode: key /variables/cookie; hex /variables/cmd: user; plain /tcp[0]/inputs[2]/data: cookie",
     "exploit class (tags cve, kev, rce, vkev, severity critical) and not reviewed as read-only for this file content"
@@ -323,7 +323,7 @@
   "CVE-2022-31793": {
    "path": "network/cves/2022/CVE-2022-31793.yaml",
    "severity": "high",
-   "sha256": "3fcdfc560d45dba347b4c7fa7418ee0e4a5ac1bdd626022222e03549189da3ab",
+   "sha256": "2523e7c937942eee90263247b7a168dd9231f2ac10d090bf1fd3df24ce2c5611",
    "reasons": [
     "decode: hex /tcp[0]/inputs[0]/data: passwd",
     "exploit class (tags cve, lfi, vkev, severity high) and not reviewed as read-only for this file content"
@@ -342,7 +342,7 @@
   "CVE-2023-33246": {
    "path": "network/cves/2023/CVE-2023-33246.yaml",
    "severity": "critical",
-   "sha256": "59d907b0f766a6062a9146dd364df9fcc3d3f871b5d76665f68629cabbaf0e4c",
+   "sha256": "a052c75dc10fb9f23a1f3d2ef0423ea5d310899f7a3841ff964828d07c37031d",
    "reasons": [
     "carries the excluded tag intrusive",
     "exploit class (tags cve, intrusive, kev, oast, rce, vkev, severity critical) and not reviewed as read-only for this file content"
@@ -351,7 +351,7 @@
   "CVE-2023-34039": {
    "path": "javascript/cves/2023/CVE-2023-34039.yaml",
    "severity": "critical",
-   "sha256": "c3e6036e9a9b742a8b1832383a32420ca6bd9f51fb8211f6673ff8b992847713",
+   "sha256": "759fd63daace93b5884c9ba00d46bfaf61fe06eb87764a858bdc8281ee9446b4",
    "reasons": [
     "carries the excluded tag fuzz",
     "calls ConnectWithKey, which is not on the read-only list of library calls",
@@ -362,7 +362,7 @@
   "CVE-2023-34992": {
    "path": "network/cves/2023/CVE-2023-34992.yaml",
    "severity": "critical",
-   "sha256": "bfade54d2fac3a211fbcdd3c887b515eb864f748f74b42826e0ffa6cf1922479",
+   "sha256": "661c6f784e08bb0834a1213a129121c341d5a90e1c9686299d58e149ab3c429a",
    "reasons": [
     "read by a person and refused: FortiSIEM command injection (executes curl on the target)"
    ]
@@ -370,7 +370,7 @@
   "CVE-2023-37582": {
    "path": "network/cves/2023/CVE-2023-37582.yaml",
    "severity": "critical",
-   "sha256": "5b277262b73b71798aff54fbb1ce26c6ab5c2638519debe64509913d8faa245d",
+   "sha256": "a28f55aa464810fae55ae464beb33a158dd1fad2973a99918e255ef6cf728bab",
    "reasons": [
     "carries the excluded tag intrusive",
     "decode: hex /tcp[0]/inputs[0]/data: test (an account name in a packet)",
@@ -380,7 +380,7 @@
   "CVE-2023-45249": {
    "path": "javascript/cves/2023/CVE-2023-45249.yaml",
    "severity": "critical",
-   "sha256": "0527efc5cbad847d72f63740730ddd514c8c8dccb6e4d41a075c5c1597c7911b",
+   "sha256": "e64d8ab8643a7cf35406dcc58e1b06ae29c904f0b52682002c982c0206a12518",
    "reasons": [
     "carries the excluded tag default-login",
     "uses the javascript library postgres",
@@ -393,7 +393,7 @@
   "CVE-2023-46604": {
    "path": "javascript/cves/2023/CVE-2023-46604.yaml",
    "severity": "critical",
-   "sha256": "7e072a1e12424846322d08aa76630e6ac478756e89c5c3a0bb18fe27ab02c400",
+   "sha256": "8e93738a4073b337098b45e4ae10ccea4d48aa7c34c54be71906800b4dde7656",
    "reasons": [
     "read by a person and refused: ActiveMQ deserialization (loads a remote Spring XML and runs it)"
    ]
@@ -401,7 +401,7 @@
   "CVE-2023-48788": {
    "path": "network/cves/2023/CVE-2023-48788.yaml",
    "severity": "critical",
-   "sha256": "15a670c8be5e10bd18b2d8c868828620862999364ca6992e5ec675d26976312d",
+   "sha256": "48db4b473ba72be6042277445a90dbdf599733d0e312b71c9b72461bccbdacfa",
    "reasons": [
     "decode: base64 /tcp[0]/inputs[0]/data: user",
     "exploit class (tags cve, kev, sqli, vkev, severity critical) and not reviewed as read-only for this file content"
@@ -410,7 +410,7 @@
   "CVE-2023-6329": {
    "path": "http/cves/2023/CVE-2023-6329.yaml",
    "severity": "critical",
-   "sha256": "46253e91250076f13e71c6a8d0f5fca298a88c6e840b25025cb9b4cc84181d34",
+   "sha256": "ed2f175043fd166d225cfc0adb9c248c9b7a8f5a5882dcbc2abfa6ae97086ecf",
    "reasons": [
     "carries the excluded tag intrusive",
     "also has a block of another protocol (http), which a service port never receives",
@@ -422,7 +422,7 @@
   "CVE-2024-23108": {
    "path": "network/cves/2024/CVE-2024-23108.yaml",
    "severity": "critical",
-   "sha256": "982415c54c9c82ae5e35f4bcc0a93faeb3e2c62619a941ddb3bbcd0ad48d6f6a",
+   "sha256": "82f51be0010927520a03a2e8bf7be3177b45dc3202be2941ac6ce1a40d28e1a7",
    "reasons": [
     "read by a person and refused: FortiSIEM command injection (runs echo id)"
    ]
@@ -447,7 +447,7 @@
   "CVE-2024-47176": {
    "path": "javascript/cves/2024/CVE-2024-47176.yaml",
    "severity": "high",
-   "sha256": "f99092e10bdbb31a895e8a860d1ef76a099e21f1549e87e31dc5d992413409c5",
+   "sha256": "6e497d2d7277b53c17d77ddc1f99f626b924ae9adf0b1ddd6de9d8f98a3abf62",
    "reasons": [
     "carries the excluded tag intrusive",
     "sends UDP: a service port is a TCP port, so the datagrams would go to a port nobody named",
@@ -457,7 +457,7 @@
   "CVE-2024-51978": {
    "path": "http/cves/2024/CVE-2024-51978.yaml",
    "severity": "critical",
-   "sha256": "ceb251c6328fe2a707cf5d049ffddeec3c3d4401d033dd83912c8de49d35a36c",
+   "sha256": "c8375f839073a43cf159e7f1a925d4c2c5aee56e5dd51d1fb9534da2574af33a",
    "reasons": [
     "carries the excluded tag default-login, intrusive",
     "also has a block of another protocol (http), which a service port never receives",
@@ -467,7 +467,7 @@
   "CVE-2024-54772": {
    "path": "network/cves/2024/CVE-2024-54772.yaml",
    "severity": "medium",
-   "sha256": "f64bfd7127cf27a1bdabd7ba9627a5611ae9f153ca15e75c6a79a0873ab4c2b8",
+   "sha256": "962b9e594812c9ab4d90542738ef11bbe40983d217212a7d69433bbd00112925",
    "reasons": [
     "decode: hex /tcp[0]/inputs[0]/data: admin (an account name in a packet)",
     "exploit class (tags cve, severity medium) and not reviewed as read-only for this file content"
@@ -485,7 +485,7 @@
   "CVE-2025-14847": {
    "path": "network/cves/2025/CVE-2025-14847.yaml",
    "severity": "high",
-   "sha256": "c8fcbcdaad5488fd04ef840b36a50ae68a79f283a5d342ec02b048d061f86c7f",
+   "sha256": "0f6e91680a4270e3e9a00e5e3355c37654c8c5e06243c13f0df0709fb430b2d2",
    "reasons": [
     "decode: hex /tcp[0]/inputs[0]/data: admin (an account name in a packet)",
     "exploit class (tags cve, kev, vkev, severity high) and not reviewed as read-only for this file content"
@@ -504,7 +504,7 @@
   "CVE-2025-25256": {
    "path": "network/cves/2025/CVE-2025-25256.yaml",
    "severity": "critical",
-   "sha256": "87d76a174030ec95a35e15084a412dd90da57bba9fac9f22c58e8046212ee5cb",
+   "sha256": "1f13f314bbe60257e2feffd8a777e446242dc1af794f15a59fa8184266905926",
    "reasons": [
     "read by a person and refused: FortiSIEM command injection"
    ]
@@ -556,7 +556,7 @@
   "CVE-2025-53770": {
    "path": "http/cves/2025/CVE-2025-53770.yaml",
    "severity": "critical",
-   "sha256": "31492101e6b0555db46aa9e7252c66969ed49954086ec21c69c0571850fad29a",
+   "sha256": "fad6a2e2960760c38b982564644f19e93fcd04da0532c1124a757e0f434839a2",
    "reasons": [
     "also has a block of another protocol (http), which a service port never receives",
     "calls Bytes, which is not on the read-only list of library calls",
@@ -576,7 +576,7 @@
   "CVE-2025-8286": {
    "path": "network/cves/2025/CVE-2025-8286.yaml",
    "severity": "critical",
-   "sha256": "456f13a8285e35ee63061150f8b0f9a59c150ec184ca1b6c510a4deb9a2c8e77",
+   "sha256": "17d0c68368740afff35adc722e61895e47da01fbd93db0ad7092ff01a84553c3",
    "reasons": [
     "read by a person and refused: sends commands to an unauthenticated device shell (system info)"
    ]
@@ -584,7 +584,7 @@
   "CVE-2026-0257": {
    "path": "javascript/cves/2026/CVE-2026-0257.yaml",
    "severity": "critical",
-   "sha256": "7bb642b1861ba56c704768cdaef5022bad6020cbc1d0575179a826cef81eb3cf",
+   "sha256": "7c7f22797c0dc9fdcb8b3049bb1478de4fe21791f4dcf8d8f9dfdb4c308f0402",
    "reasons": [
     "also has a block of another protocol (http), which a service port never receives",
     "content rule: the template sends more requests than a service may receive",
@@ -592,10 +592,19 @@
     "exploit class (tags cve, kev, vkev, severity critical) and not reviewed as read-only for this file content"
    ]
   },
+  "CVE-2026-111497": {
+   "path": "http/javascript/cves/2026/CVE-2026-111497.yaml",
+   "severity": "critical",
+   "sha256": "07a6083863b5d98ef8ddbf566ea2d0d3918d467176c35aef45ee02f1c6cafe46",
+   "reasons": [
+    "decode: plain /javascript[0]/code: user",
+    "exploit class (tags cve, kev, rce, vkev, severity critical) and not reviewed as read-only for this file content"
+   ]
+  },
   "CVE-2026-15409": {
    "path": "javascript/cves/2026/CVE-2026-15409.yaml",
    "severity": "critical",
-   "sha256": "1bdee7e08c4d14ee300b2f6f7183f256217d962e191eba777b290f1a3a60dc3d",
+   "sha256": "fcc07b44942c5a09e74771b041fb567046ad377e255d51ad94beb185c9f5da30",
    "reasons": [
     "decode: plain /javascript[0]/code: user",
     "exploit class (tags cve, kev, rce, ssrf, vkev, severity critical) and not reviewed as read-only for this file content"
@@ -604,7 +613,7 @@
   "CVE-2026-16232": {
    "path": "javascript/cves/2026/CVE-2026-16232.yaml",
    "severity": "critical",
-   "sha256": "305c4b3abb33f504fd9d292325ca51d05fb3ddb46f1b8375e950ccb0db08343a",
+   "sha256": "d8288a5e4fbe668529221d670418b02356c8ad167d035cc366f660e044e6b89f",
    "reasons": [
     "read by a person and refused: performs the Check Point SmartConsole authentication handshake (an authentication bypass check) and connects to port 18190"
    ]
@@ -612,7 +621,7 @@
   "CVE-2026-1731": {
    "path": "javascript/cves/2026/CVE-2026-1731.yaml",
    "severity": "critical",
-   "sha256": "e5f2243b456f016b0156557b3c6b262bab9be204275351fda649497de206d2a6",
+   "sha256": "bf966b3e1ca410adc7254d4e4dfe3ff8adb7f2be21bed9a70d3d85a915680038",
    "reasons": [
     "also has a block of another protocol (http), which a service port never receives",
     "calls Len, which is not on the read-only list of library calls",
@@ -623,7 +632,7 @@
   "CVE-2026-23829": {
    "path": "network/cves/2026/CVE-2026-23829.yaml",
    "severity": "medium",
-   "sha256": "3c24312ba374db88f624360076a7c7bb7ed888823cfeea53af94f87f710939bc",
+   "sha256": "6804596581b51a62ee5b8bf03fe9d65df7a3ab04ec08d7495dc646e7ce0f9d67",
    "reasons": [
     "read by a person and refused: sends a mail through Mailpit with an injected header (creates a message)"
    ]
@@ -631,7 +640,7 @@
   "CVE-2026-27886": {
    "path": "javascript/cves/2026/CVE-2026-27886.yaml",
    "severity": "critical",
-   "sha256": "5db23f74fc696c9ed0432d9ed217d2711b2b8434a83c9e2fb6d96a9518e9a6bc",
+   "sha256": "e0e6d45f8b000893500566e929fec7a6cf073d792d5ddd8982a3f9608c4a9a8f",
    "reasons": [
     "carries the excluded tag intrusive",
     "also has a block of another protocol (http), which a service port never receives",
@@ -643,7 +652,7 @@
   "CVE-2026-33439": {
    "path": "http/cves/2026/CVE-2026-33439.yaml",
    "severity": "critical",
-   "sha256": "d04dee7687496acfc125d9711c8bbdab0bb030e5ec1359f3bf7e3eea127e98ec",
+   "sha256": "d177ab1d65c89fadf8a4e4176f93def3a531b395638cec7c1b6c1f7789751653",
    "reasons": [
     "also has a block of another protocol (http), which a service port never receives",
     "exploit class (tags cve, deserialization, oast, rce, severity critical) and not reviewed as read-only for this file content"
@@ -652,7 +661,7 @@
   "CVE-2026-33453": {
    "path": "javascript/cves/2026/CVE-2026-33453.yaml",
    "severity": "critical",
-   "sha256": "9e082eda800068e6d1959236a3ffd1e2290efb3f3167e20bef3652bf5d86e8fd",
+   "sha256": "f572bac2d4ad580c1013e8189b88fa04fdd7ba1caffe69688641833d0b470fe4",
    "reasons": [
     "sends UDP: a service port is a TCP port, so the datagrams would go to a port nobody named",
     "read by a person and refused: CoAP request that executes code through Apache Camel"
@@ -661,7 +670,7 @@
   "CVE-2026-34486": {
    "path": "http/cves/2026/CVE-2026-34486.yaml",
    "severity": "critical",
-   "sha256": "af313e1bb8fd55dba93b2c7b2ac99407caee6e1e40b625da31903ec9829bbd4f",
+   "sha256": "53b74eb046873ddec249b7aecde5675c0cbdcb99e4a031adafcbd61bda718845",
    "reasons": [
     "read by a person and refused: Java deserialization gadget (Tomcat Tribes) that makes the target contact an address"
    ]
@@ -669,7 +678,7 @@
   "CVE-2026-39363": {
    "path": "javascript/cves/2026/CVE-2026-39363.yaml",
    "severity": "high",
-   "sha256": "67804ad759ccb93c0e821ca04c37e6de3b107cbb1a34e89da2c25bcd96089940",
+   "sha256": "9953310c4311c967efcfd1d8b4883f87c269bb90ed3bc1005d466634d2d1246f",
    "reasons": [
     "decode: hex /javascript[0]/code: passwd",
     "exploit class (tags cve, lfi, severity high) and not reviewed as read-only for this file content"
@@ -678,7 +687,7 @@
   "CVE-2026-39987": {
    "path": "javascript/cves/2026/CVE-2026-39987.yaml",
    "severity": "critical",
-   "sha256": "d3575294af7ab53557f4637599d1764a7de445620ab1588902d0878633f44254",
+   "sha256": "e7577f91be0e771345522bd141bd0dd77c6464bb57e3e4cfe3b6366023142d7a",
    "reasons": [
     "read by a person and refused: opens the Marimo terminal websocket and sends keystrokes (a shell)"
    ]
@@ -686,7 +695,7 @@
   "CVE-2026-42167": {
    "path": "network/cves/2026/CVE-2026-42167.yaml",
    "severity": "high",
-   "sha256": "4b30e33c85158b066a29b63fbe9d130a023f2e1e5ed9a4cc5c88ab478d3f1158",
+   "sha256": "5b23bca7ed0f813057eacad5f78082b166d5a3bd804a4eb5d02fccf91d69f782",
    "reasons": [
     "content rule: the template performs a login or an authentication step (a service run never sends credentials)",
     "decode: plain /tcp[0]/inputs[0]/data: user; plain /tcp[0]/inputs[1]/data: pass",
@@ -696,7 +705,7 @@
   "CVE-2026-44578": {
    "path": "javascript/cves/2026/CVE-2026-44578.yaml",
    "severity": "high",
-   "sha256": "1019a1b0e993ff8ede8f09fae0b54a71e3206f37e59069b43f20d18e2bb92d78",
+   "sha256": "9c9815a39bd7525d158e00ecf90e21b07a5d2bdbc6e64e000ef471fb5e272363",
    "reasons": [
     "read by a person and refused: SSRF: asks the Next.js app to fetch another address"
    ]
@@ -704,7 +713,7 @@
   "CVE-2026-50751": {
    "path": "http/cves/2026/CVE-2026-50751.yaml",
    "severity": "critical",
-   "sha256": "7f65982480a7f0bbf1d14537fcf7a0f874cba6a31def31d6cccd90027a2bdbaa",
+   "sha256": "318384b473ad30338d0d53bb5cd4f27bbe19d9d52c7b854c7ad045f482c730dd",
    "reasons": [
     "sends UDP: a service port is a TCP port, so the datagrams would go to a port nobody named",
     "content rule: the template performs a login or an authentication step (a service run never sends credentials)",
@@ -715,7 +724,7 @@
   "CVE-2026-55040": {
    "path": "javascript/cves/2026/CVE-2026-55040.yaml",
    "severity": "critical",
-   "sha256": "e0879dde26b3cb2bb786a3a423a39439616bfd53c0d5ba55c18e79c9e02ea5fc",
+   "sha256": "bc9bb1c45b3273507de0afcf2af208be1fb95430f811d4c2f5e2671f0d2ed1b1",
    "reasons": [
     "decode: plain /javascript[0]/code: jwt",
     "exploit class (tags cve, kev, vkev, severity critical) and not reviewed as read-only for this file content"
@@ -724,7 +733,7 @@
   "CVE-2026-58644": {
    "path": "http/cves/2026/CVE-2026-58644.yaml",
    "severity": "critical",
-   "sha256": "69bbfc4928feac42cf7aa35d7e3c22f32b78ae1a17f4891395fa004645e1928d",
+   "sha256": "ba5d148b983d97fdcce88b1d667cd0b968c69f69739dc0097a39f9378728cb9d",
    "reasons": [
     "also has a block of another protocol (http), which a service port never receives",
     "calls Bytes, which is not on the read-only list of library calls",
@@ -735,7 +744,7 @@
   "CVE-2026-73570": {
    "path": "network/cves/2026/CVE-2026-73570.yaml",
    "severity": "high",
-   "sha256": "f95d777cab105067557905c9a498118e4ab607f55c1ec80147afe183c57bc6d8",
+   "sha256": "8c2148e7403da2d69cbce6d5860c1351f09663d13875251af562cb7c20fd670f",
    "reasons": [
     "also has a block of another protocol (http), which a service port never receives",
     "exploit class (tags cve, kev, oast, rce, vkev, severity high) and not reviewed as read-only for this file content"
@@ -744,7 +753,7 @@
   "CVE-2026-83548": {
    "path": "javascript/cves/2026/CVE-2026-83548.yaml",
    "severity": "critical",
-   "sha256": "739b0245204edee74e6851a754bbb129eb62634f9fc516b1c4151b6f1dc910d8",
+   "sha256": "a502b3667d8bca47ffe2d40a3472fff70aeb6554e60049c11efcb3d34079a3aa",
    "reasons": [
     "decode: plain /javascript[0]/code: authorization; base64 /javascript[0]/code: admin (an account name in a packet)",
     "exploit class (tags cve, kev, rce, ssrf, vkev, severity critical) and not reviewed as read-only for this file content"
@@ -877,6 +886,14 @@
    "sha256": "a7e27c52fd8879e49bbceccc709cb5fcde4a9f02d7dec9ca379af55c46cfc495",
    "reasons": [
     "sends UDP: a service port is a TCP port, so the datagrams would go to a port nobody named"
+   ]
+  },
+  "deprecated-tls": {
+   "path": "ssl/deprecated-tls.yaml",
+   "severity": "info",
+   "sha256": "7d6a40c8e14364b4aa090fee8635ce5e073afe69b915eb74ebf473d0c5bc5034",
+   "reasons": [
+    "sends hex control frames of a binary protocol, which the decode cannot judge, and a person has not read them for this file content (not read)"
    ]
   },
   "dionaea-ftp-honeypot-detect": {

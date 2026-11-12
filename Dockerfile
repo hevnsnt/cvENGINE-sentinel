@@ -5,13 +5,23 @@
 # itself is NOT in this image: it runs as the separate Greenbone services in docker-compose.yml, which this daemon
 # talks GMP to over a shared unix socket (client/openvas.py), the same way cvENGINE's own server talks to its sidecar.
 # bbot and the tzdata it needs, the same pins as the server repository's web/Dockerfile. Declared once, before the first stage, and used by two.
-ARG BBOT_VERSION=3.0.2
+ARG BBOT_VERSION=3.1.0
 ARG TZDATA_VERSION=2026.6
+# bbot 3.1's own Rust and module dependencies, pinned to the versions bbot 3.1.0 resolves to (its requirements say blastdns>=2.0.4,<2.1 and blasthttp>=0.10.1,<0.11;
+# its baddns and badsecrets modules install baddns~=2.5.0 and badsecrets~=1.3.0 at build time), so a rebuild never picks up a newer one the Sentinel has not been through.
+ARG BLASTDNS_VERSION=2.0.4
+ARG BLASTHTTP_VERSION=0.10.1
+ARG BADDNS_VERSION=2.5.0
+ARG BADSECRETS_VERSION=1.3.0
 # bbot's own virtual environment is built in a stage of its own: one of its dependencies (yara-python) compiles from source on this Python, and
 # the compiler and the headers it needs stay in this stage. The final image copies the finished venv to the same path, on the same base image.
-FROM ubuntu:26.04@sha256:6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c AS bbot-builder
+FROM ubuntu:26.04@sha256:065aa8626841f16057b78b027b464cd59c4fac36c204c72dcbf48d66f5fa8a96 AS bbot-builder
 ARG BBOT_VERSION
 ARG TZDATA_VERSION
+ARG BLASTDNS_VERSION
+ARG BLASTHTTP_VERSION
+ARG BADDNS_VERSION
+ARG BADSECRETS_VERSION
 ENV DEBIAN_FRONTEND="noninteractive"
 RUN apt-get update -y && \
     apt-get install -y --no-install-recommends build-essential ca-certificates libssl-dev python3 python3-dev python3-venv && \
@@ -19,14 +29,14 @@ RUN apt-get update -y && \
 # The build tools are the same pins as the client's venv below; yara-python and the other source packages build with them.
 RUN python3 -m venv /opt/bbot-venv && \
     /opt/bbot-venv/bin/pip install --no-cache-dir pip==26.3 setuptools==84.2.1 wheel==0.48.0 && \
-    /opt/bbot-venv/bin/pip install --no-cache-dir bbot==${BBOT_VERSION} tzdata==${TZDATA_VERSION} && \
+    /opt/bbot-venv/bin/pip install --no-cache-dir bbot==${BBOT_VERSION} tzdata==${TZDATA_VERSION} blastdns==${BLASTDNS_VERSION} blasthttp==${BLASTHTTP_VERSION} baddns==${BADDNS_VERSION} badsecrets==${BADSECRETS_VERSION} && \
     /opt/bbot-venv/bin/bbot --version
 
 # The Python packages that ship no wheel for this image's Python on every architecture (arc4, a C extension, everywhere; aardwolf, a Rust
 # extension, on arm64) are built here, in a stage that is thrown away: the same toolchain the server repository's web/Dockerfile builds them with
 # (build-essential, python3-dev, rustc, cargo), on the same base image, so the wheels match the image's Python. Only the wheels are copied into the
 # image below, which installs them with --no-index: no Python headers or Rust toolchain ship in it, and nothing is compiled or fetched there.
-FROM ubuntu:26.04@sha256:6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c AS wheels
+FROM ubuntu:26.04@sha256:065aa8626841f16057b78b027b464cd59c4fac36c204c72dcbf48d66f5fa8a96 AS wheels
 ENV DEBIAN_FRONTEND="noninteractive" PIP_DISABLE_PIP_VERSION_CHECK=1
 RUN apt-get update -y && \
     apt-get install -y --no-install-recommends build-essential ca-certificates cargo python3 python3-dev python3-venv rustc && \
@@ -36,7 +46,7 @@ COPY requirements.txt /tmp/requirements.txt
 RUN /opt/wheelvenv/bin/pip install --no-cache-dir pip==26.3 setuptools==84.2.1 wheel==0.48.0 && \
     /opt/wheelvenv/bin/pip wheel --no-cache-dir -r /tmp/requirements.txt -w /wheels
 
-FROM ubuntu:26.04@sha256:6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c
+FROM ubuntu:26.04@sha256:065aa8626841f16057b78b027b464cd59c4fac36c204c72dcbf48d66f5fa8a96
 
 ARG GOVERSION=1.27.4
 ARG GO_SHA256_AMD64=7226736c2339719cda28fbf3a54d71aa63bcefe376e98cef00034268dab24840
@@ -72,8 +82,8 @@ ARG KINGFISHER_SHA256_ARM64=37a6341c9899693d6cf2ef18d54bf65395a8ad9b6c6152aea90f
 ARG SSHAMBLE_VERSION=0.5.1
 ARG SSHAMBLE_SHA256_AMD64=38ba26a606ca51c3a974b91dd599717c3e21ac6720dc9bc4f4598d014793410e
 ARG SSHAMBLE_SHA256_ARM64=2335aceee86e860524fdd42decf02b6db12b18ce2f3e4a5be923902bb14d809a
-ARG NUCLEI_TEMPLATES_VERSION=v10.5.1
-ARG NUCLEI_TEMPLATES_SHA256=30fe1cfaced4635f886e4a2673641bba86998dceec28e468274524e789aa56eb
+ARG NUCLEI_TEMPLATES_VERSION=v10.5.2
+ARG NUCLEI_TEMPLATES_SHA256=016b7abbf931d4d1a851a5a568e44510dc61691dc8a5202e3b24e701515ec574
 
 ENV DEBIAN_FRONTEND="noninteractive" \
     PYTHONDONTWRITEBYTECODE=1 \

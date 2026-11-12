@@ -29,10 +29,14 @@ ARG WAFW00F_VERSION=2.4.2
 ARG PYSOCKS_VERSION=1.7.1
 ARG TZDATA_VERSION=2025.2
 ARG TESTSSL_VERSION=3.2.5
-ARG BBOT_VERSION=3.0.2
+ARG BBOT_VERSION=3.1.0
+ARG BLASTDNS_VERSION=2.0.4
+ARG BLASTHTTP_VERSION=0.10.1
+ARG BADDNS_VERSION=2.5.0
+ARG BADSECRETS_VERSION=1.3.0
 ARG KINGFISHER_VERSION=2.16.0
 ARG SSHAMBLE_VERSION=0.5.1
-ARG NUCLEI_TEMPLATES_VERSION=v10.5.1
+ARG NUCLEI_TEMPLATES_VERSION=v10.5.2
 ARG PLAYWRIGHT_CHROMIUM_VERSION=158.0.8127.18
 ARG KINGFISHER_SHA256_AMD64=%s
 RUN pip install --no-cache-dir pip==25.2 setuptools==80.9.0 wheel==0.45.1
@@ -40,7 +44,7 @@ RUN pip install --no-cache-dir pip==25.2 setuptools==80.9.0 wheel==0.45.1
 REQUIREMENTS = '''xmltodict==1.0.4  # a comment
 Pillow==13.0.0
 # playwright==0.0.1 is only a comment
-playwright==1.65.0
+playwright==1.65.1
 '''
 COMPOSE = '''services:
   gvmd:
@@ -49,8 +53,8 @@ COMPOSE = '''services:
     image: "registry.community.greenbone.net/community/vulnerability-tests:community"
 ''' % OLD_DIGEST
 
-PYPI = {'PySocks': '1.7.1', 'tzdata': '2025.2', 'Pillow': '13.0.0', 'xmltodict': '1.0.4', 'playwright': '1.65.0', 'pip': '25.2', 'setuptools': '80.9.0', 'wheel': '0.45.1', 'wafw00f': '2.4.2',
-        'bbot': '3.0.2'}
+PYPI = {'PySocks': '1.7.1', 'tzdata': '2025.2', 'Pillow': '13.0.0', 'xmltodict': '1.0.4', 'playwright': '1.65.1', 'pip': '25.2', 'setuptools': '80.9.0', 'wheel': '0.45.1', 'wafw00f': '2.4.2',
+        'bbot': '3.1.0', 'blastdns': '2.0.4', 'blasthttp': '0.10.1', 'baddns': '2.5.0', 'badsecrets': '1.3.0'}
 GO = {'nuclei/v3': 'v3.11.1', 'naabu/v2': 'v2.7.0'}
 
 
@@ -63,7 +67,7 @@ def answers(**override):
         'https://api.github.com/repos/testssl/testssl.sh/tags?per_page=30': [{'name': '3.3dev'}, {'name': 'v3.2.5'}, {'name': 'v3.2.4'}],
         'https://api.github.com/repos/mongodb/kingfisher/releases/latest': {'tag_name': 'v2.16.0'},
         'https://api.github.com/repos/runZeroInc/sshamble/releases/latest': {'tag_name': 'v0.5.1'},
-        'https://api.github.com/repos/projectdiscovery/nuclei-templates/releases/latest': {'tag_name': 'v10.5.1'},
+        'https://api.github.com/repos/projectdiscovery/nuclei-templates/releases/latest': {'tag_name': 'v10.5.2'},
         'https://versionhistory.googleapis.com/v1/chrome/platforms/linux/channels/stable/versions': {'versions': [{'version': '158.0.8127.18'}]},
         'https://hub.docker.com/v2/repositories/library/ubuntu/tags/26.04': {'digest': OLD_DIGEST},
         'https://registry.community.greenbone.net/v2/community/gvmd/manifests/stable': {'digest': OLD_DIGEST},
@@ -134,7 +138,7 @@ class ComparisonTests(unittest.TestCase):
         for tool in ('pysocks', 'tzdata', 'pillow'):
             self.assertIn(tool, rows)
         self.assertEqual(rows['kingfisher']['pinned'], '2.16.0')
-        self.assertEqual(rows['nuclei-templates']['pinned'], '10.5.1')
+        self.assertEqual(rows['nuclei-templates']['pinned'], '10.5.2')
 
     def test_each_upstream_is_read_in_its_own_shape(self):
         with Checkout() as c:
@@ -149,7 +153,7 @@ class ComparisonTests(unittest.TestCase):
     def test_a_commented_out_pin_is_not_a_pin(self):
         with Checkout() as c:
             rows = rows_of(answers(), c)
-        self.assertEqual(rows['playwright']['pinned'], '1.65.0')
+        self.assertEqual(rows['playwright']['pinned'], '1.65.1')
 
     def test_the_base_image_digest_is_compared_with_the_registry(self):
         with Checkout() as c:
@@ -180,6 +184,24 @@ class ComparisonTests(unittest.TestCase):
                 rows = tools.collect(getter(answers()), root=c.root)
             missing = [r['tool'] for r in tools.failing(rows) if r['pinned'] is None]
             self.assertEqual(missing, [{'PYSOCKS_VERSION': 'pysocks', 'TZDATA_VERSION': 'tzdata'}[arg]])
+
+    def test_the_bbot_dependencies_are_pinned_and_checked_like_every_other_tool(self):
+        """blastdns, blasthttp, baddns and badsecrets come with bbot 3.1 and were left to pip's choice: each is an ARG with a required upstream lookup."""
+        for arg, name in (('BLASTDNS_VERSION', 'blastdns'), ('BLASTHTTP_VERSION', 'blasthttp'), ('BADDNS_VERSION', 'baddns'), ('BADSECRETS_VERSION', 'badsecrets')):
+            self.assertTrue(tools.DOCKERFILE_ARGS[arg][3], arg)
+            with Checkout() as c:
+                rows = rows_of(answers(), c)
+                self.assertEqual((rows[name]['pinned'], rows[name]['behind']), (re.search(rf'(?m)^ARG {arg}=(\S+)', DOCKERFILE).group(1), False))
+                c.write('Dockerfile', re.sub(rf'(?m)^ARG {arg}=\S+\n', '', DOCKERFILE))
+                missing = [r['tool'] for r in tools.failing(tools.collect(getter(answers()), root=c.root)) if r['pinned'] is None]
+            self.assertEqual(missing, [name])
+
+    def test_the_dockerfile_of_this_repository_pins_the_bbot_dependencies_and_installs_them_with_bbot(self):
+        dockerfile = (ROOT / 'Dockerfile').read_text(encoding='utf-8')
+        for arg, name in (('BLASTDNS_VERSION', 'blastdns'), ('BLASTHTTP_VERSION', 'blasthttp'), ('BADDNS_VERSION', 'baddns'), ('BADSECRETS_VERSION', 'badsecrets')):
+            self.assertRegex(dockerfile, rf'(?m)^ARG {arg}=\d+\.\d+\.\d+$')
+            self.assertRegex(dockerfile, rf'(?m)^ARG {arg}$')  # handed on to the stage that builds the venv
+            self.assertIn(f'{name}==${{{arg}}}', dockerfile)
 
     def test_an_advisory_row_that_is_older_than_the_newest_says_behind_not_newer(self):
         row = tools.row('chromium', '156.0.8078.4', '157.0.8103.50', True)
@@ -255,11 +277,11 @@ class AllowlistGateTests(unittest.TestCase):
     """The service-port allowlist is made for one nuclei-templates release: when the pin moves, the release gate says to regenerate it."""
     ALLOWLIST = 'cvengine_scanner/data/nuclei_service_allowlist.json'
 
-    def checkout(self, version='v10.5.1', pin='v10.5.1', text=None):
+    def checkout(self, version='v10.5.2', pin='v10.5.2', text=None):
         c = Checkout()
         c.__enter__()
         self.addCleanup(c.__exit__)
-        c.write('Dockerfile', DOCKERFILE.replace('ARG NUCLEI_TEMPLATES_VERSION=v10.5.1', f'ARG NUCLEI_TEMPLATES_VERSION={pin}'))
+        c.write('Dockerfile', DOCKERFILE.replace('ARG NUCLEI_TEMPLATES_VERSION=v10.5.2', f'ARG NUCLEI_TEMPLATES_VERSION={pin}'))
         (c.root / 'cvengine_scanner' / 'data').mkdir(parents=True)
         if text is not False:
             c.write(self.ALLOWLIST, text if text is not None else json.dumps({'nuclei_templates': version, 'templates': {}}))
@@ -280,11 +302,11 @@ class AllowlistGateTests(unittest.TestCase):
         self.assertIsNone(tools.allowlist_problem(ROOT))
 
     def test_a_pin_that_moved_without_a_regenerated_list_fails_the_gate_and_says_what_to_do(self):
-        c = self.checkout(version='v10.5.1', pin='v10.6.0')
+        c = self.checkout(version='v10.5.2', pin='v10.6.0')
         problem = tools.allowlist_problem(c.root)
         self.assertIn('regenerate the service-port allowlist', problem)
         self.assertIn('10.6.0', problem)
-        self.assertIn('10.5.1', problem)
+        self.assertIn('10.5.2', problem)
         code, out, _err = self.gate(c, '--fail-if-behind')
         self.assertEqual(code, 1)
         self.assertIn('regenerate the service-port allowlist', out)
@@ -304,7 +326,7 @@ class AllowlistGateTests(unittest.TestCase):
             self.assertEqual(self.gate(c, '--fail-if-behind')[0], 1, text)
 
     def test_json_output_stays_json_and_the_line_goes_to_stderr(self):
-        c = self.checkout(version='v10.5.1', pin='v10.6.0')
+        c = self.checkout(version='v10.5.2', pin='v10.6.0')
         code, out, err = self.gate(c, '--json', '--fail-if-behind')
         self.assertEqual(code, 1)
         json.loads(out)
@@ -320,12 +342,12 @@ class ReportTests(unittest.TestCase):
     def test_the_table_names_tool_pinned_latest_and_state(self):
         rows = [{'tool': 'nmap', 'pinned': '7.993', 'latest': '7.995', 'behind': True},
                 {'tool': 'naabu', 'pinned': '2.7.0', 'latest': '2.7.0', 'behind': False},
-                {'tool': 'bbot', 'pinned': '3.0.2', 'latest': None, 'behind': False}]
+                {'tool': 'bbot', 'pinned': '3.1.0', 'latest': None, 'behind': False}]
         text = tools.report(rows)
         self.assertIn('| Tool | Pinned | Latest | State |', text)
         self.assertRegex(text, r'\| nmap \| 7\.993 \| 7\.995 \| behind \|')
         self.assertRegex(text, r'\| naabu \| 2\.7\.0 \| 2\.7\.0 \| current \|')
-        self.assertRegex(text, r'\| bbot \| 3\.0\.2 \| \? \| unknown \|')
+        self.assertRegex(text, r'\| bbot \| 3\.1\.0 \| \? \| unknown \|')
 
     def test_json_output_and_the_warning_lines(self):
         rows = [{'tool': 'nmap', 'pinned': '7.993', 'latest': '7.995', 'behind': True}]
