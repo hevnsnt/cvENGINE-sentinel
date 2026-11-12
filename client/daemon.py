@@ -1190,7 +1190,8 @@ class Daemon:
 
             def nuclei(secret_file=None):
                 return runner(targets, tags=target.get('tags'), severities=target.get('severities'), register=register,
-                              templates=self._approved_templates(target), secret_file=secret_file, timeout=seconds)
+                              templates=self._approved_templates(target), secret_file=secret_file, timeout=seconds,
+                              services=target.get('services'), budget=target.get('budget'))
             if task.get('signed_in'):
                 # a signed-in pass names a stored sign-in: only the built-in scanner reads it (signed_in.py), and nothing ever runs it signed out
                 if not config.builtin():

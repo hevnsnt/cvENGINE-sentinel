@@ -251,6 +251,71 @@ class FailClosedTests(unittest.TestCase):
         self.assertEqual(rows['kingfisher']['latest'], '2.16.0')
 
 
+class AllowlistGateTests(unittest.TestCase):
+    """The service-port allowlist is made for one nuclei-templates release: when the pin moves, the release gate says to regenerate it."""
+    ALLOWLIST = 'cvengine_scanner/data/nuclei_service_allowlist.json'
+
+    def checkout(self, version='v10.5.1', pin='v10.5.1', text=None):
+        c = Checkout()
+        c.__enter__()
+        self.addCleanup(c.__exit__)
+        c.write('Dockerfile', DOCKERFILE.replace('ARG NUCLEI_TEMPLATES_VERSION=v10.5.1', f'ARG NUCLEI_TEMPLATES_VERSION={pin}'))
+        (c.root / 'cvengine_scanner' / 'data').mkdir(parents=True)
+        if text is not False:
+            c.write(self.ALLOWLIST, text if text is not None else json.dumps({'nuclei_templates': version, 'templates': {}}))
+        return c
+
+    def gate(self, c, *flags):
+        out, err = io.StringIO(), io.StringIO()
+        rows = [{'tool': 'x', 'pinned': '1', 'latest': '1', 'behind': False}]  # every tool current: only the allowlist can fail the gate
+        with mock.patch.object(tools, 'collect', return_value=rows), redirect_stdout(out), mock.patch('sys.stderr', err):
+            try:
+                tools.main(['--root', str(c.root), *flags])
+                code = 0
+            except SystemExit as leave:
+                code = leave.code
+        return code, out.getvalue(), err.getvalue()
+
+    def test_the_list_of_this_repository_is_the_one_for_the_pinned_release(self):
+        self.assertIsNone(tools.allowlist_problem(ROOT))
+
+    def test_a_pin_that_moved_without_a_regenerated_list_fails_the_gate_and_says_what_to_do(self):
+        c = self.checkout(version='v10.5.1', pin='v10.6.0')
+        problem = tools.allowlist_problem(c.root)
+        self.assertIn('regenerate the service-port allowlist', problem)
+        self.assertIn('10.6.0', problem)
+        self.assertIn('10.5.1', problem)
+        code, out, _err = self.gate(c, '--fail-if-behind')
+        self.assertEqual(code, 1)
+        self.assertIn('regenerate the service-port allowlist', out)
+        self.assertEqual(self.gate(c)[0], 0)  # the weekly report only says it
+        self.assertIn('::warning::nuclei-templates is pinned at 10.6.0', self.gate(c, '--github-warnings')[1])
+
+    def test_a_list_for_the_pinned_release_passes_whatever_the_spelling_of_the_tag(self):
+        for version, pin in (('v10.6.0', 'v10.6.0'), ('10.6.0', 'v10.6.0'), ('v10.6.0', '10.6.0')):
+            c = self.checkout(version=version, pin=pin)
+            self.assertIsNone(tools.allowlist_problem(c.root), (version, pin))
+            self.assertEqual(self.gate(c, '--fail-if-behind')[0], 0)
+
+    def test_a_missing_or_broken_list_fails_the_gate_closed(self):
+        for text in (False, '{', '{"templates": {}}', '[]'):
+            c = self.checkout(text=text)
+            self.assertIn('regenerate the service-port allowlist', tools.allowlist_problem(c.root) or '', text)
+            self.assertEqual(self.gate(c, '--fail-if-behind')[0], 1, text)
+
+    def test_json_output_stays_json_and_the_line_goes_to_stderr(self):
+        c = self.checkout(version='v10.5.1', pin='v10.6.0')
+        code, out, err = self.gate(c, '--json', '--fail-if-behind')
+        self.assertEqual(code, 1)
+        json.loads(out)
+        self.assertIn('regenerate the service-port allowlist', err)
+
+    def test_the_release_workflow_runs_the_gate_that_carries_this_check(self):
+        text = (ROOT / '.github' / 'workflows' / 'tag-release.yml').read_text()
+        self.assertIn('check_tool_versions.py', text)
+        self.assertIn('--fail-if-behind', text)
+
+
 class ReportTests(unittest.TestCase):
     def test_the_table_names_tool_pinned_latest_and_state(self):
         rows = [{'tool': 'nmap', 'pinned': '7.993', 'latest': '7.995', 'behind': True},
