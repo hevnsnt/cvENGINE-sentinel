@@ -255,6 +255,11 @@ NUCLEI_CONNECTION_ERRORS = re.compile(r'connection refused|no such host|timeout|
                                       r'connection reset|could not resolve|dial tcp|no address|port closed or filtered', re.IGNORECASE)  # the last is nuclei 3.11's own wording for a host that is down or a port nothing answers on
 
 
+# Errors a template logs about itself, not about the host: with -ni (no interactsh) every template that needs it logs the first, and a network template with no
+# port logs the second. They say nothing of whether the host answered, so they are left out of the judgement of ``unreached_targets``.
+NUCLEI_TEMPLATE_PROBLEMS = re.compile(r'interactsh client not initialized|no port provided in network protocol request', re.IGNORECASE)
+
+
 def parse_nuclei_errors(text):
     """``{host: [error text, ...]}`` from nuclei's error log (``-elog``): one JSON object per line, naming the input it failed on (``input``)
     and the error. A line that is not an object, or names no input, is skipped."""
@@ -278,7 +283,7 @@ def unreached_targets(targets, errors, answered_hosts):
     out = []
     for target in targets:
         host = host_of({'host': target})
-        failed = errors.get(host)
+        failed = [text for text in errors.get(host) or [] if not NUCLEI_TEMPLATE_PROBLEMS.search(text)]
         if failed and host not in answered_hosts and all(NUCLEI_CONNECTION_ERRORS.search(text) for text in failed):
             out.append(target)
     return out
