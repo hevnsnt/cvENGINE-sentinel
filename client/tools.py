@@ -37,7 +37,7 @@ from cvengine_scanner.flags import (DISCOVER_FLAGS, KERNEL_MARKERS, MAX_DISCOVER
                                     NUCLEI_VALIDATE_FLAGS, PATH_PROBE_ODD, PATH_PROBE_PLAIN, TESTSSL_FLAGS, UDP_NSE_SCRIPTS, UDP_PORTS, WAFW00F_TIMEOUT,
                                     WPSCAN_ARGS, WPSCAN_THOROUGH_ARGS, host_of, thorough_timeout, udp_nmap_flags, wafw00f_flags)
 from cvengine_scanner.parsers import (MAX_FINDINGS, MAX_FINDINGS_BYTES, MAX_LIST_ITEMS, ToolOutputError, parse_discover_xml,  # noqa: F401
-                                      parse_naabu_output, parse_nmap_xml, parse_nuclei_errors, parse_nuclei_jsonl, parse_port_reasons, parse_testssl_report,
+                                      nmap_scanned_total, parse_naabu_output, parse_nmap_xml, parse_nuclei_errors, parse_nuclei_jsonl, parse_port_reasons, parse_testssl_report,
                                       testssl_result, unreached_targets,
                                       parse_waf_output)
 
@@ -421,12 +421,31 @@ def run_nmap(addresses, timeout=None, register=None, ports=None):
         path = _targets_file(group)
         try:
             argv = [NMAP_BIN, *flags, *pass_flags, '-oX', '-', '-iL', path]
-            out.extend(parse_nmap_xml(_run(argv, timeout or nmap_timeout(len(group)), register), strict=True)['hosts'])
+            xml = _run(argv, timeout or nmap_timeout(len(group)), register)
+            rows = parse_nmap_xml(xml, strict=True)['hosts']
+            out.extend(rows + _scanned_without_open_ports(group, rows, nmap_scanned_total(xml)))
         finally:
             os.unlink(path)
-    # nmap lists every host it scanned, with -Pn, whether or not any port is open. An address it does not list was not scanned, and gets no
-    # row: the server reads a missing row as "this Sentinel did not cover it" (review H3: a padded row read as a clean host).
+    # An address the report does not list and nmap did not count as scanned gets no row: the server reads a missing row as "this Sentinel did not cover it"
+    # (review H3: a padded row read as a clean host).
     return {'hosts': out, 'os_reliable': os_guess_reliable()}
+
+
+def _scanned_without_open_ports(group, rows, total):
+    """Rows with no ports for the addresses of ``group`` that nmap scanned and did not list. The pass runs with ``--open``, so nmap writes a host only when it has
+    an open port; its own ``<hosts total=N>`` says how many addresses it scanned. When that is every address of the run, the unlisted ones were scanned and had
+    nothing open (a row with no ports: the host is covered). Fewer, or no count: no row is made up, as the server reads that as not covered and asks again."""
+    if total is None or total != len(group):
+        return []
+    listed = {_normal_address(h['ip']) for h in rows}
+    return [{'ip': address, 'os_guess': '', 'ports': []} for address in group if _normal_address(address) not in listed]
+
+
+def _normal_address(value):
+    try:
+        return str(ipaddress.ip_address(str(value).strip().strip('[]')))
+    except ValueError:
+        return str(value)
 
 
 # --- discover: which addresses of an internal network answer -------------------------------------------------------
@@ -1075,6 +1094,7 @@ def same_site_redirect(url, outcome):
     return target
 
 
+MIN_HOP_SECONDS = 60  # a redirected scan with less time than this left is not started (WPScan stops itself 30 s before its limit)
 MAX_REDIRECT_HOPS = 3  # http to https, apex to www, a path: more than that is a loop or a site that is not worth chasing
 
 
@@ -1082,15 +1102,20 @@ def _wpscan_following(url, token, timeout, register, args):
     """The scan of ``url``, carried through up to ``MAX_REDIRECT_HOPS`` redirects on the same site (``same_site_redirect``), never to a URL already
     scanned. The outcome of the last scan is returned: a redirect that leaves the site, or one past the limit, is that outcome's own text."""
     seen = {url.strip().rstrip('/')}
+    deadline = time.monotonic() + timeout  # one limit for the whole chain: the server waits, and the watchdog allows, for one scan's time
     outcome = _wpscan(url, token, timeout, register, wpscan_args_for(args, token))
     for _hop in range(MAX_REDIRECT_HOPS):
         target = same_site_redirect(url, outcome)
         if target is None or target.rstrip('/') in seen:
             break
-        logger.info('wpscan: %s redirects to %s on the same site; scanning that', url, target)
+        left = int(deadline - time.monotonic())
+        if left < MIN_HOP_SECONDS:  # not time for a scan: the redirect text is the outcome, as for a hop past the limit
+            logger.info('wpscan: %s redirects to %s but only %d s of the time limit is left; not scanning it', url, target, max(left, 0))
+            break
+        logger.info('wpscan: %s redirects to %s on the same site; scanning that (%d s left)', url, target, left)
         seen.add(target.rstrip('/'))
         url = target
-        outcome = _wpscan(url, token, timeout, register, wpscan_args_for(args, token))  # judged by scope again inside, as any URL
+        outcome = _wpscan(url, token, left, register, wpscan_args_for(args, token))  # judged by scope again inside, as any URL
     return outcome
 
 

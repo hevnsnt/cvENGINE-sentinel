@@ -45,6 +45,9 @@ TOOL_BUDGET_SECONDS = {
     'nmap': 3600, 'nmap_verify': 900, 'nmap_full': 1500, 'nmap_udp': 1500, 'discover': 900, 'naabu': flags.TASK_LIMITS['naabu'][2],
     'testssl': 900, 'wpscan': 900, 'waf': 300, 'web_screenshot': 1800, 'rdp_shot': 300, 'secrets_scan': 1800,
     'bbot_discovery': 21600, 'wpscan_thorough': 12 * 3600, 'openvas': 24 * 3600,
+    # in-process probe batches that run past the 900 s default by their own limits (cvengine_scanner.probes: version_probes and routes BATCH_SECONDS 1200,
+    # suppliers MAX_SECONDS 1500): each stops starting work at its limit and reports the rest as not run, so the watchdog must not stop it earlier
+    'http_probe': 1200, 'route_probe': 1200, 'route_probe_signed': 1200, 'supplier_check': 1500,
 }
 DEFAULT_BUDGET_SECONDS = 900  # an in-process probe or a kind this table does not know: seconds long in practice
 GRACE_SECONDS = 300

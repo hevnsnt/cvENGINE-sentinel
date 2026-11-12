@@ -5,6 +5,7 @@ network, so the Sentinel and the cvENGINE server run the same code over the same
 import json
 import logging
 import re
+from urllib.parse import urlsplit
 from xml.etree import ElementTree as ET
 
 from .flags import GENERIC_WAF_NAMES, MAX_DISCOVER_HOSTS, MAX_OPEN_PER_IP, MAX_WAF_PRODUCTS, WAF_NAME_LEN, host_of
@@ -66,6 +67,18 @@ def parse_nmap_xml(xml_text, strict=False):
             row['timed_out'] = True
         hosts.append(row)
     return {'hosts': hosts}
+
+
+def nmap_scanned_total(xml_text):
+    """How many addresses nmap says it scanned (``<runstats><hosts total=...>``) in a finished ``-oX`` report, or ``None`` when the report does not say. With
+    ``--open`` nmap lists only the hosts that have an open port, so this count is the only sign that the others were scanned too."""
+    try:
+        root = ET.fromstring(xml_text or '')
+    except ET.ParseError:
+        return None
+    total = root.find('runstats/hosts')
+    value = total.get('total') if total is not None else None
+    return int(value) if value and value.isdigit() else None
 
 
 def parse_port_reasons(xml_text):
@@ -252,13 +265,28 @@ def parse_nuclei_jsonl(text, evidence=True):
 # The errors that mean nothing answered a request: nothing listens, the name does not resolve, the connection or the answer timed out.
 # A failure of another kind (a broken body, a bad header) means something answered, so the host is reached.
 NUCLEI_CONNECTION_ERRORS = re.compile(r'connection refused|no such host|timeout|deadline exceeded|no route to host|network is unreachable|'
-                                      r'connection reset|could not resolve|dial tcp|no address', re.IGNORECASE)
+                                      r'connection reset|could not resolve|dial tcp|no address|port closed or filtered', re.IGNORECASE)  # the last is nuclei 3.11's own wording for a host that is down or a port nothing answers on
+
+
+# Errors a template logs about itself, not about the host: with -ni (no interactsh) every template that needs it logs the first, and a network template with no
+# port logs the second. They say nothing of whether the host answered, so they are left out of the judgement of ``unreached_targets``.
+NUCLEI_TEMPLATE_PROBLEMS = re.compile(r'interactsh client not initialized|no port provided in network protocol request', re.IGNORECASE)
+
+
+class NucleiErrors(dict):
+    """``{host: [error text, ...]}`` as ``parse_nuclei_errors`` always gave it, and ``ports``: ``{host: [(port or None, error text), ...]}``, the port each
+    failed request went to (nuclei's ``address``), which ``unreached_targets`` needs to tell a host that is down from a host that answered where it was asked
+    and was only found closed on a port some template tries (an AJP template asks for 8009 of every web server)."""
+
+    def __init__(self):
+        super().__init__()
+        self.ports = {}
 
 
 def parse_nuclei_errors(text):
     """``{host: [error text, ...]}`` from nuclei's error log (``-elog``): one JSON object per line, naming the input it failed on (``input``)
     and the error. A line that is not an object, or names no input, is skipped."""
-    errors = {}
+    errors = NucleiErrors()
     for line in (text or '').splitlines():
         try:
             row = json.loads(line)
@@ -268,18 +296,43 @@ def parse_nuclei_errors(text):
             continue
         target = next((row[k] for k in ('input', 'host', 'target', 'matched-at', 'url') if isinstance(row.get(k), str) and row[k]), '')
         if target:
-            errors.setdefault(host_of({'host': target}), []).append(_clip(row.get('error'), 500))
+            host, said = host_of({'host': target}), _clip(row.get('error'), 500)
+            errors.setdefault(host, []).append(said)
+            address = row.get('address') if isinstance(row.get('address'), str) else ''
+            port = address.rsplit(':', 1)[1] if ':' in address else ''
+            errors.ports.setdefault(host, []).append((int(port) if port.isdigit() else None, said))
     return errors
 
 
+def _target_ports(target):
+    """The ports a request for ``target`` goes to first: its own port (``host:port``, ``[v6]:port``, a URL's), else the two web ports."""
+    text = str(target).strip()
+    if '://' in text:
+        try:
+            parts = urlsplit(text)
+            return {parts.port or (443 if parts.scheme.lower() == 'https' else 80)}
+        except ValueError:
+            return {80, 443}
+    own = text.rsplit(':', 1)[1] if (text.count(':') == 1 or text.startswith('[')) and ':' in text else ''
+    return {int(own)} if own.isdigit() else {80, 443}
+
+
 def unreached_targets(targets, errors, answered_hosts):
-    """The ``targets`` (as they were asked) that nuclei never reached: every request it logged for their host failed to connect, and no finding
-    names that host. A host with no logged error is not counted: nothing says it was not reached, so it is not reported as unreachable."""
+    """The ``targets`` (as they were asked) that nuclei never reached: every request it logged for their host failed to connect, at least one of them to the
+    port the target itself names (or the web ports, for a bare host), and no finding names that host. A host with no logged error is not counted: nothing
+    says it was not reached. Errors a template logs about itself (``NUCLEI_TEMPLATE_PROBLEMS``) are not read as evidence either way, and a closed port that
+    only some template asks for (8009) does not make a host that answered where it was asked unreachable."""
     out = []
     for target in targets:
         host = host_of({'host': target})
-        failed = errors.get(host)
-        if failed and host not in answered_hosts and all(NUCLEI_CONNECTION_ERRORS.search(text) for text in failed):
+        rows = getattr(errors, 'ports', {}).get(host)
+        if rows is None:  # a plain dict of texts (a caller that built its own): no port to judge by
+            rows = [(None, text) for text in errors.get(host) or []]
+        rows = [(port, text) for port, text in rows if not NUCLEI_TEMPLATE_PROBLEMS.search(text)]
+        if not rows or host in answered_hosts or not all(NUCLEI_CONNECTION_ERRORS.search(text) for _port, text in rows):
+            continue
+        own = _target_ports(target)
+        if any(port is None or port in own for port, _text in rows):
             out.append(target)
     return out
 
