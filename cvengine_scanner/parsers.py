@@ -69,6 +69,18 @@ def parse_nmap_xml(xml_text, strict=False):
     return {'hosts': hosts}
 
 
+def nmap_scanned_total(xml_text):
+    """How many addresses nmap says it scanned (``<runstats><hosts total=...>``) in a finished ``-oX`` report, or ``None`` when the report does not say. With
+    ``--open`` nmap lists only the hosts that have an open port, so this count is the only sign that the others were scanned too."""
+    try:
+        root = ET.fromstring(xml_text or '')
+    except ET.ParseError:
+        return None
+    total = root.find('runstats/hosts')
+    value = total.get('total') if total is not None else None
+    return int(value) if value and value.isdigit() else None
+
+
 def parse_port_reasons(xml_text):
     """``{(address, port): (state, reason)}`` from an nmap ``-oX --reason`` report: what each probed port answered (``closed``/``reset``, a reset
     came back; ``filtered``/``no-response``, nothing did). Used by the path survey, which reads only whether a reset came back."""
