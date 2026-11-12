@@ -1341,11 +1341,14 @@ class FakeNuclei:
         self.dir, self.templates, self.clock = directory, templates, clock  # templates: {relative path: {'type', 'tags', 'text'}}
         self.listings, self.runs = [], []
         self.fail, self.duration, self.finding = set(), {}, {}
+        self.on_run, self.original = None, {}
         for rel, spec in templates.items():
             path = os.path.join(directory, rel)
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, 'w', encoding='utf-8') as handle:
                 handle.write(spec.get('text', f'id: {_slug(rel)}\n'))  # one id per file, as in the real library: the allowlist is keyed by id
+            with open(path, 'rb') as handle:
+                self.original[rel] = handle.read()
 
     def _selected(self, argv):
         types = set(_flag(argv, '-pt').split(',')) if '-pt' in argv else None
@@ -1369,8 +1372,19 @@ class FakeNuclei:
         with open(argv[argv.index('-l') + 1], encoding='utf-8') as handle:
             targets = handle.read().split()
         own = _flag(argv, '-t')
-        rel = os.path.relpath(own, self.dir) if own and own != self.dir else None
-        self.runs.append({'argv': list(argv), 'targets': targets, 'timeout': timeout, 'template': rel, 'at': self.clock() if self.clock else None})
+        given = None
+        if own and own != self.dir:
+            if self.on_run:
+                self.on_run(own)  # a test swaps the library's file here: the moment between the hash check and nuclei opening its file
+            with open(own, 'rb') as handle:
+                given = {'path': own, 'bytes': handle.read(), 'mode': os.stat(own).st_mode & 0o777, 'dir_mode': os.stat(os.path.dirname(own)).st_mode & 0o777}
+        if given and os.path.abspath(own).startswith(os.path.abspath(self.dir) + os.sep):
+            rel = os.path.relpath(own, self.dir)
+        elif given:  # a private copy of the verified bytes: the template is the bundle file that holds them
+            rel = next((r for r in self.original if self.original[r] == given['bytes']), os.path.basename(own))
+        else:
+            rel = None
+        self.runs.append({'argv': list(argv), 'targets': targets, 'timeout': timeout, 'template': rel, 'at': self.clock() if self.clock else None, 'given': given})
         if self.clock:
             self.clock.advance(min(timeout, self.duration.get(targets[0], self.duration.get(None, 0))))  # a run is stopped at its timeout
         if (targets[0], rel) in self.fail or (targets[0], None) in self.fail:
@@ -2017,6 +2031,32 @@ class NucleiAllowlistRunTests(NucleiTestCase):
         self.assertEqual([n['target'] for n in result['not_checked']], ['www.example.test:22'])
         self.assertIn('changed', result['not_checked'][0]['reason'])
         self.assertEqual(result['unreachable'], ['www.example.test:22'])  # the port stays due
+
+    def test_nuclei_is_given_a_private_copy_of_the_bytes_that_were_hashed_not_the_library_file(self):
+        _rel, path = _add_real(self, 'openssh-detect')
+        self.run_nuclei(['www.example.test:22'], services={'www.example.test:22': 'ssh'})
+        given = [r['given'] for r in self.nuclei.service_runs]
+        self.assertEqual(len(given), 1)
+        self.assertFalse(os.path.abspath(given[0]['path']).startswith(os.path.abspath(self.dir) + os.sep), given[0]['path'])
+        self.assertEqual(given[0]['mode'], 0o600)
+        self.assertEqual(given[0]['dir_mode'], 0o700)  # a directory only the Sentinel's user can write
+        with open(path, 'rb') as handle:
+            self.assertEqual(given[0]['bytes'], handle.read())
+        self.assertFalse(os.path.exists(os.path.dirname(given[0]['path'])))  # removed when the run ended
+
+    def test_a_file_swapped_after_the_hash_check_is_not_what_nuclei_opens(self):
+        """Review defect 3: the library file is replaced in the instant between the last hash check and nuclei opening the file."""
+        _rel, path = _add_real(self, 'openssh-detect')
+        with open(path, 'rb') as handle:
+            verified = handle.read()
+
+        def swap(_given):
+            with open(path, 'wb') as handle:
+                handle.write(verified + b'tcp:\n  - inputs:\n      - data: "USER root\\r\\n"\n')
+
+        self.nuclei.on_run = swap
+        self.run_nuclei(['www.example.test:22'], services={'www.example.test:22': 'ssh'})
+        self.assertEqual([r['given']['bytes'] for r in self.nuclei.service_runs], [verified])
 
     def test_a_missing_list_runs_nothing_on_a_service_port(self):
         _add_real(self, 'openssh-detect')

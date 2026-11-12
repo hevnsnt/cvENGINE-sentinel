@@ -1535,15 +1535,6 @@
     "decode: hex /tcp[0]/inputs[0]/data: admin (an account name in a packet)"
    ]
   },
-  "mongodb-unauth": {
-   "path": "network/misconfig/mongodb-unauth.yaml",
-   "severity": "high",
-   "sha256": "c3edbc6802d3631203bfc454a529e9f955c08daf35e2d1f48f587aef31251044",
-   "reasons": [
-    "decode: hex /tcp[0]/inputs[0]/data: admin (an account name in a packet)",
-    "exploit class (tags none, severity high) and not reviewed as read-only for this file content"
-   ]
-  },
   "mssql-browser-detect": {
    "path": "javascript/udp/detection/mssql-browser-detect.yaml",
    "severity": "info",
@@ -1881,6 +1872,14 @@
    "sha256": "980893b8e3e897c217f5c69e10fc2f044ee95d286701a4ec66ea7e39a3f69a88",
    "reasons": [
     "sends UDP: a service port is a TCP port, so the datagrams would go to a port nobody named"
+   ]
+  },
+  "rtl-tcp-server-detect": {
+   "path": "network/detection/rtl-tcp-server-detect.yaml",
+   "severity": "info",
+   "sha256": "1ba22f9f4a63163850e0d8cf7c5a0396eadd829a1508caef779750715e46cd70",
+   "reasons": [
+    "read by a person and refused: sends two rtl_tcp control commands: 0x01 set centre frequency and 0x02 set sample rate, which reconfigures the tuner of the SDR dongle on the target (a configuration write, not a read)"
    ]
   },
   "rtsp-detect": {

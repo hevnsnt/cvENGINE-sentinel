@@ -52,12 +52,14 @@ class ShippedListTests(unittest.TestCase):
                 self.assertNotIn(tid, _templates())
                 self.assertIn(tid, left)
 
-    def test_the_two_restored_templates_were_read_and_are_recorded(self):
+    def test_the_restored_templates_were_read_and_are_recorded(self):
         data = al.load_allowlist()
-        self.assertEqual(sorted(data['reviewed_exceptions']), ['perforce-detection', 'smb-signing'])
+        self.assertEqual(sorted(data['reviewed_exceptions']), ['mongodb-unauth', 'perforce-detection', 'smb-signing'])
         review = json.loads(al.REVIEW_FILE.read_text(encoding='utf-8'))
         for tid in data['reviewed_exceptions']:
             self.assertEqual(review['restored'][tid]['sha256'], data['templates'][tid]['sha256'])
+            self.assertTrue(review['restored'][tid]['reason'])
+        for tid in ('perforce-detection', 'smb-signing'):
             self.assertRegex(review['restored'][tid]['reason'], 'captur')
         self.assertNotIn('pgsql-detect', data['templates'])  # it sends a user name and starts a SCRAM login: it stays out
         self.assertEqual(data['templates']['perforce-detection']['fixed_ports'], [1666])  # it also connects to 1666: it runs only on that port
@@ -73,6 +75,23 @@ class ShippedListTests(unittest.TestCase):
                 al.forget()
                 self.addCleanup(al.forget)
                 self.assertEqual(al.load_allowlist(path)['templates'], {}, text)
+
+    def test_rtl_tcp_server_detect_is_absent_it_sends_set_frequency_and_set_sample_rate(self):
+        """Its two hex inputs are rtl_tcp commands 0x01 and 0x02: a setting changed on the target's tuner, which the read-only rule excludes."""
+        self.assertNotIn('rtl-tcp-server-detect', _templates())
+        left = json.loads(al.LEFT_OUT_FILE.read_text(encoding='utf-8'))['templates']
+        self.assertIn('rtl-tcp-server-detect', left)
+        self.assertTrue(any('frequency' in r for r in left['rtl-tcp-server-detect']['reasons']))
+        review = json.loads(al.REVIEW_FILE.read_text(encoding='utf-8'))
+        self.assertIn('frequency', review['refused']['rtl-tcp-server-detect'])
+
+    def test_mongodb_unauth_is_listed_after_a_full_reading_and_the_reading_is_recorded(self):
+        entry = _templates()['mongodb-unauth']
+        review = json.loads(al.REVIEW_FILE.read_text(encoding='utf-8'))
+        self.assertEqual(review['read_only']['mongodb-unauth'], entry['sha256'])
+        self.assertEqual(review['restored']['mongodb-unauth']['sha256'], entry['sha256'])  # the decode flags the database name 'admin'
+        self.assertIn('startupWarnings', review['restored']['mongodb-unauth']['reason'])
+        self.assertIn('mongodb', entry['classes'])
 
 
 class CheckFileTests(unittest.TestCase):

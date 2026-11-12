@@ -680,27 +680,29 @@ def _run_service_port(target, klass, tags, budget, deadline, extra, templates, r
         if left <= 0:
             out['incomplete'], out['reason'] = True, f'its time ran out after {index} of {len(files)} templates'
             break
-        if not nuclei_allowlist.check_file(path)[0]:  # the file is read again just before it is sent: one that changed since the list was made never runs
-            changed += 1
-            logger.warning('nuclei: %s changed since it was listed and is no longer on the service-port allowlist; it is not run', path)
-            continue
-        try:
-            got = _nuclei_pass([target], argv + ['-t', path], max(1, min(flags.NUCLEI_SERVICE_TEMPLATE_SECONDS, math.ceil(left))), register, secret_file, filtered=True)
-        except ToolExitError as exc:  # one template that fails does not fail the port, or the task
-            failed += 1
-            last_error = str(exc)[:200]
-            logger.warning('nuclei: a template run on %s failed: %s', target, last_error)
-        else:
-            out['findings'] += got['findings']
-            out['incomplete'] = out['incomplete'] or got['incomplete']
-            quiet += got['no_templates']
-            if got['unreachable']:
-                silent += 1
-                if not reached and silent >= flags.NUCLEI_SERVICE_SILENT_RUNS:
-                    out['unreachable'], out['reason'] = True, 'nothing answered on this port'
-                    return out
+        with tempfile.TemporaryDirectory(prefix='nuclei-svc-') as private:  # mode 0700: only the Sentinel's user can write there
+            copy, _why, _tid = nuclei_allowlist.private_copy(path, private)  # read once, hashed, and written as it was hashed: nuclei opens this copy, never the library file
+            if copy is None:  # one that changed since the list was made never runs
+                changed += 1
+                logger.warning('nuclei: %s changed since it was listed and is no longer on the service-port allowlist; it is not run', path)
+                continue
+            try:
+                got = _nuclei_pass([target], argv + ['-t', copy], max(1, min(flags.NUCLEI_SERVICE_TEMPLATE_SECONDS, math.ceil(left))), register, secret_file, filtered=True)
+            except ToolExitError as exc:  # one template that fails does not fail the port, or the task
+                failed += 1
+                last_error = str(exc)[:200]
+                logger.warning('nuclei: a template run on %s failed: %s', target, last_error)
             else:
-                reached += 1
+                out['findings'] += got['findings']
+                out['incomplete'] = out['incomplete'] or got['incomplete']
+                quiet += got['no_templates']
+                if got['unreachable']:
+                    silent += 1
+                    if not reached and silent >= flags.NUCLEI_SERVICE_SILENT_RUNS:
+                        out['unreachable'], out['reason'] = True, 'nothing answered on this port'
+                        return out
+                else:
+                    reached += 1
         if index + 1 < len(files):
             _sleep(max(0.0, min(pause, deadline - _clock())))  # never a pause that runs past the task's own time
     if changed and not out['reason']:

@@ -2,6 +2,7 @@
  "nuclei_templates": "v10.5.1",
  "generated_by": "scripts/generate_service_allowlist.py",
  "reviewed_exceptions": [
+  "mongodb-unauth",
   "perforce-detection",
   "smb-signing"
  ],
@@ -1440,6 +1441,15 @@
     "unknown"
    ]
   },
+  "mongodb-unauth": {
+   "sha256": "c3edbc6802d3631203bfc454a529e9f955c08daf35e2d1f48f587aef31251044",
+   "path": "network/misconfig/mongodb-unauth.yaml",
+   "severity": "high",
+   "classes": [
+    "mongodb"
+   ],
+   "restored": true
+  },
   "moveit-sftp-detect": {
    "sha256": "6853a332ee19048c24a23f939314e2dcaa9dccaa2e04c40b60fe94ffa8406881",
    "path": "network/detection/moveit-sftp-detect.yaml",
@@ -1893,14 +1903,6 @@
   "rsyncd-service-detect": {
    "sha256": "fa23568876afa5e354fa834ae2fc82ac251b78a0eaf6444aa41cc3dfdfb8a33f",
    "path": "network/detection/rsyncd-service-detect.yaml",
-   "severity": "info",
-   "classes": [
-    "unknown"
-   ]
-  },
-  "rtl-tcp-server-detect": {
-   "sha256": "1ba22f9f4a63163850e0d8cf7c5a0396eadd829a1508caef779750715e46cd70",
-   "path": "network/detection/rtl-tcp-server-detect.yaml",
    "severity": "info",
    "classes": [
     "unknown"

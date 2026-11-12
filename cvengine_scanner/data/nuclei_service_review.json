@@ -1,6 +1,6 @@
 {
  "nuclei_templates": "v10.5.1",
- "about": "Read by a person for scripts/generate_service_allowlist.py. read_only: an exploit-class template (tag cve, rce, kev...; or severity medium or higher) whose requests were read and only ask what the server volunteers or send a protocol hello, version or status request; the sha256 is the file that was read. refused: read and not allowed on a service port (the reason). restored: a template the content rule or the decode check flags that was read and does not authenticate. A template in none of these that is of the exploit class is left out as not reviewed.",
+ "about": "Read by a person for scripts/generate_service_allowlist.py. read_only: an exploit-class template (tag cve, rce, kev...; or severity medium or higher) whose requests were read and only ask what the server volunteers or send a protocol hello, version or status request; the sha256 is the file that was read. refused: read and not allowed on a service port (the reason). restored: a template the content rule or the decode check flags that was read and does not authenticate. A template in none of these that is of the exploit class is left out as not reviewed. frames_read (fifth pass): a template whose hex inputs are binary frames the decode cannot judge; the sha256 is the file whose frames a person decoded and read (see frames_read_notes); a binary-frame template in neither frames_read, read_only nor restored is left out as not read.",
  "read_only_notes": {
   "CVE-2001-1473": "FTP or SSH banner check: sends four zero bytes (or nothing) and compares the version the server volunteers; no command, no login (the CVE is in the server version, not exercised)",
   "CVE-2004-0437": "FTP or SSH banner check: sends four zero bytes (or nothing) and compares the version the server volunteers; no command, no login (the CVE is in the server version, not exercised)",
@@ -43,7 +43,8 @@
   "exposed-dockerd": "one GET /_ping (Docker answers OK), read only",
   "exposed-redis": "INFO and QUIT: read only",
   "smb-signing": "ListSMBv2Metadata is an SMB2 negotiate; the User and Pass arguments are dropped (see restored)",
-  "ssh-weak-algo-supported": "ConnectSSHInfoMode: reads the key exchange lists, no authentication"
+  "ssh-weak-algo-supported": "ConnectSSHInfoMode: reads the key exchange lists, no authentication",
+  "mongodb-unauth": "read in full (fifth pass): one tcp input, one OP_MSG frame (opcode 2013, flags 0, section kind 0) holding {getLog: \"startupWarnings\", $db: \"admin\"}; no authenticate, saslStart, user or password; nothing else is sent; the matcher looks for totalLinesWritten in the reply"
  },
  "read_only": {
   "CVE-2001-1473": "6c3ada6f5610a2021c3eb314d968071b5193b7c14256603f686dba4b2b8da42f",
@@ -87,7 +88,8 @@
   "exposed-dockerd": "41556299c099d7e925f0cb5e26e26f7e6a1781091b4d798c0e5389c4cd8c6ff1",
   "exposed-redis": "7ad8fe0c466ae8313944773bd73f1882db6b0762a48abc77e06c3644d966c827",
   "smb-signing": "10d91b6408e6c311b72f31aad3bbde03f2ea1cc37d74a4fd994db225973f25ad",
-  "ssh-weak-algo-supported": "4d5c9ef325dcb0bad86bd6996bcc648f19902cd73786b6efd24d9b036ee5c2f2"
+  "ssh-weak-algo-supported": "4d5c9ef325dcb0bad86bd6996bcc648f19902cd73786b6efd24d9b036ee5c2f2",
+  "mongodb-unauth": "c3edbc6802d3631203bfc454a529e9f955c08daf35e2d1f48f587aef31251044"
  },
  "refused": {
   "CVE-2004-2687": "executes a command (sh -c id) through distccd",
@@ -129,7 +131,8 @@
   "open-socks-proxy": "asks the proxy to open a connection to 1.1.1.1 (a third party)",
   "sap-router-info-leak": "sends a SAProuter administration request; the request type was not confirmed read-only, left out",
   "unauth-mqtt-broker": "sends an MQTT CONNECT and SUBSCRIBE (an unauthenticated session), left out",
-  "x11-unauth-access": "sends the X11 connection setup with empty authorization (an unauthenticated access attempt), left out"
+  "x11-unauth-access": "sends the X11 connection setup with empty authorization (an unauthenticated access attempt), left out",
+  "rtl-tcp-server-detect": "sends two rtl_tcp control commands: 0x01 set centre frequency and 0x02 set sample rate, which reconfigures the tuner of the SDR dongle on the target (a configuration write, not a read)"
  },
  "restored": {
   "smb-signing": {
@@ -139,6 +142,76 @@
   "perforce-detection": {
    "sha256": "61605ffe578db5d90bf08d4d836a6f5d0b53d18f581255e41e2bf2b116745b4d",
    "reason": "It emulates the handshake of \"p4 info\" (func user-info), which Perforce answers without a login; the client field \"user\" is the placeholder client name, there is no password, ticket or login func (the bytes were captured). It connects to the target port and to 1666, so it is on the list with fixed_ports [1666] and runs only on a target whose port is 1666."
+  },
+  "mongodb-unauth": {
+   "sha256": "c3edbc6802d3631203bfc454a529e9f955c08daf35e2d1f48f587aef31251044",
+   "reason": "The decode flags the word admin. Read in full: the hex is one OP_MSG (length 69, request id 1, opcode 2013, flags 0, kind 0) with the document {getLog: \"startupWarnings\", $db: \"admin\"}; admin is the database name, not an account. getLog startupWarnings is a read of the server log buffer, sent with no login, and no other command, no saslStart, no authenticate, no user name or password is sent. The template has a single input and a single matcher (totalLinesWritten)."
   }
+ },
+ "frames_read": {
+  "afp-server-detect": "16849b486e3ba999d5c72773290d1dc902df372280e134422c1b0e2b8992ee8c",
+  "allen-bradley-compactlogix-detect": "df5dc0032d30829b678e96f254f96f60cb06e3c10ef09abe52829ef4e2f42ef7",
+  "allen-bradley-guardplc-detect": "8edf865a394ea5f2c3d509088edf9b16156fdec4cdefb03f045ade5b8406a5c5",
+  "allen-bradley-micro800-detect": "0a7bd7ec2f6e80665baa109353addedcfb768da231c4cb8922a1ff1bc2db7532",
+  "allen-bradley-micrologix-detect": "7414a809f054479b9a11a23640658c304531049be7eeb6f83e1bbc453e238a89",
+  "allen-bradley-plc5-detect": "4f45d443b604b8d2008e36401e517f2c11e2dce7622f9e2a146f7395fe304cae",
+  "allen-bradley-slc-500-detect": "f5285cd22e0e2812770f79c0ad69ac83df2889c569524d2853e79350040b15ab",
+  "bgp-detect": "3a3d3eef471f951c480b349ade87acd168f6bbf6cdbee69273ee871aab2938ed",
+  "conpot-siemens-honeypot-detect": "e554ba27a11c131950a8ad67fdd6c2f93550100f917506eaa428b9584ac5708f",
+  "cpppo-ethernetip-cip-honeypot": "0a781e6686f340a1b375418ccf6032b7a210baad51ccbf5caedfae6e62604cc0",
+  "dionaea-smb-honeypot-detect": "6f8340ac7e29f848d7dc8312f6d247f8464cfd5651742b0a47770e5f7ed3b605",
+  "ibm-db2-database-server": "ad6f15b0c28cdfe99ce4cdb64181255c1fe10ade39fd7caccad244675cf723df",
+  "java-rmi-detect": "7ce72e4d1307d77ca05e58a7a44f71a3a7ea01adef41bb6e90ff86b02e78c402",
+  "jdwp-detect": "1ae4c9a0eb4abf0af7e6c27cae39b60f8ef9a52a2cb3fed6cc7dbee213396d47",
+  "kafka-topics-list": "55fe34059a57227d25ac7048d4945e9b68e93448381fb1ae5407cca734955f4b",
+  "mikrotik-routeros-api": "9c11bb11e6671030d79b3a691150be71b667e4a47ddfa0f04a540950ab42a509",
+  "mikrotik-routeros-winbox": "f9c25751b01647fc11a6495affd9bacb2136557721ac33b1b7081d5837a8236f",
+  "modbus-detect": "c6a8d14e651943b1d60cc752cd92fdfea8cb6553eb2bec8959efe2ee4b5c319a",
+  "modicon-info": "393f1388e954aee7a9ed8a18a7811c7bfe56f5cdd7560873edd3cba449ce9bc8",
+  "msmq-detect": "e197ad6d81d20ca5db937be0bd6abe26a5406c9dba8c62ce49cbc3307a912c57",
+  "nfs-v3-exposed": "9a16e65bb7929c65a9a504414a8883166428d24f596122e5f0aa71d885862639",
+  "orcus-rat-trojan": "7732363001bd2e618debffc0e8a10481fbfa9b6a5f3fb52685642396c386eeda",
+  "perforce-detection": "61605ffe578db5d90bf08d4d836a6f5d0b53d18f581255e41e2bf2b116745b4d",
+  "red-lion-enip-detect": "c61a8931c537d4a9db24020063da2575a47569616e688501e63458c010d22f7d",
+  "riak-detect": "ae2f7af9b3221d1efff0785f1e216821cf9dee403896321cae54187a4cc63fb8",
+  "rpcbind-portmapper-detect": "a4237c5747901b78c2a0742a436d2029a81eed8bb1a9ab140e39689789ed13fb",
+  "schneider-modicon-340-detect": "a5f3e58841a077c3dc23eb5974438c0d1eaed914d351861c261dbc733f08fab7",
+  "schneider-modicon-580-detect": "5488a749a7c228de30971dc95621367f7aa22d38483e8b7d2c2b750538060057",
+  "siemens-s7-detect": "a00f5ce24f1300d366e63f48874aca5cbc52d5532115128df2d2eb5b7066536c",
+  "snap7-honeypot-default-config": "cae97699687f5bfbffe9e64c9c6c1b4f23f4e56d15bbdffeb5a88be944e9878f",
+  "weblogic-iiop-detect": "1ad7af9ab5998a93cb0480edb9b89dde8ac1fd6865d3870e48bc485567b200e4"
+ },
+ "frames_read_notes": {
+  "afp-server-detect": "AFP DSI GetStatus request (command 3): asks the server for its status block",
+  "allen-bradley-compactlogix-detect": "EtherNet/IP ListIdentity (command 0x63, 24 zero-padded bytes): asks the device to identify itself",
+  "allen-bradley-guardplc-detect": "EtherNet/IP ListIdentity (command 0x63): identity query",
+  "allen-bradley-micro800-detect": "EtherNet/IP ListIdentity (command 0x63): identity query",
+  "allen-bradley-micrologix-detect": "EtherNet/IP ListIdentity (command 0x63): identity query",
+  "allen-bradley-plc5-detect": "EtherNet/IP ListIdentity (command 0x63): identity query",
+  "allen-bradley-slc-500-detect": "EtherNet/IP ListIdentity (command 0x63): identity query",
+  "bgp-detect": "BGP OPEN message (marker, length 29, version 4, AS 65535, hold time 180): a hello, no UPDATE, no route",
+  "conpot-siemens-honeypot-detect": "S7 COTP connection request (CR TPDU): a connect hello",
+  "cpppo-ethernetip-cip-honeypot": "EtherNet/IP ListIdentity (command 0x63): identity query",
+  "dionaea-smb-honeypot-detect": "SMB1 negotiate protocol request (dialect list): no session setup",
+  "ibm-db2-database-server": "DRDA EXCSAT (exchange server attributes, SQLDB2RA): no ACCSEC, no user id, no password",
+  "java-rmi-detect": "JRMI stream header (4a524d49 0002 4b): protocol handshake only",
+  "jdwp-detect": "JDWP-Handshake, then VirtualMachine.Version command (set 1, command 1): read of the VM version",
+  "kafka-topics-list": "Kafka Metadata request v0 (api key 3) with an empty topic array: lists topics, creates none",
+  "mikrotik-routeros-api": "a frame the RouterOS API answers with \"!fatal not logged in\": no login word is sent",
+  "mikrotik-routeros-winbox": "WinBox list/probe request (0x22 0x06, zero padded): asks for the router identity, no login",
+  "modbus-detect": "Modbus TCP function 0x03 read holding register 0, quantity 1: a read",
+  "modicon-info": "Modbus 0x2b/0x0e read device identification; UMAS 0x5a sub-functions 0x20 and 0x03 (read memory block, read plc info): reads only",
+  "msmq-detect": "MSMQ negotiate packet (LIOR header, zero padded): a hello, no message is queued",
+  "nfs-v3-exposed": "ONC RPC NFS NULL procedure call (program 100003, version 3, procedure 0): no operation",
+  "orcus-rat-trojan": "a TLS 1.0 ClientHello: a handshake",
+  "perforce-detection": "p4 info handshake (func user-info); see restored",
+  "red-lion-enip-detect": "EtherNet/IP/Red Lion identity requests (service 0x012a and 0x012b, six bytes): reads",
+  "riak-detect": "Riak protocol buffers RpbGetServerInfoReq (message code 7): read of node and version",
+  "rpcbind-portmapper-detect": "ONC RPC portmapper DUMP (program 100000, procedure 4): lists registered services, registers nothing",
+  "schneider-modicon-340-detect": "Modbus 0x2b/0x0e read device identification and UMAS 0x5a sub-function 0x02 (read id): reads",
+  "schneider-modicon-580-detect": "Modbus 0x2b/0x0e read device identification and UMAS 0x5a sub-function 0x02 (read id): reads",
+  "siemens-s7-detect": "S7 COTP connect, S7 setup communication, SZL read (userdata function 4, group 4 sub 1): reads the module identification, writes nothing",
+  "snap7-honeypot-default-config": "S7 COTP connect, setup communication and SZL reads: reads, writes nothing",
+  "weblogic-iiop-detect": "GIOP 1.2 LocateRequest for NameService: asks whether an object is here, calls nothing"
  }
 }

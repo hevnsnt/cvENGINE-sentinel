@@ -51,7 +51,7 @@ class VendoredTemplatesTests(unittest.TestCase):
                 self.assertEqual(found, tid)
 
     def test_every_allowlisted_template_passes_the_content_rule_and_the_decode(self):
-        """At the pinned release. A template a person read and restored (``reviewed_exceptions``) is the one allowed to fail them, and only those two."""
+        """At the pinned release. A template a person read and restored (``reviewed_exceptions``) is the one allowed to fail them, and only those three (the two of the fourth pass and mongodb-unauth, read in full in the fifth)."""
         failed = []
         for tid, entry in self.data['templates'].items():
             path = VENDORED / entry['path']
@@ -60,7 +60,7 @@ class VendoredTemplatesTests(unittest.TestCase):
             if (rule or decode) and tid not in self.data['reviewed_exceptions']:
                 failed.append((tid, rule, decode[:2]))
         self.assertEqual(failed, [])
-        self.assertEqual(sorted(self.data['reviewed_exceptions']), ['perforce-detection', 'smb-signing'])
+        self.assertEqual(sorted(self.data['reviewed_exceptions']), ['mongodb-unauth', 'perforce-detection', 'smb-signing'])
 
     def test_what_the_two_checks_flag_in_the_refused_templates_they_agree_on(self):
         """Where the content rule flags a template, the decode flags it too; the decode also flags what the rule cannot see (the seven the third review named)."""
@@ -181,6 +181,45 @@ class GeneratorTests(unittest.TestCase):
         self.assertTrue(kept['named']['restored'])
         kept, left = self.library({'javascript/n.yaml': text + '# changed\n'}, {'restored': {'named': {'sha256': digest, 'reason': 'read'}}})
         self.assertIn('named', left)
+
+    def test_every_allowlisted_template_with_binary_hex_frames_was_read_for_that_file(self):
+        data, review = al.load_allowlist(), GEN.load_review()
+        seen = 0
+        for tid, entry in data['templates'].items():
+            text = (VENDORED / entry['path']).read_text(encoding='utf-8')
+            if GEN.binary_frames(GEN._text_doc(text)):
+                seen += 1
+                self.assertIn(entry['sha256'], (review['frames_read'].get(tid), review['read_only'].get(tid)), tid)
+        self.assertGreater(seen, 25)
+        self.assertNotIn('rtl-tcp-server-detect', review['frames_read'])
+
+    HEXT = 'id: {id}\ninfo:\n  name: x\n  severity: info\n  tags: detect\ntcp:\n  - host:\n      - "{{{{Hostname}}}}"\n    inputs:\n      - data: "{data}"\n        type: hex\n    port: 1234\n'
+
+    def test_a_template_that_sends_hex_control_frames_is_left_out_until_a_person_read_them(self):
+        control = {'network/rtl.yaml': self.HEXT.format(id='sets-a-value', data='01000000070b8140')}
+        kept, left = self.library(control)
+        self.assertIn('sets-a-value', left)
+        self.assertTrue(any('control frames' in r and 'not read' in r for r in left['sets-a-value']['reasons']), left['sets-a-value']['reasons'])
+        digest = left['sets-a-value']['sha256']
+        kept, left = self.library(control, {'frames_read': {'sets-a-value': digest}})
+        self.assertIn('sets-a-value', kept)
+        kept, left = self.library(control, {'frames_read': {'sets-a-value': '0' * 64}})  # read with other content: read again
+        self.assertIn('sets-a-value', left)
+        kept, left = self.library(control, {'frames_read': {'sets-a-value': digest}, 'refused': {'sets-a-value': 'sets a value on the target'}})
+        self.assertIn('sets-a-value', left)
+        self.assertIn('sets a value on the target', left['sets-a-value']['reasons'][-1])
+
+    def test_hex_that_is_zero_bytes_or_plain_text_needs_no_reading(self):
+        kept, left = self.library({'network/zero.yaml': self.HEXT.format(id='zeros', data='00000000'),
+                                   'network/text.yaml': self.HEXT.format(id='texty', data='48454c500d0a'),
+                                   'network/none.yaml': self.HEXT.format(id='nothing', data='')})
+        self.assertEqual(sorted(kept), ['nothing', 'texty', 'zeros'])
+
+    def test_hex_decode_in_a_data_string_is_read_the_same_way(self):
+        text = 'id: viafn\ninfo:\n  name: x\n  severity: info\n  tags: detect\ntcp:\n  - inputs:\n      - data: "{{hex_decode(\'020000000024f600\')}}"\n'
+        kept, left = self.library({'network/f.yaml': text})
+        self.assertIn('viafn', left)
+        self.assertIn('control frames', ' '.join(left['viafn']['reasons']))
 
 
 if __name__ == '__main__':

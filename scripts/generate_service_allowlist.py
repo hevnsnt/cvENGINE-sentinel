@@ -15,7 +15,7 @@ is KEPT only when all of these hold, and is otherwise left out with each reason 
   4. it passes the content rule the Sentinel already had (``client.tools._paced_template``: no payloads, no login step, no own parallelism, at most 10 requests);
   5. it passes the independent decode (``cvengine_scanner.nuclei_allowlist.credential_findings``): no string, read as plain text, hex or base64, and no key, names a
      user, a password, a token, a cookie, a community string, an authorization header or an authentication message;
-  6. it does not change state on the target and does nothing a person refused. Every template of the exploit class (tag cve, rce, kev, exploit...; or severity
+  6a. it does not send a hex control frame nobody read: a template whose hex inputs (``type: hex`` or ``hex_decode``) are binary (not empty, not all zero bytes, not plain\n     text) cannot be judged by the decode, so it needs an entry in ``frames_read`` (or ``read_only``, or ``restored``) of the review file with the sha256 of the file a person\n     read, else it is left out as \"not read\". A template read and found to change state is listed under ``refused`` with the reason (rtl-tcp-server-detect: set frequency).\n  6. it does not change state on the target and does nothing a person refused. Every template of the exploit class (tag cve, rce, kev, exploit...; or severity
      medium or higher) has to appear in ``cvengine_scanner/data/nuclei_service_review.json`` under ``read_only`` with the sha256 of the file a person read; one
      under ``refused`` (any severity) is left out with the recorded reason; an exploit-class template in neither is left out as "not reviewed". A new release
      therefore never adds an exploit-class template by itself.
@@ -63,6 +63,7 @@ JS_BUILTINS = frozenset(('Array', 'Uint8Array', 'Uint16Array', 'Uint32Array', 'A
                          'Math', 'JSON', 'Buffer', 'Promise', 'TextDecoder', 'TextEncoder'))
 _JS_REQUIRE = re.compile(r'require\(\s*[\'"]nuclei/(\w+)')
 _UDP = re.compile(r'(?i)isUDPPortOpen|[\'"`]udp[\'"`]')
+_HEX_DECODE = re.compile(r'''hex_decode\(\s*['"]([0-9a-fA-F]*)['"]\s*\)''')
 _LITERAL_PORT = re.compile(r':(\d{1,5})\s*$')
 SKIP_DIRS = {'.git', '.github'}
 
@@ -118,6 +119,39 @@ def fixed_ports(doc):
     return sorted(ports)
 
 
+def _text_doc(text):
+    """The template read with no number or boolean resolvers (an unquoted ``00000000`` or ``01000000`` hex string is a string here, not the integer 0 or 1)."""
+    try:
+        doc = yaml.load(text, Loader=al._text_loader())  # noqa: S506 - a safe loader with the number resolvers removed
+    except yaml.YAMLError:
+        return {}
+    return doc if isinstance(doc, dict) else {}
+
+
+def hex_frames(doc):
+    """The bytes a tcp template sends as hex: every input of ``type: hex`` and every ``hex_decode('..')`` literal of an input's data. ``[bytes]``."""
+    frames = []
+    for block in doc.get('tcp') or doc.get('network') or []:
+        for item in (block.get('inputs') or []) if isinstance(block, dict) else []:
+            if not isinstance(item, dict):
+                continue
+            data = str(item.get('data') if item.get('data') is not None else '')
+            literals = _HEX_DECODE.findall(data)
+            candidates = literals if literals else ([re.sub(r'\s+', '', data)] if str(item.get('type')) == 'hex' else [])
+            for text in candidates:
+                try:
+                    frames.append(bytes.fromhex(text))
+                except ValueError:
+                    frames.append(b'\xff')  # hex that does not decode cannot be read: treat it as a control frame
+    return frames
+
+
+def binary_frames(doc):
+    """The hex frames a decode of the strings cannot judge: not empty, not all zero bytes (the FTP banner probe), not plain printable text (the decode reads that).
+    A command frame of a binary protocol (set a frequency, write a register...) looks like random bytes to the word search, so a person has to read it."""
+    return [f for f in hex_frames(doc) if any(f) and not all(32 <= b < 127 or b in (9, 10, 13) for b in f)]
+
+
 def javascript_reasons(doc):
     reasons = []
     for block in doc.get('javascript') or []:
@@ -140,7 +174,7 @@ def load_review(path=al.REVIEW_FILE):
         data = json.loads(Path(path).read_text(encoding='utf-8'))
     except (OSError, ValueError):
         data = {}
-    return {'read_only': data.get('read_only') or {}, 'refused': data.get('refused') or {}, 'restored': data.get('restored') or {}}
+    return {'read_only': data.get('read_only') or {}, 'refused': data.get('refused') or {}, 'restored': data.get('restored') or {}, 'frames_read': data.get('frames_read') or {}}
 
 
 def analyse(directory, review, release):
@@ -194,6 +228,8 @@ def analyse(directory, review, release):
         if soft and not restored_ok:
             reasons += soft
         state = review['refused'].get(tid)
+        if not reasons and binary_frames(_text_doc(text)) and not state and digest not in ((review.get('frames_read') or {}).get(tid), review['read_only'].get(tid)) and not restored_ok:
+            reasons.append('sends hex control frames of a binary protocol, which the decode cannot judge, and a person has not read them for this file content (not read)')
         exploit = exploit_class(tags, severity)
         if state:
             reasons.append('read by a person and refused: ' + str(state))

@@ -14,6 +14,7 @@ This module has no side effect: it reads two JSON files and, for the check of a 
 import base64
 import hashlib
 import json
+import os
 import re
 from pathlib import Path
 
@@ -59,14 +60,10 @@ def forget():
     _cache.clear()
 
 
-def check_file(path, allowlist=None):
-    """``(allowed, reason, template_id)`` for a template file on disk: allowed only when its id is on the list and the sha256 of its bytes is the one recorded. The
-    reason says which of the two failed."""
+def check_bytes(raw, allowlist=None):
+    """``(allowed, reason, template_id)`` for the bytes of a template file: allowed only when its id is on the list and the sha256 of the bytes is the one
+    recorded. The reason says which of the two failed."""
     allowlist = allowlist if allowlist is not None else load_allowlist()
-    try:
-        raw = Path(path).read_bytes()[:MAX_TEMPLATE_BYTES + 1]
-    except OSError:
-        return False, 'the template file cannot be read', None
     if len(raw) > MAX_TEMPLATE_BYTES:
         return False, 'the template file is larger than any allowlisted template', None
     tid = template_id(raw.decode('utf-8', 'replace'))
@@ -76,6 +73,38 @@ def check_file(path, allowlist=None):
     if entry.get('sha256') != sha256_of(raw):
         return False, 'the template file differs from the one the service-port allowlist was made from (its sha256 changed)', tid
     return True, None, tid
+
+
+def _read_template(path):
+    try:
+        return Path(path).read_bytes()[:MAX_TEMPLATE_BYTES + 1], None
+    except OSError:
+        return None, 'the template file cannot be read'
+
+
+def check_file(path, allowlist=None):
+    """``(allowed, reason, template_id)`` for a template file on disk (see ``check_bytes``)."""
+    raw, why = _read_template(path)
+    if raw is None:
+        return False, why, None
+    return check_bytes(raw, allowlist)
+
+
+def private_copy(path, directory, allowlist=None):
+    """Read the template file ONCE, check those bytes against the list and write exactly those bytes to a new file (mode 0600) in ``directory``, which the caller
+    made private (mode 0700, its own user). Returns ``(copy_path, reason, template_id)``; ``copy_path`` is None when the template is not allowed. nuclei is given the
+    copy, so a library file replaced after this check is never what it opens: the bytes that were hashed are the bytes that run."""
+    raw, why = _read_template(path)
+    if raw is None:
+        return None, why, None
+    allowed, reason, tid = check_bytes(raw, allowlist)
+    if not allowed:
+        return None, reason, tid
+    target = os.path.join(directory, os.path.basename(str(path)) or 'template.yaml')
+    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, 'wb') as handle:
+        handle.write(raw)
+    return target, None, tid
 
 
 # --------------------------------------------------------------------------------------------------------------- the decode check
