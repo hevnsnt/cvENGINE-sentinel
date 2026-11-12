@@ -15,7 +15,7 @@ license = "GPL-3.0-only"
 dependencies = ["xmltodict>=1.0,<2"]  # the Sentinel image and the cvENGINE server both pin 1.0.4 in their requirements
 
 [project.optional-dependencies]
-test = ["jsonschema==4.26.0", "dnspython==2.9.2", "cryptography==50.0.2"]  # jsonschema validates the fixtures against the contract (JSON Schema 2020-12); dnspython and cryptography run the hygiene probes' tests (the library imports them only where a probe needs them: never at run time of anything else)
+test = ["jsonschema==4.26.0", "dnspython==2.9.2", "cryptography==50.0.2", "PyYAML==6.0.3"]  # jsonschema validates the fixtures against the contract (JSON Schema 2020-12); dnspython and cryptography run the hygiene probes' tests (the library imports them only where a probe needs them: never at run time of anything else)
 
 [project.urls]
 Source = "https://github.com/hevnsnt/cvENGINE-sentinel"
@@ -24,7 +24,7 @@ Source = "https://github.com/hevnsnt/cvENGINE-sentinel"
 packages = ["cvengine_scanner", "cvengine_scanner.contract", "cvengine_scanner.probes"]
 
 [tool.setuptools.package-data]
-cvengine_scanner = ["probes/subdir_apps.json", "contract/*.json", "fixtures/results/*.json", "fixtures/results/v*/*.json", "fixtures/targets/*.json", "fixtures/partials/*.json"]
+cvengine_scanner = ["probes/subdir_apps.json", "data/*.json", "contract/*.json", "fixtures/results/*.json", "fixtures/results/v*/*.json", "fixtures/targets/*.json", "fixtures/partials/*.json"]
 
 # The version is the git tag (v1.2.3 or 1.2.3); a checkout without tags or without git (the Docker build context has none) gets the fallback.
 [tool.setuptools_scm]

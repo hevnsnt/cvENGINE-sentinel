@@ -352,6 +352,29 @@
                 },
                 "description": "Optional: the targets nuclei could not reach (no answer, refused, no such host, or a timeout on every request). They were not scanned: the server records them as failed, not done."
               },
+              "not_checked": {
+                "type": "array",
+                "maxItems": 64,
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "target",
+                    "reason"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "target": {
+                      "type": "string",
+                      "maxLength": 260
+                    },
+                    "reason": {
+                      "type": "string",
+                      "maxLength": 200
+                    }
+                  }
+                },
+                "description": "Optional: each target nuclei did not fully check, and why in plain words (nothing answered on the port, a run failed or ran out of time, the task holds at most six non-web ports and this one is for another task). A target named here is also in unreachable when it must be scanned again."
+              },
               "templates_release": {
                 "type": "string",
                 "maxLength": 80,
@@ -482,6 +505,29 @@
                 },
                 "description": "Optional: the targets nuclei could not reach (no answer, refused, no such host, or a timeout on every request). They were not scanned: the server records them as failed, not done."
               },
+              "not_checked": {
+                "type": "array",
+                "maxItems": 64,
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "target",
+                    "reason"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "target": {
+                      "type": "string",
+                      "maxLength": 260
+                    },
+                    "reason": {
+                      "type": "string",
+                      "maxLength": 200
+                    }
+                  }
+                },
+                "description": "Optional: each target nuclei did not fully check, and why in plain words (nothing answered on the port, a run failed or ran out of time, the task holds at most six non-web ports and this one is for another task). A target named here is also in unreachable when it must be scanned again."
+              },
               "templates_release": {
                 "type": "string",
                 "maxLength": 80,
@@ -611,6 +657,29 @@
                   "maxLength": 260
                 },
                 "description": "Optional: the targets nuclei could not reach (no answer, refused, no such host, or a timeout on every request). They were not scanned: the server records them as failed, not done."
+              },
+              "not_checked": {
+                "type": "array",
+                "maxItems": 64,
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "target",
+                    "reason"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "target": {
+                      "type": "string",
+                      "maxLength": 260
+                    },
+                    "reason": {
+                      "type": "string",
+                      "maxLength": 200
+                    }
+                  }
+                },
+                "description": "Optional: each target nuclei did not fully check, and why in plain words (nothing answered on the port, a run failed or ran out of time, the task holds at most six non-web ports and this one is for another task). A target named here is also in unreachable when it must be scanned again."
               },
               "templates_release": {
                 "type": "string",
@@ -4741,6 +4810,40 @@
             },
             "description": "tags the run must always exclude (dos)"
           },
+          "services": {
+            "type": "object",
+            "description": "optional: what speaks on each host:port of targets (a target with no port is web). web: an http or https service, which gets the web templates and nothing that is not http-typed or ssl or dns; unknown: the service has no class of its own or nothing is known, which gets the generic network templates (tcp, javascript and ssl types that belong to no class) and never an http template; any other value is a protocol class (ssh, smtp, imap, tls ...), which gets only that protocol's network templates. A port with no entry is read by the Sentinel from its port number, and a port in no table is unknown, never web. Keys are targets, at most 64.",
+            "maxProperties": 64,
+            "propertyNames": {
+              "maxLength": 500
+            },
+            "additionalProperties": {
+              "type": "string",
+              "maxLength": 20
+            }
+          },
+          "budget": {
+            "type": "object",
+            "description": "optional: what one host:port may receive from this task. pause_ms: the least pause between two template runs on a non-web host:port (nuclei paces only its http and dns requests, so a Sentinel runs one template at a time on a service and waits this long between runs); seconds: the most time one non-web host:port is kept busy; web_rate: the most requests a second one web host receives (nuclei's per-host rate limit). A Sentinel holds each value to its own bound (cvengine_scanner.flags.NUCLEI_SERVICE_BUDGET): a task can make a run gentler (a longer pause, fewer seconds, a lower rate), never harsher.",
+            "additionalProperties": false,
+            "properties": {
+              "pause_ms": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 600000
+              },
+              "seconds": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3600
+              },
+              "web_rate": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1000
+              }
+            }
+          },
           "template_policy": {
             "type": "object",
             "required": [
@@ -4815,6 +4918,40 @@
             },
             "description": "tags the run must always exclude (dos)"
           },
+          "services": {
+            "type": "object",
+            "description": "optional: what speaks on each host:port of targets (a target with no port is web). web: an http or https service, which gets the web templates and nothing that is not http-typed or ssl or dns; unknown: the service has no class of its own or nothing is known, which gets the generic network templates (tcp, javascript and ssl types that belong to no class) and never an http template; any other value is a protocol class (ssh, smtp, imap, tls ...), which gets only that protocol's network templates. A port with no entry is read by the Sentinel from its port number, and a port in no table is unknown, never web. Keys are targets, at most 64.",
+            "maxProperties": 64,
+            "propertyNames": {
+              "maxLength": 500
+            },
+            "additionalProperties": {
+              "type": "string",
+              "maxLength": 20
+            }
+          },
+          "budget": {
+            "type": "object",
+            "description": "optional: what one host:port may receive from this task. pause_ms: the least pause between two template runs on a non-web host:port (nuclei paces only its http and dns requests, so a Sentinel runs one template at a time on a service and waits this long between runs); seconds: the most time one non-web host:port is kept busy; web_rate: the most requests a second one web host receives (nuclei's per-host rate limit). A Sentinel holds each value to its own bound (cvengine_scanner.flags.NUCLEI_SERVICE_BUDGET): a task can make a run gentler (a longer pause, fewer seconds, a lower rate), never harsher.",
+            "additionalProperties": false,
+            "properties": {
+              "pause_ms": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 600000
+              },
+              "seconds": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3600
+              },
+              "web_rate": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1000
+              }
+            }
+          },
           "template_policy": {
             "type": "object",
             "required": [
@@ -4888,6 +5025,40 @@
               "maxLength": 40
             },
             "description": "tags the run must always exclude (dos)"
+          },
+          "services": {
+            "type": "object",
+            "description": "optional: what speaks on each host:port of targets (a target with no port is web). web: an http or https service, which gets the web templates and nothing that is not http-typed or ssl or dns; unknown: the service has no class of its own or nothing is known, which gets the generic network templates (tcp, javascript and ssl types that belong to no class) and never an http template; any other value is a protocol class (ssh, smtp, imap, tls ...), which gets only that protocol's network templates. A port with no entry is read by the Sentinel from its port number, and a port in no table is unknown, never web. Keys are targets, at most 64.",
+            "maxProperties": 64,
+            "propertyNames": {
+              "maxLength": 500
+            },
+            "additionalProperties": {
+              "type": "string",
+              "maxLength": 20
+            }
+          },
+          "budget": {
+            "type": "object",
+            "description": "optional: what one host:port may receive from this task. pause_ms: the least pause between two template runs on a non-web host:port (nuclei paces only its http and dns requests, so a Sentinel runs one template at a time on a service and waits this long between runs); seconds: the most time one non-web host:port is kept busy; web_rate: the most requests a second one web host receives (nuclei's per-host rate limit). A Sentinel holds each value to its own bound (cvengine_scanner.flags.NUCLEI_SERVICE_BUDGET): a task can make a run gentler (a longer pause, fewer seconds, a lower rate), never harsher.",
+            "additionalProperties": false,
+            "properties": {
+              "pause_ms": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 600000
+              },
+              "seconds": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3600
+              },
+              "web_rate": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1000
+              }
+            }
           },
           "template_policy": {
             "type": "object",
