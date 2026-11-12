@@ -358,6 +358,27 @@ def _is_ipv6(address):
         return False
 
 
+class NoIpv6Route(ToolExitError):
+    """This machine has no route to an IPv6 address (many Sentinels run where there is no IPv6). A fact about the Sentinel, said in these words,
+    not a tool failure and never an empty result."""
+
+    TEXT = 'this Sentinel cannot reach IPv6 addresses'
+
+    def __init__(self, text=TEXT):
+        super().__init__(text)
+
+
+def ipv6_route(address):
+    """Whether this machine has a route to the IPv6 ``address``. A UDP socket's ``connect`` asks the kernel for the route and sends nothing, so
+    this touches no host. An OS with IPv6 off, or no route, is False."""
+    try:
+        with socket.socket(socket.AF_INET6, socket.SOCK_DGRAM) as sock:
+            sock.connect((str(address).strip().strip('[]'), 9))
+        return True
+    except OSError:
+        return False
+
+
 def os_guess_reliable():
     """False when the kernel release says this container runs inside Docker Desktop, WSL2 or OrbStack; the server then keeps the packet-based OS
     guess out of the host's record. Anything else (a Linux host, host networking) is reliable."""
@@ -440,15 +461,24 @@ def run_naabu(addresses, timeout=None, register=None):
     addresses = _pinned(validate_targets(addresses, resolver=resolve), resolve)
     if not addresses:
         return {'ports': {}}
+    # naabu handles an IPv6 literal by itself, but with no route it runs to its time limit and finds nothing: such an address is left unfinished
+    # (not scanned, so never read as "nothing open") without starting a run for it
+    unroutable = [a for a in addresses if _is_ipv6(a) and not ipv6_route(a)]
+    if unroutable:
+        logger.warning('naabu: %s; %d IPv6 address(es) left unscanned', NoIpv6Route.TEXT, len(unroutable))
+    addresses = [a for a in addresses if a not in unroutable]
+    extra = {'incomplete': True, 'unfinished': unroutable} if unroutable else {}
+    if not addresses:
+        return {'ports': {}, **extra}
     seconds = timeout or task_seconds('naabu', len(addresses))
     path = _targets_file(addresses)
     try:
         argv = [NAABU_BIN, '-list', path, *NAABU_FLAGS]
         try:
-            return {'ports': parse_naabu_output(_run(argv, seconds, register))}
+            return {'ports': parse_naabu_output(_run(argv, seconds, register)), **extra}
         except subprocess.TimeoutExpired as exc:
             logger.warning('naabu ran out of its %s s for %d address(es); they stay due', seconds, len(addresses))
-            return {'ports': parse_naabu_output(getattr(exc, 'partial', '')), 'incomplete': True, 'unfinished': addresses}
+            return {'ports': parse_naabu_output(getattr(exc, 'partial', '')), 'incomplete': True, 'unfinished': [*unroutable, *addresses]}
     finally:
         os.unlink(path)
 
@@ -573,9 +603,12 @@ def run_testssl(host, ip, port, starttls=None, timeout=900, register=None):
         raise _scope_failure(f'not a usable testssl target: {str(host)[:100]!r} at {str(ip)[:50]!r} ({exc})', exc) from None
     port = _validate_port(port)
     destination = f'[{host}]:{port}' if ':' in host else f'{host}:{port}'
+    v6 = _is_ipv6(ip)  # testssl.sh stops with "Only IPv6 address(es) available" unless it is given -6
+    if v6 and not ipv6_route(ip):
+        raise NoIpv6Route()
     with tempfile.TemporaryDirectory(prefix='testssl-') as work:
         out = os.path.join(work, 'out.json')
-        argv = [TESTSSL_BIN, *TESTSSL_FLAGS, *_proxy_args('testssl', [host]), '--ip', ip, '--jsonfile', out]
+        argv = [TESTSSL_BIN, *TESTSSL_FLAGS, *_proxy_args('testssl', [host]), *(['-6'] if v6 else []), '--ip', ip, '--jsonfile', out]
         if starttls:
             if not isinstance(starttls, str) or not _STARTTLS.fullmatch(starttls):
                 raise TargetError(f'not a usable starttls: {str(starttls)[:30]!r}')
@@ -679,13 +712,23 @@ def same_site_redirect(url, outcome):
     return target
 
 
+MAX_REDIRECT_HOPS = 3  # http to https, apex to www, a path: more than that is a loop or a site that is not worth chasing
+
+
 def _wpscan_following(url, token, timeout, register, args):
+    """The scan of ``url``, carried through up to ``MAX_REDIRECT_HOPS`` redirects on the same site (``same_site_redirect``), never to a URL already
+    scanned. The outcome of the last scan is returned: a redirect that leaves the site, or one past the limit, is that outcome's own text."""
+    seen = {url.strip().rstrip('/')}
     outcome = _wpscan(url, token, timeout, register, wpscan_args_for(args, token))
-    target = same_site_redirect(url, outcome)
-    if target is None:
-        return outcome
-    logger.info('wpscan: %s redirects to %s on the same site; scanning that', url, target)
-    return _wpscan(target, token, timeout, register, wpscan_args_for(args, token))  # judged by scope again inside, as any URL
+    for _hop in range(MAX_REDIRECT_HOPS):
+        target = same_site_redirect(url, outcome)
+        if target is None or target.rstrip('/') in seen:
+            break
+        logger.info('wpscan: %s redirects to %s on the same site; scanning that', url, target)
+        seen.add(target.rstrip('/'))
+        url = target
+        outcome = _wpscan(url, token, timeout, register, wpscan_args_for(args, token))  # judged by scope again inside, as any URL
+    return outcome
 
 
 def run_wpscan(url, token='', timeout=900, register=None):
