@@ -538,14 +538,47 @@ _clock = time.monotonic  # the clocks of the service passes: a test replaces the
 _sleep = time.sleep
 
 
+# What a service run may never send: credentials. Nothing that sends one, guesses a password or can lock an account runs unless a project turns it on,
+# and no such switch exists for nuclei, so it never runs. The tags (``default-login``, ``bruteforce``) are the template authors' word and miss most of them
+# (``pgsql-default-db`` is tagged enum; ``mysql-empty-password`` vuln), so the template is read: a ``payloads`` block, a call that logs in, a command that
+# authenticates, or an authentication step in bytes (a PostgreSQL startup naming a user, a SCRAM message). Measured on nuclei-templates v10.5.1 in docs/SENTINELS.md.
+_PAYLOADS = re.compile(r'(?m)^[ \t]*(?:-[ \t]+)?(?:payloads|attack):')
+# the calls of nuclei's javascript clients that open a session with an account (mysql, postgres, mssql, oracle, ldap, smb ListShares, vnc password), not the
+# info-mode connects (``ConnectSSHInfoMode``, ``ConnectSMBInfoMode``) that read what a server offers and send no credential
+_LOGIN_CALL = re.compile(r'\.(?:Connect|ConnectWithDB|ExecuteQuery|ExecuteQueryWithOpts|ListShares|Authenticate|Login|Bind|BindWithDN|SimpleBind)\(')
+_CREDENTIAL_NAME = re.compile(r'(?im)^[ \t]*(?:-[ \t]+)?(?:user|username|pass|passwd|password)[ \t]*:|\{\{[ \t]*(?:user|username|pass|passwd|password)[ \t]*\}\}')
+_AUTH_COMMAND = re.compile(r'(?i)(?:data|input)s?:[ \t]*["\']?(?:[A-Za-z0-9]{1,8} )?(?:USER|PASS|AUTH|AUTHENTICATE|LOGIN)\b')
+_DATA_VALUE = re.compile(r'(?im)^[ \t]*(?:-[ \t]+)?data:[ \t]*["\']?([0-9a-f]{8,})["\']?[ \t]*(?:#.*)?$')
+_AUTH_BYTES = re.compile(rb'\x00user\x00|SCRAM-SHA|(?i:(?:^|\s)(?:USER|PASS|AUTH|LOGIN)\s)')
+_AUTH_ESCAPED = re.compile(r'\\u0000user\\u0000')
+
+
+def _login_step(text):
+    """Whether a template's text performs a login or an authentication step (see the note above)."""
+    if _LOGIN_CALL.search(text) or _CREDENTIAL_NAME.search(text) or _AUTH_COMMAND.search(text) or _AUTH_ESCAPED.search(text):
+        return True
+    for value in _DATA_VALUE.findall(text):
+        try:
+            if _AUTH_BYTES.search(bytes.fromhex(value if len(value) % 2 == 0 else value[:-1])):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
 def _paced_template(path):
-    """Whether a template is one a service run may send: it sets no parallelism of its own (a template's ``threads`` overrides nuclei's ``-pc``, so ten
-    default-login attempts run at once) and does not declare a spray of requests (``max-request``). The reason it is not, or ``None``."""
+    """Whether a template is one a service run may send, else the reason it is not: it carries ``payloads`` (guessed values, mostly accounts), it logs in or
+    authenticates (``_login_step``), it sets no parallelism of its own (a template's ``threads`` overrides nuclei's ``-pc``, so ten attempts run at once)
+    and it does not declare more than ``flags.NUCLEI_SERVICE_MAX_REQUESTS`` requests (``max-request``)."""
     try:
         with open(path, encoding='utf-8', errors='replace') as handle:
             text = handle.read(256 * 1024)
     except OSError:
         return 'the template file cannot be read'
+    if _PAYLOADS.search(text):
+        return 'the template carries payloads (guessed values, mostly accounts)'
+    if _login_step(text):
+        return 'the template performs a login or an authentication step (a service run never sends credentials)'
     if any(int(n) > 1 for n in _THREADS.findall(text)):
         return 'the template sets its own parallelism'
     if any(int(n) > flags.NUCLEI_SERVICE_MAX_REQUESTS for n in _MAX_REQUEST.findall(text)):
@@ -553,7 +586,7 @@ def _paced_template(path):
     return None
 
 
-def _service_templates(selection, templates, extra, register):
+def _service_templates(selection, templates, extra, register, timeout=120):
     """The template files a service class runs, from nuclei's own listing of the set (``templates``: the approved bundle directory, else the baked
     set) with the filters of ``selection`` and the task's severities in ``extra``, minus the templates that set their own parallelism. Cached per set. An
     empty list means the set has no template for this class: nothing is started for it."""
@@ -562,7 +595,7 @@ def _service_templates(selection, templates, extra, register):
     if key in _TEMPLATE_LISTINGS:
         return _TEMPLATE_LISTINGS[key]
     argv = [NUCLEI_BIN, *flags.nuclei_service_listing_flags(selection)] + (['-t', templates] if templates else []) + (['-severity', ','.join(severities)] if severities else [])
-    output = _run(argv, 120, register, env=nuclei_env())
+    output = _run(argv, max(1, math.ceil(timeout)), register, env=nuclei_env())
     base = templates or None
     paths = []
     for line in output.splitlines():
@@ -581,14 +614,14 @@ def _service_templates(selection, templates, extra, register):
         else:
             skipped += 1
     if skipped:
-        logger.info('nuclei: %d of %d templates for this service set their own parallelism and are not run on a service', skipped, len(paths))
+        logger.info('nuclei: %d of %d templates for this service send credentials or payloads, set their own parallelism or spray requests and are not run on a service', skipped, len(paths))
     if len(_TEMPLATE_LISTINGS) >= _LISTING_KEPT:
         _TEMPLATE_LISTINGS.clear()
     _TEMPLATE_LISTINGS[key] = files
     return files
 
 
-def _run_service_port(target, klass, tags, budget, deadline, extra, templates, register, secret_file):
+def _run_service_port(target, klass, tags, budget, deadline, extra, templates, register, secret_file, listing_failed=None):
     """One non-web ``host:port`` of class ``klass``: its template files, each as its own nuclei process, one at a time, with ``budget['pause_ms']`` between
     one run ending and the next starting, and ``budget['seconds']`` for the port (and never past ``deadline``). One connection is in flight at a time and a
     new template starts no sooner than the pause, which is the bound on what the port receives (see ``flags.NUCLEI_SERVICE_BUDGET``). The third run in a row
@@ -600,7 +633,19 @@ def _run_service_port(target, klass, tags, budget, deadline, extra, templates, r
     if selection is None:
         out['no_templates'] = True  # the task asked for nothing that speaks this protocol
         return out
-    files = _service_templates(selection, templates, extra, register)
+    failed_before = listing_failed.get(klass) if listing_failed is not None else None
+    if failed_before:
+        out['unreachable'], out['incomplete'], out['reason'] = True, True, failed_before
+        return out
+    try:
+        files = _service_templates(selection, templates, extra, register, max(1, min(120, deadline - _clock())))
+    except (ToolExitError, subprocess.TimeoutExpired, OSError) as exc:  # the listing is the one step before the runs: its failure never costs the task its other findings
+        out['unreachable'] = out['incomplete'] = True
+        out['reason'] = f'the template listing failed ({str(exc)[:120]})'
+        logger.warning('nuclei: the template listing for %s failed: %s', klass, str(exc)[:200])
+        if listing_failed is not None:
+            listing_failed[klass] = out['reason']
+        return out
     if not files:
         out['no_templates'] = True  # this template set has nothing for this class: no process is started
         return out
@@ -645,6 +690,28 @@ def _run_service_port(target, klass, tags, budget, deadline, extra, templates, r
     return out
 
 
+BANNER_TIMEOUT = 3
+BANNER_BYTES = 64
+
+
+def _probe_banner(host, port):
+    """The first bytes a service on ``host:port`` sends by itself on connect, or ``None``: one short connection, nothing sent. sshd names itself this way
+    (``SSH-2.0-...``), and the one place it matters is a port the server could not name, which would otherwise get some 600 short connections that each count
+    toward OpenSSH's per-source penalties."""
+    try:
+        with socket.create_connection((host, port), timeout=BANNER_TIMEOUT) as sock:
+            sock.settimeout(BANNER_TIMEOUT)
+            return sock.recv(BANNER_BYTES)
+    except OSError:
+        return None
+
+
+def _banner_is_ssh(target):
+    key = flags.nuclei_label_key(target)
+    banner = _probe_banner(key[0], key[1]) if key else None
+    return bool(banner) and banner.startswith(b'SSH-')
+
+
 def run_nuclei(targets, tags=None, severities=None, timeout=3600, register=None, templates=None, secret_file=None, services=None, budget=None):
     """Host names are passed to nuclei as names, because each finding reports the host it was given. They were judged by scope (and by
     every address they resolved to) just before; nuclei resolves them again, so a name whose DNS answer changes in between is the one gap.
@@ -661,6 +728,7 @@ def run_nuclei(targets, tags=None, severities=None, timeout=3600, register=None,
     targets = validate_targets(targets, endpoint=True)
     web, service_runs = _split_by_service(targets, services)
     extra = _proxy_args('nuclei', targets)
+    proxied = bool(extra)  # a run through the egress proxy never connects directly, so it reads no banner either
     if secret_file is not None:
         if not isinstance(secret_file, str) or not os.path.isabs(secret_file) or not os.path.isfile(secret_file):
             raise TargetError('the signed-in run has no usable secrets file')
@@ -682,6 +750,7 @@ def run_nuclei(targets, tags=None, severities=None, timeout=3600, register=None,
     quiet = []  # per pass: whether its filter matched no template (nothing to check)
     attempts = failures = 0
     last_error = None
+    listing_failed = {}  # class -> why its template listing failed: tried once per class in a task
 
     def stop_for(pass_targets, reason):
         nonlocal incomplete
@@ -720,13 +789,14 @@ def run_nuclei(targets, tags=None, severities=None, timeout=3600, register=None,
             stop_for([target], 'the task ran out of time before this port')
             continue
         attempts += 1
-        got = _run_service_port(target, klass, clean_tags, spend, deadline, extra, templates, register, secret_file)
+        if klass == flags.NUCLEI_UNKNOWN and not proxied and _banner_is_ssh(target):
+            klass = 'ssh'  # sshd on a port nothing named: it gets the ssh templates at the ssh pace
+        got = _run_service_port(target, klass, clean_tags, spend, deadline, extra, templates, register, secret_file, listing_failed)
         findings += got['findings']
         incomplete = incomplete or got['incomplete']
         quiet.append(got['no_templates'])
         if got['unreachable'] or got['reason']:
-            if got['unreachable']:
-                unreachable.append(target)
+            unreachable.append(target)  # a port not fully checked (nothing answered, out of time, runs failed) is reported so the server keeps it due
             not_checked.append({'target': target, 'reason': got['reason'] or 'not fully checked'})
         if got['reason'] and got['reason'].startswith('every template run failed'):
             failures += 1

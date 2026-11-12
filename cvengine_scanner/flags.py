@@ -81,13 +81,15 @@ NUCLEI_SERVICE_PAUSE_MAX = 10000
 # template runs keeps the penalty from building up (measured: no penalty over the whole class). The task's own pause counts when it is longer.
 NUCLEI_SERVICE_CLASS_PAUSE_MS = {'ssh': 5500}
 # Tags no service run ever has: the web floor (``dos``) and every template that guesses credentials, fuzzes or says it is intrusive. A credential attempt
-# is off unless the owner turns it on: the same rule the OpenVAS and nmap runs follow (no brute force family, no intrusive script).
+# is off unless the owner turns it on: the same rule the OpenVAS and nmap runs follow (no brute force family, no intrusive script). The tags are only the
+# first line: many credential templates carry other tags (enum, vuln, authenticated), so the Sentinel also reads each template and refuses one with
+# ``payloads``, a login or an authentication step (``client.tools._paced_template``). No setting turns that on: no nuclei service run sends credentials.
 NUCLEI_SERVICE_EXCLUDED_TAGS = (*NUCLEI_EXCLUDED_TAGS, 'default-login', 'bruteforce', 'fuzz', 'intrusive')
 # the hosts that stop being scanned after this many failed requests (nuclei -mhe; its default is 30): a port that does not speak the protocol stops being tried
 NUCLEI_SERVICE_HOST_ERRORS = 10
 NUCLEI_SERVICE_SILENT_RUNS = 3  # template runs that get no answer at all before the port is given up on (one can fail for its own reasons)
 NUCLEI_SERVICE_TEMPLATE_SECONDS = 30  # one template run is stopped after this long
-NUCLEI_SERVICE_MAX_REQUESTS = 50  # a template that declares more requests than this (``max-request``) is not run on a service: it is a spray, not a check
+NUCLEI_SERVICE_MAX_REQUESTS = 10  # a template that declares more requests than this (``max-request``) is not run on a service: it is a spray, not a check
 # The share of a task's time the non-web ports may use together: the web pass runs first and is stopped when only this share is left, so a task with
 # many slow service ports cannot starve the web scan. Ports not reached are reported (``not_checked``), never silently dropped.
 NUCLEI_SERVICE_TIME_SHARE = 0.35

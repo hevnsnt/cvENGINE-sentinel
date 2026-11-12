@@ -1309,6 +1309,9 @@ class WpscanToolReviewTests(unittest.TestCase):
         self.assertTrue(all('p,t,cb,dbe,u1-5' in c[1] for c in calls))
 
 
+REAL_PROBE = getattr(tools, '_probe_banner', None)  # before a test replaces it
+
+
 class FakeNuclei:
     """A miniature nuclei for the service runs: ``-tl`` lists the templates its filters (-pt, -tags, -etags) select, a run with ``-t <file>`` answers
     for that one template, and the clock a test replaces advances by what a run is told to take. Records every listing and every run."""
@@ -1424,8 +1427,9 @@ class NucleiTestCase(unittest.TestCase):
         self.dir = os.path.join(self.tmp.name, 'bundle')
         self.clock = FakeClock()
         self.nuclei = FakeNuclei(self.dir, TEMPLATES, self.clock)
-        for target, value in (('_run', mock.Mock(side_effect=self.nuclei)), ('_clock', self.clock), ('_sleep', self.clock.sleep)):
-            patcher = mock.patch.object(tools, target, value)
+        self.banner = mock.Mock(return_value=None)  # no test connects to anything: the banner of an unknown port is read by ``tools._probe_banner``
+        for target, value in (('_run', mock.Mock(side_effect=self.nuclei)), ('_clock', self.clock), ('_sleep', self.clock.sleep), ('_probe_banner', self.banner)):
+            patcher = mock.patch.object(tools, target, value, create=True)
             patcher.start()
             self.addCleanup(patcher.stop)
 
@@ -1637,7 +1641,7 @@ class NucleiResilienceTests(NucleiTestCase):
         self.assertEqual(len(self.nuclei.runs), 1 + 2 + 1 + 1)  # nothing after the failure was skipped
         self.assertEqual(result['not_checked'], [{'target': 'www.example.test:22', 'reason': '1 of 2 template runs failed'}])
         self.assertTrue(result['incomplete'])
-        self.assertNotIn('www.example.test:22', result['unreachable'])  # it answered: it is not an unreachable host
+        self.assertIn('www.example.test:22', result['unreachable'])  # partly checked: reported so the server keeps it due (third pass, N1)
 
     def test_a_failing_web_run_does_not_lose_the_service_findings(self):
         self.nuclei.fail.add(('www.example.test', None))
@@ -1720,3 +1724,173 @@ class NucleiTimeShareTests(NucleiTestCase):
         self.assertEqual(missed | reached, set(self.PORTS))  # every port is either checked or named: none is silently lost
         self.assertTrue(any('ran out of time' in n['reason'] for n in result['not_checked']))
         self.assertTrue(result['incomplete'])
+
+
+def _add_template(case, rel, text, kind='javascript', tags=('enum',)):
+    """A template file in the fake bundle, listed by the fake ``nuclei -tl`` under the generic (unknown) class."""
+    case.nuclei.templates[rel] = {'type': kind, 'tags': list(tags), 'text': text}
+    path = os.path.join(case.dir, rel)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'w', encoding='utf-8') as handle:
+        handle.write(text)
+    return path
+
+
+JS = 'id: t\ninfo:\n  metadata:\n    max-request: 1\njavascript:\n  - code: |\n      {code}\n'
+TCP = 'id: t\ntcp:\n  - inputs:\n      - data: {data}\n    host:\n      - "{{{{Hostname}}}}"\n    port: 9999\n'
+
+
+class NucleiNoCredentialTests(NucleiTestCase):
+    """Third pass, N3: nothing that sends credentials, guesses a password or can lock an account runs on a service, whatever its tags say (no switch
+    for it exists for nuclei). Decided by what the template says, not by its tags."""
+
+    def refused(self, text, kind='javascript'):
+        path = _add_template(self, 'network/x/probe.yaml', text, kind)
+        return tools._paced_template(path)
+
+    def test_a_template_with_payloads_or_an_attack_is_refused(self):
+        self.assertIn('payloads', self.refused('id: a\ntcp:\n  - inputs:\n      - data: "x"\n    attack: clusterbomb\n    payloads:\n      users:\n        - postgres\n', 'tcp'))
+        self.assertIn('payloads', self.refused('id: a\njavascript:\n  - pre-condition: |\n      1\n    args:\n      Host: "{{Host}}"\n    payloads:\n      u:\n        - a\n'))
+        self.assertIsNone(self.refused('id: a\ninfo:\n  description: sends payloads: none\ntcp:\n  - inputs:\n      - data: "x"\n', 'tcp'))
+
+    def test_a_javascript_template_that_logs_in_is_refused(self):
+        for code in ('const c = require("nuclei/mysql"); let m = new c.MySQLClient(); m.Connect(Host,Port,User,Pass)',
+                     'client.ConnectWithDB(Host, Port, User, Pass, Db)',
+                     'client.ExecuteQuery(Host, Port, User, Pass, Db, "select 1")',
+                     'var r = c.ListShares(Host, Port, User, Pass)',
+                     "client.Authenticate('', '')",
+                     'c.Login(Host, Port)'):
+            self.assertIn('login', self.refused(JS.format(code=code)), code)
+        self.assertIn('login', self.refused('id: a\njavascript:\n  - args:\n      username: admin\n      password: admin\n    code: |\n      x\n'))
+
+    def test_a_tcp_template_that_sends_an_authentication_command_is_refused(self):
+        for data in ('"USER root\\r\\n"', '"PASS \\r\\n"', '"AUTH PLAIN {{base64(tok)}}\\r\\n"', '"a001 LOGIN user pass\\r\\n"', '"AUTHENTICATE PLAIN\\r\\n"',
+                     '"{{hex_encode(\'x\\u0000user\\u0000{{users}}\')}}"',
+                     '"00000054000300007573657200706f73746772657300646174616261736500"',  # a PostgreSQL startup packet naming a user
+                     '"7000000036534352414d2d5348412d323536"'):  # a SCRAM-SHA-256 first message
+            text = TCP.format(data=data) + ('        type: hex\n' if data[1:5] in ('0000', '7000') else '')
+            self.assertIn('login', self.refused(text, 'tcp'), data)
+
+    def test_more_than_ten_declared_requests_is_refused(self):
+        self.assertIsNone(self.refused('id: a\ninfo:\n  metadata:\n    max-request: 10\n', 'tcp'))
+        self.assertIn('requests', self.refused('id: a\ninfo:\n  metadata:\n    max-request: 11\n', 'tcp'))
+        self.assertEqual(tools.flags.NUCLEI_SERVICE_MAX_REQUESTS, 10)
+
+    def test_a_check_that_sends_no_credential_is_kept(self):
+        for text, kind in ((JS.format(code='const s = new ssh.SSHClient(); s.ConnectSSHInfoMode(Host, Port)'), 'javascript'),
+                           (JS.format(code='c.ConnectSMBInfoMode(Host, Port)'), 'javascript'),
+                           (JS.format(code='c.FingerprintMySQL(Host, Port)'), 'javascript'),
+                           (TCP.format(data='"\\r\\n"'), 'tcp'),
+                           ('id: banner\ninfo:\n  description: the response to the PASS command and the user name\ntcp:\n  - inputs:\n      - data: "HELP\\r\\n"\n', 'tcp')):
+            self.assertIsNone(self.refused(text, kind), text)
+
+    def test_a_credential_template_with_harmless_tags_is_not_listed_for_any_service(self):
+        _add_template(self, 'javascript/enumeration/pgsql/pgsql-default-db.yaml', JS.format(code='client.ConnectWithDB(Host, Port, User, Pass, Db)'), tags=('enum', 'js', 'pgsql'))
+        _add_template(self, 'javascript/misconfiguration/mysql/mysql-empty-password.yaml', JS.format(code='c.Connect(Host,Port,User,Pass)'), tags=('mysql', 'vuln'))
+        _add_template(self, 'network/enumeration/smtp-user-enum.yaml', 'id: u\ntcp:\n  - inputs:\n      - data: "VRFY {{users}}\\r\\n"\n    payloads:\n      users:\n        - root\n', 'tcp', tags=('smtp', 'enum'))
+        _add_template(self, 'network/misconfig/ftp-anon.yaml', TCP.format(data='"USER anonymous\\r\\n"'), 'tcp', tags=('ftp', 'enum'))
+        self.run_nuclei(['www.example.test:9999', 'www.example.test:25', 'www.example.test:21', 'www.example.test:3306', 'www.example.test:5432'],
+                        services={'www.example.test:9999': 'unknown'})
+        ran = {r['template'] for r in self.nuclei.service_runs}
+        self.assertTrue(ran)
+        for name in ('pgsql-default-db', 'mysql-empty-password', 'smtp-user-enum', 'ftp-anon'):
+            self.assertFalse([t for t in ran if name in t], name)
+
+
+class NucleiPartlyCheckedTests(NucleiTestCase):
+    """Third pass, N1: a port only partly checked is reported unreachable too, so the server keeps it due."""
+
+    def test_a_port_that_ran_out_of_time_part_way_is_named_unreachable(self):
+        self.nuclei.duration[None] = 30
+        result = self.run_nuclei(['www.example.test:21'], services={'www.example.test:21': 'ftp'}, budget={'seconds': 10})
+        self.assertEqual(result['not_checked'][0]['reason'], 'its time ran out after 1 of 2 templates')
+        self.assertEqual(result['unreachable'], ['www.example.test:21'])
+        self.assertTrue(result['incomplete'])
+
+    def test_a_port_some_runs_of_which_failed_is_named_unreachable(self):
+        self.nuclei.fail.add(('www.example.test:21', 'network/detection/ftp-banner.yaml'))
+        result = self.run_nuclei(['www.example.test:21'], services={'www.example.test:21': 'ftp'})
+        self.assertEqual(result['not_checked'], [{'target': 'www.example.test:21', 'reason': '1 of 2 template runs failed'}])
+        self.assertEqual(result['unreachable'], ['www.example.test:21'])
+
+    def test_a_port_checked_in_full_is_not_unreachable(self):
+        result = self.run_nuclei(['www.example.test:21'], services={'www.example.test:21': 'ftp'})
+        self.assertEqual(result['unreachable'], [])
+        self.assertNotIn('not_checked', result)
+
+
+class NucleiListingFailureTests(NucleiTestCase):
+    """Third pass, N2: a failing ``nuclei -tl`` loses neither the web findings nor the task."""
+
+    def break_listing(self, error):
+        original = self.nuclei.__call__
+
+        def run(argv, timeout, register=None, env=None):
+            if '-tl' in argv:
+                raise error
+            return original(argv, timeout, register, env)
+        patcher = mock.patch.object(tools, '_run', side_effect=run)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_a_listing_that_exits_with_an_error_keeps_the_web_findings_and_reports_the_ports(self):
+        self.break_listing(tools.ToolExitError('nuclei exited with status 2'))
+        self.nuclei.finding[('www.example.test', None)] = [_row('www.example.test', 'web-t')]
+        result = self.run_nuclei(services=LABELS)
+        self.assertEqual([f['template_id'] for f in result['findings']], ['web-t'])
+        self.assertEqual(self.nuclei.service_runs, [])
+        self.assertEqual({n['target'] for n in result['not_checked']}, {'www.example.test:22', 'www.example.test:25', 'www.example.test:143'})
+        self.assertTrue(all('listing' in n['reason'] for n in result['not_checked']))
+        self.assertTrue({'www.example.test:22', 'www.example.test:25', 'www.example.test:143'} <= set(result['unreachable']))
+        self.assertTrue(result['incomplete'])
+
+    def test_a_listing_that_times_out_is_the_same(self):
+        self.break_listing(subprocess.TimeoutExpired('nuclei', 120))
+        result = self.run_nuclei(['www.example.test:22'], services={'www.example.test:22': 'ssh'})
+        self.assertEqual(result['unreachable'], ['www.example.test:22'])
+        self.assertIn('listing', result['not_checked'][0]['reason'])
+
+    def test_a_failed_listing_is_not_kept_and_is_tried_once_per_class_in_a_task(self):
+        self.break_listing(tools.ToolExitError('boom'))
+        self.run_nuclei(['www.example.test:9998', 'www.example.test:9999'], services={'www.example.test:9998': 'unknown', 'www.example.test:9999': 'unknown'})
+        self.assertEqual(len(tools._TEMPLATE_LISTINGS), 0)
+
+
+class NucleiSshBehindAnotherPortTests(NucleiTestCase):
+    """Third pass, N5: an unknown port that answers with an SSH banner on connect is an ssh port (its pacing, its templates)."""
+
+    def test_an_unknown_port_with_an_ssh_banner_gets_the_ssh_class(self):
+        self.banner.return_value = b'SSH-2.0-OpenSSH_9.9\r\n'
+        result = self.run_nuclei(['www.example.test:2200'], services={'www.example.test:2200': 'unknown'})
+        self.assertEqual(self.templates_run_on('www.example.test:2200'), ['network/detection/openssh-detect.yaml', 'network/detection/ssh-version.yaml'])
+        self.assertEqual(self.clock.pauses, [5.5])
+        self.assertEqual(result['unreachable'], [])
+
+    def test_an_unknown_port_with_any_other_answer_or_none_stays_unknown(self):
+        for banner in (None, b'', b'220 mail ESMTP\r\n', b'HTTP/1.1 400 Bad Request'):
+            self.banner.return_value = banner
+            self.nuclei.runs.clear()
+            self.run_nuclei(['www.example.test:9999'], services={'www.example.test:9999': 'unknown'})
+            self.assertNotIn('network/detection/openssh-detect.yaml', self.templates_run_on('www.example.test:9999'), banner)
+
+    def test_a_port_with_a_known_class_is_never_probed(self):
+        self.run_nuclei(['www.example.test:25', 'www.example.test:22'], services={'www.example.test:25': 'smtp', 'www.example.test:22': 'ssh'})
+        self.banner.assert_not_called()
+
+    def test_the_probe_is_one_short_connection_that_reads_only_the_banner(self):
+        sock = mock.MagicMock()
+        sock.__enter__.return_value = sock
+        sock.recv.return_value = b'SSH-2.0-x\r\n'
+        with mock.patch.object(tools.socket, 'create_connection', return_value=sock) as connect:
+            self.assertEqual(REAL_PROBE('www.example.test', 2200), b'SSH-2.0-x\r\n')
+        connect.assert_called_once()
+        self.assertLessEqual(connect.call_args.kwargs.get('timeout', connect.call_args.args[1] if len(connect.call_args.args) > 1 else 99), 5)
+        sock.sendall.assert_not_called()  # it never sends: a banner is read on connect
+        sock.recv.assert_called_once()
+        with mock.patch.object(tools.socket, 'create_connection', side_effect=OSError('refused')):
+            self.assertIsNone(REAL_PROBE('www.example.test', 2200))  # a port that does not answer is just unknown
+
+    def test_a_proxied_run_does_not_probe(self):
+        with mock.patch.object(tools, '_proxy_args', return_value=['-proxy', 'http://p:3128']):
+            self.run_nuclei(['www.example.test:9999'], services={'www.example.test:9999': 'unknown'})
+        self.banner.assert_not_called()
