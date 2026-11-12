@@ -19,6 +19,7 @@ import math
 import os
 import random
 import re
+import subprocess
 import tempfile
 import threading
 import time
@@ -295,6 +296,17 @@ def register(client, name, max_concurrent):
             'tools': detected_tools(), 'max_concurrent': _cap_concurrency(max_concurrent), 'settings': config.local_settings(), 'info': info()}
     return client.call('PUT', 'sentinel', body)
 
+
+
+def _error_text(exc):
+    """The error a task reports: the exception's own text, clipped to 280 characters, except for a tool stopped at its time limit, whose ``str`` is the
+    whole command line followed by ``timed out after N seconds`` (clipped before the words for the fingerprint pass)."""
+    if isinstance(exc, subprocess.TimeoutExpired):
+        argv = exc.cmd if isinstance(exc.cmd, (list, tuple)) and exc.cmd else ['the tool']
+        seconds = exc.timeout
+        return (f'{os.path.basename(str(argv[0]))} ran past its time limit of {int(seconds) if isinstance(seconds, (int, float)) else "?"} seconds and was stopped; '
+                'what it had not finished writing was not kept')[:280]
+    return str(exc)[:280]
 
 class Daemon:
     guard = None  # the watchdog (client/watchdog.py), set in __init__ unless CVENGINE_SENTINEL_WATCHDOG=0
@@ -1120,7 +1132,7 @@ class Daemon:
         except Exception as exc:  # noqa: BLE001 - one bad task must never take the daemon down
             if not state.get('dropped') and not state.get('wd'):
                 logger.exception('task %s failed', task_id)
-            self._report_unless_dropped(task_id, state, self._watchdog_result(state, exc) or {'outcome': 'error', 'error': str(exc)[:280]})
+            self._report_unless_dropped(task_id, state, self._watchdog_result(state, exc) or {'outcome': 'error', 'error': _error_text(exc)})
         finally:
             logger.info('task %s finished: %s, %s, %.1fs', task_id, _clip(kind), 'dropped' if state.get('dropped') else outcome,
                         time.monotonic() - state.get('started', time.monotonic()))
