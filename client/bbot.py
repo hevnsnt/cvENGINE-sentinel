@@ -266,7 +266,7 @@ class Collector:
             if name:
                 self._add('subdomains', name)
                 for ip in event.get('resolved_hosts') or []:
-                    address = p.address(ip) if isinstance(ip, str) and ':' not in ip else None
+                    address = p.address(ip) if isinstance(ip, str) else None
                     if address:
                         self._add('ips', address)
                         self._add('resolutions', {'name': name, 'ip': address}, (name, address))

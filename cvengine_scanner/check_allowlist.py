@@ -524,6 +524,8 @@ def _block_problem(proto, block):
         inputs = block.get('inputs') or []
         if not isinstance(inputs, list) or any(_keys_problem(i, INPUT_KEYS, 'a network input') or type(i.get('read')) is not int for i in inputs):
             return 'network checks may only read banners (inputs: read)'
+        if any(not 0 < i['read'] <= 65536 for i in inputs):
+            return 'a network input read must be 1 to 65536'
         if 'read-size' in block and not (type(block['read-size']) is int and 0 < block['read-size'] <= 65536):
             return 'read-size must be 1 to 65536'
         hosts = block.get('host')

@@ -390,6 +390,22 @@ class NucleiReachTests(unittest.TestCase):
         self.assertEqual(by_host['www.example.test'].get('error', ''), '')
 
 
+    def test_a_hit_on_another_port_of_the_host_is_not_a_hit_for_the_port_that_was_asked(self):
+        """SN-9: a task on ``host:443`` is not answered by a result line whose ``matched-at`` is ``host:8443``; a task on the bare host still is."""
+        template = 'id: t\ninfo:\n  name: t\n  severity: info\nhttp:\n  - method: GET\n    path:\n      - "{{BaseURL}}/"\n    matchers:\n      - type: status\n        status:\n          - 200\n'
+        line = json.dumps({'template-id': 't', 'host': 'www.example.test:8443', 'matched-at': 'https://www.example.test:8443/', 'matcher-name': 'status',
+                           'matcher-status': True})
+
+        def run(hosts):
+            with mock.patch('client.tools._run_status', return_value=(0, line + '\n', '')):
+                sha = checks.digest(template)
+                return {o['host']: o for o in tools.run_nuclei_validate('test', template, hosts, template_sha256=sha, approved=(sha, 'test', hosts))['outcomes']}
+        got = run(['www.example.test:443', 'www.example.test:8443'])
+        self.assertFalse(got['www.example.test:443']['vulnerable'])
+        self.assertTrue(got['www.example.test:8443']['vulnerable'])
+        self.assertTrue(run(['www.example.test'])['www.example.test']['vulnerable'])  # no port asked for: the host alone decides, as before
+
+
 class NmapPassWiringTests(unittest.TestCase):
     """Review M1 and M7 on the wire: the task's ports reach the fingerprint pass, the task's own time limit is used inside its range, and a
     port the server did not send right is a refusal, not a scan of something else."""

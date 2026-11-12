@@ -207,6 +207,17 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(batch['resolutions'], [{'name': 'www.example.com', 'ip': '192.0.2.10'}])
         self.assertNotIn('192.0.2.55', batch['ips'])
 
+    def test_an_ipv6_resolution_is_kept_in_its_canonical_form(self):
+        """SN-5: a name's AAAA answer is a resolution like an A answer; an IPv6-only host is not left without an address. A denied one is still dropped."""
+        c = bbot.Collector(bbot.Policy({**TARGET['scope'], 'deny_ranges': [*TARGET['scope']['deny_ranges'], 'fd00::/8']}), self.dir)
+        c.add(event('DNS_NAME', 'www.example.com', 'www.example.com', resolved_hosts=['2001:0db8::1', '192.0.2.10', 'fd00::5', '::ffff:10.20.0.1']))
+        c.add(event('DNS_NAME', 'v6.example.com', 'v6.example.com', resolved_hosts=['2001:db8::2']))
+        batch = c.take(1)
+        self.assertEqual(sorted(batch['ips']), ['192.0.2.10', '2001:db8::1', '2001:db8::2'])
+        self.assertEqual(sorted((r['name'], r['ip']) for r in batch['resolutions']),
+                         [('v6.example.com', '2001:db8::2'), ('www.example.com', '192.0.2.10'), ('www.example.com', '2001:db8::1')])
+        self.assertEqual(list(Draft202012Validator(contract.partial_schema('bbot_discovery')).iter_errors(batch)), [])
+
     def test_events_become_a_batch_in_contract_held_to_the_scope(self):
         os.makedirs(os.path.join(self.dir, 'demo_scan', 'gowitness'))
         with open(os.path.join(self.dir, 'demo_scan', 'gowitness', 'shot.png'), 'wb') as handle:

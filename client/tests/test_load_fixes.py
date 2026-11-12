@@ -115,6 +115,7 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual(httpclient.parse_retry_after('99999'), httpclient.MAX_RETRY_AFTER)
         self.assertIsNone(httpclient.parse_retry_after('soon'))
         resp = mock.Mock(status_code=429, content=b'{"error": "too many claim calls"}', headers={'Retry-After': '9'})
+        resp.iter_content.return_value = [resp.content]  # ``call`` reads the answer in chunks, up to a size limit
         resp.json.return_value = {'error': 'too many claim calls'}
         client = httpclient.Client('https://cve.example.test', 'tok', session=mock.Mock(request=mock.Mock(return_value=resp)))
         with self.assertRaises(httpclient.ApiError) as ctx:

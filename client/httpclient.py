@@ -19,6 +19,7 @@ from . import config
 
 logger = logging.getLogger('sentinel.http')
 
+MAX_RESPONSE_BYTES = 8 * 1024 * 1024  # the most a ``call`` reads of one answer: a task, a heartbeat or an error is a few kilobytes, a hostile or broken server must not fill the 2 GB of memory
 DEFAULT_TIMEOUT = 30  # seconds per call; the long poll's own wait (config.DEFAULT_POLL_WAIT) fits well inside it
 
 
@@ -97,19 +98,31 @@ class Client:
             headers['Authorization'] = f'Bearer {self.token}'
         return headers
 
-    def call(self, method, path, body=None, timeout=None):
-        """One REST call; returns the decoded JSON body. Raises ``ApiError`` on a 3xx (never followed), 4xx or 5xx, or
-        ``requests.RequestException`` on a network failure (connection refused, DNS, timeout): the caller (``daemon``)
-        decides how to back off from each, never this method."""
+    def call(self, method, path, body=None, timeout=None, max_bytes=MAX_RESPONSE_BYTES):
+        """One REST call; returns the decoded JSON body. Raises ``ApiError`` on a 3xx (never followed), 4xx or 5xx, or on an answer larger than
+        ``max_bytes`` (502: read only up to that, never the whole body), or ``requests.RequestException`` on a network failure (connection refused,
+        DNS, timeout): the caller (``daemon``) decides how to back off from each, never this method."""
         url = self.base + path.lstrip('/')
         data = json.dumps(body).encode('utf-8') if body is not None else None
-        response = self.session.request(method, url, data=data, headers=self._headers(), allow_redirects=False,
+        response = self.session.request(method, url, data=data, headers=self._headers(), allow_redirects=False, stream=True,
                                         timeout=timeout if timeout is not None else self.timeout)
-        if 300 <= response.status_code < 400:
-            raise ApiError(response.status_code, 'the server answered with a redirect, which this Sentinel never follows: '
-                                                 'check the server URL (scheme, host and path)')
         try:
-            payload = response.json() if response.content else {}
+            if 300 <= response.status_code < 400:
+                raise ApiError(response.status_code, 'the server answered with a redirect, which this Sentinel never follows: '
+                                                     'check the server URL (scheme, host and path)')
+            too_big = ApiError(502, f'the server answered with more than the {max_bytes} bytes this Sentinel reads of one answer')
+            declared = (response.headers or {}).get('Content-Length', '')
+            if str(declared).isdigit() and int(declared) > max_bytes:
+                raise too_big
+            raw = b''
+            for chunk in response.iter_content(chunk_size=64 * 1024):
+                raw += chunk
+                if len(raw) > max_bytes:
+                    raise too_big
+        finally:
+            response.close()
+        try:
+            payload = json.loads(raw) if raw else {}
         except ValueError:
             payload = {}
         if response.status_code >= 400:
