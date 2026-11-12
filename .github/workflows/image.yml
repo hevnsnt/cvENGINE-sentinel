@@ -67,6 +67,10 @@ jobs:
           stamped=$(docker run --rm --entrypoint python3 cvengine-sentinel-local:ci -c "from client import config; print(config.version())")
           echo "image version: $stamped"
           test "$stamped" = "$(git rev-parse --short=12 HEAD)"
+      - name: A build without a tag reports no release number (never an invented one)
+        run: |
+          release=$(docker run --rm --entrypoint python3 cvengine-sentinel-local:ci -c "from client import config; print(config.release() or '')")
+          test -z "$release" || { echo "::error::an untagged build reports release '$release'"; exit 1; }
       - name: The scanner library is installed in the image, not read from the working directory
         run: |
           docker run --rm --entrypoint python3 cvengine-sentinel-local:ci -c "

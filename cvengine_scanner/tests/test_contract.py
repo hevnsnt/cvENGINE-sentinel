@@ -133,5 +133,71 @@ class FrozenFixtureTests(unittest.TestCase):
                     self.assertEqual(list(validator(contract.result_schema(KIND_OF[path.stem])).iter_errors(sent)), [])
 
 
+# The contract's shape, recorded. A change to what the server or a Sentinel sends or may send (a field, a bound, a kind, a request or response
+# shape) is a contract change, and a contract change that a released Sentinel must follow bumps ``contract_version``: the server's floor
+# (``min_supported_contract_version``) and ``kind_since`` are the only gate for old and new Sentinels talking to each other, so a shape that moved
+# under the same number would let a Sentinel declare a version whose rules it does not keep. The hash covers the whole file except
+# ``contract_version`` and the prose (``description``, ``title``, ``$comment``): reword freely, change a rule and this fails.
+#   RELEASED_CONTRACT_VERSIONS: versions a published Sentinel (a tagged release's image) has declared. Their shape is frozen for good.
+#   RECORDED_SHAPES: version -> shape hash. 2 is the file at tag v1.4.0 (e73b0f8) as released; 3 is the version in development.
+RELEASED_CONTRACT_VERSIONS = {2}
+RECORDED_SHAPES = {
+    2: 'f48a943d8529aceccca63f5fcfbe1236bf9974e1c63ef6bf8739337b94d7ed39',
+    3: 'e69c4463ae0d286733cefde39a811f9cb5d9260e5e4037dba7c4e12a605971cd',
+}
+
+
+def _without_prose(node):
+    if isinstance(node, dict):
+        return {k: _without_prose(v) for k, v in node.items() if not (k in ('description', 'title', '$comment') and isinstance(v, str))}
+    if isinstance(node, list):
+        return [_without_prose(x) for x in node]
+    return node
+
+
+def shape_hash(doc):
+    body = {k: v for k, v in doc.items() if k != 'contract_version'}
+    return hashlib.sha256(json.dumps(_without_prose(body), sort_keys=True, separators=(',', ':'), ensure_ascii=True).encode()).hexdigest()
+
+
+class ContractShapeTests(unittest.TestCase):
+    def test_the_shape_matches_the_one_recorded_for_its_version(self):
+        doc = contract.load()
+        version = doc['contract_version']
+        got = shape_hash(doc)
+        if version not in RECORDED_SHAPES:
+            self.fail(f'contract_version {version} has no recorded shape. Add it to RECORDED_SHAPES in cvengine_scanner/tests/test_contract.py: {version}: {got!r}')
+        if got == RECORDED_SHAPES[version]:
+            return
+        if version in RELEASED_CONTRACT_VERSIONS:
+            self.fail(
+                f'The contract file changed its shape (hash {got}) but contract_version is still {version}, which a published Sentinel has declared (recorded {RECORDED_SHAPES[version]}). '
+                f'To bump it: set contract_version to {version + 1} in cvengine_scanner/contract/sentinel_contract.json, copy the then-current fixtures/results/*.json that already existed into fixtures/results/v{version}/ '
+                f'(and add v{version} to FROZEN and its hashes in this file), add {version + 1}: {got!r} to RECORDED_SHAPES, mention the bump in the CHANGELOG, and re-sync the server. '
+                f'If you did not mean to change what is sent, revert the contract change.')
+        self.fail(
+            f'The contract file changed its shape (hash {got}, recorded {RECORDED_SHAPES[version]}). contract_version {version} has not been published yet, so you may keep it: '
+            f'replace the recorded hash for {version} in RECORDED_SHAPES (cvengine_scanner/tests/test_contract.py) with {got!r} and say so in the PR. '
+            f'Once a tagged Sentinel image declares {version}, add {version} to RELEASED_CONTRACT_VERSIONS and any further change needs a bump.')
+
+    def test_a_released_version_is_never_newer_than_the_contract_and_every_one_is_recorded(self):
+        self.assertTrue(RELEASED_CONTRACT_VERSIONS <= set(RECORDED_SHAPES))
+        self.assertLessEqual(max(RELEASED_CONTRACT_VERSIONS), contract.version())
+
+    def test_the_hash_ignores_prose_and_the_version_number_and_nothing_else(self):
+        doc = contract.load()
+        base = shape_hash(doc)
+        reworded = json.loads(json.dumps(doc))
+        reworded['description'] = 'something else'
+        reworded['contract_version'] = doc['contract_version'] + 1
+        self.assertEqual(shape_hash(reworded), base)
+        moved = json.loads(json.dumps(doc))
+        moved['kind_since']['a_new_kind'] = doc['contract_version']
+        self.assertNotEqual(shape_hash(moved), base)
+        floor = json.loads(json.dumps(doc))
+        floor['min_supported_contract_version'] += 1
+        self.assertNotEqual(shape_hash(floor), base)
+
+
 if __name__ == '__main__':
     unittest.main()

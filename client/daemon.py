@@ -255,7 +255,7 @@ _waiting_report = []  # set by the daemon at every poll plan: [{kind, need_mb, f
 
 
 def info():
-    """What this Sentinel reports about itself: the result contract version it speaks, its client version (when known) and its host-side
+    """What this Sentinel reports about itself: the result contract version it speaks, its client version (the commit, when known) and release number (when it is a tagged build) and its host-side
     updater's last state."""
     out = {'contract_version': config.CONTRACT_VERSION}
     if config.builtin():  # the server decides from the enrollment whether this is its built-in scanner; this only tells it the image knows it is
@@ -265,6 +265,8 @@ def info():
         out['features'] = list(config.EXTERNAL_FEATURES)
     if config.version():
         out['version'] = config.version()
+    if config.release():  # the release number of a tagged build (1.4.0), beside the commit; absent for a build without a tag, never invented
+        out['release'] = config.release()
     update = control.read_update()
     if update:
         out['update'] = update

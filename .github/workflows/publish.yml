@@ -5,7 +5,8 @@ name: Publish
 # workflow pushed, and the digest is printed in the job summary for that pin.
 #
 # Tags: `sha-<12 characters of the commit>` (the version the client reports, client/config.py version()), `main` for the newest build of main, and
-# for a git tag `vX.Y.Z` the tags `X.Y.Z` and `X.Y`. A tag is only a name: what a server pins is the digest.
+# for a git tag `vX.Y.Z` the tags `X.Y.Z` and `X.Y`, and the image built from that tag reports the release number X.Y.Z next to its commit (the
+# SENTINEL_RELEASE build argument; a run of main passes none and reports only the commit). A tag is only a name: what a server pins is the digest.
 #
 # Each platform builds on a runner of its own architecture (nmap is compiled on arm64, which under emulation takes hours), pushes its image by
 # digest only, and the last job joins the two into one multi-platform image under the tags. Pull requests never push: image.yml builds and checks
@@ -57,6 +58,15 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: The release number of a tagged run (empty for a run of main, which changes nothing)
+        id: release
+        run: |
+          release=""
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            [[ "$GITHUB_REF_NAME" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]] || { echo "::error::the tag $GITHUB_REF_NAME is not vMAJOR.MINOR.PATCH"; exit 1; }
+            release="${BASH_REMATCH[1]}"
+          fi
+          echo "release=$release" >> "$GITHUB_OUTPUT"
       - name: Build and push by digest, with an SBOM and provenance
         id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -64,6 +74,8 @@ jobs:
           context: .
           platforms: ${{ matrix.platform }}
           pull: true
+          build-args: |
+            SENTINEL_RELEASE=${{ steps.release.outputs.release }}
           no-cache: true  # every published image is built from the Dockerfile's pins, never from a layer an older build left in a cache
           sbom: true
           provenance: mode=max
@@ -155,6 +167,10 @@ jobs:
           docker pull -q "$ref"
           stamped=$(docker run --rm --entrypoint python3 "$ref" -c "from client import config; print(config.version())")
           [ "$stamped" = "${{ steps.digest.outputs.short }}" ] || { echo "::error::the image reports version $stamped, not ${{ steps.digest.outputs.short }}"; exit 1; }
+          # a tagged run reports its release number (vX.Y.Z gives X.Y.Z); a run of main reports none
+          want=""; [ "$GITHUB_REF_TYPE" = tag ] && want="${GITHUB_REF_NAME#v}"
+          release=$(docker run --rm --entrypoint python3 "$ref" -c "from client import config; print(config.release() or '')")
+          [ "$release" = "$want" ] || { echo "::error::the image reports release '$release', expected '$want'"; exit 1; }
           docker run --rm --entrypoint python3 "$ref" -m client.control status | python3 -m json.tool >/dev/null
           docker run --rm --entrypoint sh "$ref" -c '
             bad=""

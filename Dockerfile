@@ -292,10 +292,18 @@ RUN apt-get purge -y git git-man && rm -rf /var/lib/apt/lists/* && \
 
 # The scanner library (pyproject.toml, cvengine_scanner/: flags, parsers, scope floor, result contract), installed from a build directory that is
 # removed again so nothing beside the client can shadow it. It has no dependencies. The build context carries no git tag, so its version is the
-# fallback in pyproject.toml; the Sentinel's own version is still the commit stamped below.
+# fallback in pyproject.toml unless SENTINEL_RELEASE says otherwise (below); the Sentinel's own version is still the commit stamped below.
 COPY pyproject.toml /tmp/cvengine-scanner/pyproject.toml
 COPY cvengine_scanner /tmp/cvengine-scanner/cvengine_scanner
-RUN pip install --no-cache-dir --no-build-isolation /tmp/cvengine-scanner && rm -rf /tmp/cvengine-scanner
+# SENTINEL_RELEASE is the release number (1.4.0) of a tagged publish run (.github/workflows/publish.yml passes the git tag without its v). It becomes the
+# package's version, which the client reports next to the commit (client/config.py release()). Empty, the default and every build without a tag, changes nothing:
+# the version stays the fallback in pyproject.toml and no release number is reported. A value that is not a release number stops the build.
+ARG SENTINEL_RELEASE=""
+RUN if [ -n "$SENTINEL_RELEASE" ]; then \
+        printf '%s' "$SENTINEL_RELEASE" | grep -Eq '^[0-9]+(\.[0-9]+){1,3}$' || { echo "SENTINEL_RELEASE must look like 1.4.0, not $SENTINEL_RELEASE" >&2; exit 1; }; \
+        export SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CVENGINE_SCANNER="$SENTINEL_RELEASE"; \
+    fi && \
+    pip install --no-cache-dir --no-build-isolation /tmp/cvengine-scanner && rm -rf /tmp/cvengine-scanner
 
 COPY client /opt/sentinel/client
 COPY docker-entrypoint.sh /opt/sentinel/docker-entrypoint.sh
