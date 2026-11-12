@@ -21,8 +21,9 @@ class NmapParsingTests(unittest.TestCase):
         self.assertEqual(first['os_guess'], 'Linux 5.X')
         # Only the open port is kept (closed 9999 is dropped), in document order.
         self.assertEqual(len(first['ports']), 2)
-        self.assertEqual(first['ports'][0], {'number': 22, 'protocol': 'tcp', 'state': 'open', 'service_name': 'ssh',
-                                             'product': 'OpenSSH', 'version': '8.9'})
+        # The six fields of every contract; what else nmap learned (extra info, how the service was found) is kept beside them (NmapFingerprintDetailTests).
+        self.assertEqual({k: first['ports'][0][k] for k in ('number', 'protocol', 'state', 'service_name', 'product', 'version')},
+                         {'number': 22, 'protocol': 'tcp', 'state': 'open', 'service_name': 'ssh', 'product': 'OpenSSH', 'version': '8.9'})
         self.assertEqual(first['ports'][1]['number'], 80)
         self.assertEqual(first['ports'][1]['product'], 'nginx')
         second = result['hosts'][1]
@@ -257,7 +258,7 @@ class WafParsingTests(unittest.TestCase):
 
 class FlagsTests(unittest.TestCase):
     def test_nuclei_never_runs_denial_of_service_templates(self):
-        self.assertEqual(flags.NUCLEI_FLAGS[flags.NUCLEI_FLAGS.index('-etags') + 1], 'dos')
+        self.assertIn('dos', flags.NUCLEI_FLAGS[flags.NUCLEI_FLAGS.index('-etags') + 1].split(','))  # with the credential tags: ``flags.NUCLEI_CREDENTIAL_TAGS``
 
     def test_every_flag_list_is_plain_strings(self):
         for name in ('NMAP_FAST_FLAGS', 'NAABU_FLAGS', 'NUCLEI_FLAGS', 'TESTSSL_FLAGS', 'WPSCAN_ARGS', 'WPSCAN_THOROUGH_ARGS', 'DISCOVER_FLAGS'):
@@ -322,3 +323,97 @@ class DiscoverStrictTests(unittest.TestCase):
         self.assertEqual(parse_discover_xml('<nmaprun'), {'hosts': []})
         self.assertEqual(parse_discover_xml(''), {'hosts': []})
 
+
+
+class NmapFingerprintDetailTests(unittest.TestCase):
+    """TL-1: the fingerprint pass keeps what nmap learned (banner, extra info, CPEs, TLS, the certificate, the NSE output, the OS detail, the ports
+    it scanned) instead of the six thin fields, so the server can store them. Every text comes from a scanned host and is clipped and cleaned."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.result = parsers.parse_nmap_xml(_read('nmap_fingerprint.xml'), strict=True)
+        cls.hosts = {h['ip']: h for h in cls.result['hosts']}
+        cls.ports = {p['number']: p for p in cls.hosts['192.0.2.11']['ports']}
+
+    def test_port_443_is_not_plain_http_it_is_wrapped_in_tls(self):
+        https = self.ports[443]
+        self.assertEqual((https['service_name'], https['tunnel']), ('http', 'ssl'))
+        self.assertNotIn('tunnel', self.ports[80])  # the plain http port on the same host stays plain
+
+    def test_an_ftp_server_that_offers_tls_differs_from_a_plain_one(self):
+        self.assertEqual(self.ports[21]['tls']['subject'], 'commonName=ftp.example.test/organizationName=Example')  # AUTH TLS answered: the certificate
+        self.assertNotIn('tls', self.ports[2121])
+        self.assertNotIn('ssl-cert', self.ports[2121].get('scripts', {}))
+
+    def test_banner_extra_info_cpes_method_and_os_type_are_kept(self):
+        ssh = self.ports[22]
+        self.assertEqual(ssh['banner'], 'SSH-2.0-OpenSSH_9.6p1 Ubuntu-3ubuntu13.5')
+        self.assertEqual((ssh['service_extra'], ssh['method'], ssh['ostype'], ssh['confidence']), ('Ubuntu Linux; protocol 2.0', 'probed', 'Linux', '10'))
+        self.assertEqual(ssh['cpes'], ['cpe:/a:openbsd:openssh:9.6p1', 'cpe:/o:linux:linux_kernel'])
+        self.assertEqual(ssh['cpe'], 'cpe:/a:openbsd:openssh:9.6p1')
+        self.assertIn('ssh-hostkey', ssh['scripts'])
+
+    def test_the_certificate_summary_has_names_validity_and_fingerprint(self):
+        tls = self.ports[443]['tls']
+        self.assertEqual(tls['sans'], ['DNS:web.example.test', 'DNS:www.example.test'])
+        self.assertEqual((tls['issuer'], tls['not_before'], tls['not_after']), ('commonName=Example Test CA', '2026-01-01T00:00:00', '2027-01-01T00:00:00'))
+        self.assertEqual(tls['fingerprint_sha1'], 'fedcba9876543210fedcba9876543210fedcba98')
+        self.assertEqual(tls['fingerprint_md5'], 'fedcba9876543210fedcba9876543210')
+
+    def test_only_reviewed_scripts_are_kept_and_the_port_text_is_bounded(self):
+        scripts = self.ports[443]['scripts']
+        self.assertEqual(sorted(scripts), ['http-title', 'ssl-cert'])  # the script a version scan smuggled in is not one the server stores
+        big = ('<nmaprun><host><address addr="192.0.2.1" addrtype="ipv4"/><ports><port protocol="tcp" portid="80"><state state="open"/><service name="http"/>'
+               + ''.join(f'<script id="{sid}" output="{"x" * 5000}"/>' for sid in ('banner', 'http-headers', 'http-title', 'http-server-header', 'http-generator')) +
+               '</port></ports></host><runstats><finished exit="success"/></runstats></nmaprun>')
+        out = parsers.parse_nmap_xml(big, strict=True)
+        port = out['hosts'][0]['ports'][0]
+        self.assertTrue(all(len(v) <= 4000 for v in port['scripts'].values()))
+        self.assertLessEqual(sum(len(v) for v in port['scripts'].values()), 16000)
+        self.assertLessEqual(len(port['banner']), 1024)
+        chars = [c for c in out['cuts'] if c['what'] == 'script_output']
+        self.assertEqual(len(chars), 1)
+        self.assertEqual(chars[0]['kind'], 'chars')
+        self.assertEqual(chars[0]['dropped'], 5 * 5000 - sum(len(v) for v in port['scripts'].values()))
+
+    def test_hostile_text_loses_its_control_characters_and_is_never_interpreted(self):
+        xml = ('<nmaprun><host><address addr="192.0.2.1" addrtype="ipv4"/><ports><port protocol="tcp" portid="25"><state state="open"/>'
+               '<service name="smtp" product="Evil&#x7f;MTA" version="1&#x85;.0" extrainfo="a&#x9b;b"/>'
+               '<script id="banner" output="220 hi&#x7f;there&#xa;line two&#x9;tab"/></port></ports></host><runstats><finished exit="success"/></runstats></nmaprun>')
+        port = parsers.parse_nmap_xml(xml, strict=True)['hosts'][0]['ports'][0]
+        self.assertEqual((port['product'], port['version'], port['service_extra']), ('EvilMTA', '1.0', 'ab'))
+        self.assertEqual(port['banner'], '220 hithere\nline two\ttab')
+
+    def test_the_os_detail_the_closed_port_and_the_scanned_set_are_kept_per_host(self):
+        host = self.hosts['192.0.2.11']
+        self.assertEqual(host['os_guess'], 'Linux 5.15 - 6.1')
+        self.assertEqual(host['os_accuracy'], 97)
+        self.assertEqual([m['name'] for m in host['os_matches']], ['Linux 5.15 - 6.1', 'Linux 4.15'])
+        self.assertEqual(host['os_matches'][0]['cpe'], 'cpe:/o:linux:linux_kernel:5')
+        self.assertEqual(host['closed_tcp'], 1)  # path_probe's candidate: the closed port OS detection used
+        self.assertEqual(host['status'], 'up')
+        self.assertEqual(host['extraports'], ['closed'])  # the host answered with resets: what it did not list is closed
+        self.assertIn('smb-os-discovery', host['hostscripts'])
+        ranges = host['scanned_ranges']
+        self.assertEqual(ranges[:3], [[21, 23], [25, 25], [53, 53]])
+        self.assertTrue(any(lo <= 443 <= hi for lo, hi in ranges))
+        self.assertFalse(any(lo <= 24 <= hi for lo, hi in ranges))
+
+    def test_a_host_nmap_gave_up_on_is_named_as_a_time_cut(self):
+        self.assertTrue(self.hosts['192.0.2.12']['timed_out'])
+        cut = [c for c in self.result['cuts'] if c['what'] == 'host_timeout']
+        self.assertEqual(cut, [{'what': 'host_timeout', 'kind': 'time', 'limit': 480, 'target': '192.0.2.12'}])
+
+    def test_ports_over_the_cap_are_counted_not_dropped_silently(self):
+        rows = ''.join(f'<port protocol="tcp" portid="{n}"><state state="open"/><service name="x"/></port>' for n in range(1, 506))
+        xml = f'<nmaprun><host><address addr="192.0.2.5" addrtype="ipv4"/><ports>{rows}</ports></host><runstats><finished exit="success"/></runstats></nmaprun>'
+        out = parsers.parse_nmap_xml(xml, strict=True)
+        self.assertEqual(len(out['hosts'][0]['ports']), 500)
+        self.assertEqual(out['cuts'], [{'what': 'ports', 'kind': 'items', 'limit': 500, 'dropped': 5, 'target': '192.0.2.5'}])
+
+    def test_a_report_with_nothing_cut_has_no_cuts_and_the_result_validates(self):
+        self.assertNotIn('cuts', parsers.parse_nmap_xml(_read('sample_nmap.xml')))
+        from jsonschema import Draft202012Validator
+        from cvengine_scanner import contract
+        errors = list(Draft202012Validator(contract.result_schema('nmap')).iter_errors({'outcome': 'done', **self.result}))
+        self.assertEqual(errors, [])

@@ -39,6 +39,7 @@ from urllib.parse import urlsplit
 import requests
 
 from cvengine_scanner import scope as floor
+from cvengine_scanner.parsers import Cuts
 
 from . import egress, httpclient
 
@@ -178,6 +179,20 @@ def _text(value, limit):
     return ''.join(c for c in str(value or '') if c.isprintable())[:limit]
 
 
+def _finding_port(*candidates):
+    """The port a FINDING is about: the payload's, the event's, else the one its URL names (explicit, or 443 and 80 for https and http); ``None`` when none is a port."""
+    for value in candidates[:2]:
+        if isinstance(value, str) and value.isdigit():
+            value = int(value)
+        if isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= 65535:
+            return value
+    try:
+        parts = urlsplit(candidates[2]) if candidates[2] else None
+        return (parts.port or {'https': 443, 'http': 80}.get(parts.scheme)) if parts else None
+    except ValueError:
+        return None
+
+
 def _payload(event):
     data = event.get('data')
     return data if data is not None else event.get('data_json')
@@ -229,6 +244,14 @@ class Collector:
         self.web_events = {'URL': 0, 'HTTP_RESPONSE': 0}
         self.sent_events = self.sent_http = self.sent_screenshots = 0
         self.found_any = False
+        self.cuts = Cuts()  # what the run's caps and clips left out: the result's ``cuts`` (contract 5)
+        self.capped_events = set()  # events past the cap already counted, so a repeated one is counted once
+
+    def _t(self, what, value, limit):
+        """``_text`` that counts the characters a clip removes."""
+        text = ''.join(c for c in str(value or '') if c.isprintable())
+        self.cuts.chars(what, limit, len(text) - limit)
+        return text[:limit]
 
     def _add(self, key, item, dedupe=None):
         marker = dedupe if dedupe is not None else item
@@ -295,19 +318,26 @@ class Collector:
         elif etype == 'WEBSCREENSHOT' and isinstance(payload, dict):
             self._screenshot(payload, host)
         if etype in ('FINDING', 'VULNERABILITY') and isinstance(payload, dict):
-            self._finding(payload, host, event.get('module'))
+            self._finding(payload, host, event.get('module'), event.get('port'))
         edge_host, parent = p.host(host), p.host(parent_host)
         if edge_host and parent and edge_host != parent:
             self._add('edges', {'parent': parent, 'child': edge_host}, (parent, edge_host))
-        if etype in INTERESTING and self.sent_events + len(self.pending['events']) < MAX_EVENTS:
-            if (not host or p.host(host)) and (not parent_host or p.host(parent_host)):
-                label = _text(_label(etype, payload, host), 500)
+        if etype in INTERESTING and (not host or p.host(host)) and (not parent_host or p.host(parent_host)):
+            label = self._t('label', _label(etype, payload, host), 500)
+            if self.sent_events + len(self.pending['events']) < MAX_EVENTS:
                 self._add('events', {'type': etype, 'label': label, 'host': host[:500].lower(), 'parent_host': parent_host[:500].lower(),
                                      'module': _text(event.get('module'), 64)}, (etype, label))
+            elif (etype, label) not in self.seen['events'] and (etype, label) not in self.capped_events:  # past the cap: counted, not stored
+                if len(self.capped_events) < 200000:
+                    self.capped_events.add((etype, label))
+                self.cuts.items('events', MAX_EVENTS, 1)
 
     def _http(self, payload, host):
         url = payload.get('url')
-        if not self.policy.url(url) or self.sent_http + len(self.pending['http']) >= MAX_HTTP:
+        if not self.policy.url(url):
+            return
+        if self.sent_http + len(self.pending['http']) >= MAX_HTTP:
+            self.cuts.items('http', MAX_HTTP, 1)
             return
         parts = urlsplit(url)
         where = self.policy.host(payload.get('host') or parts.hostname or host)
@@ -328,11 +358,11 @@ class Collector:
             return value if 0 <= value <= high else 0
         port = number(payload.get('port') or parts.port or (443 if parts.scheme == 'https' else 80), 65535)
         self._add('http', {'host': where, 'url': url, 'port': port, 'status': number(payload.get('status_code'), 999),
-                           'title': _text(payload.get('title'), 500), 'webserver': _text(payload.get('webserver') or header('server'), 300),
-                           'content_type': _text(payload.get('content_type') or header('content-type'), 200),
-                           'location': _text(payload.get('location') or header('location'), 500)})
+                           'title': self._t('title', payload.get('title'), 500), 'webserver': self._t('webserver', payload.get('webserver') or header('server'), 300),
+                           'content_type': self._t('content_type', payload.get('content_type') or header('content-type'), 200),
+                           'location': self._t('location', payload.get('location') or header('location'), 500)})
 
-    def _finding(self, payload, host, module):
+    def _finding(self, payload, host, module, event_port=None):
         description = str(payload.get('description') or payload.get('name') or 'Finding')
         where = str(payload.get('host') or host or '').lower()
         url = payload.get('url') if isinstance(payload.get('url'), str) else ''
@@ -340,13 +370,20 @@ class Collector:
             return
         severity = SEVERITIES.get(str(payload.get('severity', 'INFO')).upper(), 0)
         name = _text(description.split(' - ')[0].split(': ')[0], 200).strip() or 'Finding'
-        self._add('findings', {'name': name, 'informational': severity == 0, 'severity': severity, 'host': self.policy.host(where) if where else '',
-                               'url': url, 'description': _text(description, 4000), 'module': _text(module, 64)})
+        row = {'name': name, 'informational': severity == 0, 'severity': severity, 'host': self.policy.host(where) if where else '',
+               'url': url, 'description': self._t('description', description, 4000), 'module': _text(module, 64)}
+        port = _finding_port(payload.get('port'), event_port, url)
+        if port:
+            row['port'] = port  # a TLS or TCP finding is about one port of the host (contract 5, optional)
+        self._add('findings', row)
 
     def _screenshot(self, payload, host):
         """A gowitness screenshot bbot wrote under its scan directory: read, checked to be the PNG or JPEG it looks like and at most 2 MiB, and kept
         for the next batch. A path outside the scan directory (event fields are tool output) is never read."""
-        if not self.scan_name or self.sent_screenshots + len(self.pending['screenshots']) >= MAX_SCREENSHOTS:
+        if not self.scan_name:
+            return
+        if self.sent_screenshots + len(self.pending['screenshots']) >= MAX_SCREENSHOTS:
+            self.cuts.items('screenshots', MAX_SCREENSHOTS, 1)
             return
         where = self.policy.host(host or urlsplit(str(payload.get('url') or '')).hostname)
         rel = payload.get('path')
@@ -689,10 +726,15 @@ def run_bbot_discovery(target, client, task_id, register=None, internal=False, h
             incomplete = 'bbot refused its configuration and scanned nothing'
         if incomplete and not collector.found_any:
             raise RunError(incomplete)
-        return scrub({'outcome': 'done', 'partials': sender.seq, 'mode': target.get('mode') if target.get('mode') in ('passive', 'standard', 'deep') else 'passive',
+        if timed_out.is_set():
+            collector.cuts.time('time_limit', timeout)
+        result = {'outcome': 'done', 'partials': sender.seq, 'mode': target.get('mode') if target.get('mode') in ('passive', 'standard', 'deep') else 'passive',
                 'incomplete': incomplete[:300], 'scan_name': collector.scan_name, 'web_events': dict(collector.web_events),
                 'problems': [{'module': m, 'reason': r} for m, r in problems if _MODULE.match(m)],
-                'hard_failures': [{'module': m, 'reason': r} for m, r in hard_failures if _MODULE.match(m)]}, secrets)
+                'hard_failures': [{'module': m, 'reason': r} for m, r in hard_failures if _MODULE.match(m)]}
+        if collector.cuts:
+            result['cuts'] = collector.cuts.as_list()  # a capped list, a clipped text or the time limit: said, never silent (contract 5)
+        return scrub(result, secrets)
     except RunError as exc:
         raise RunError(redact(str(exc), secrets)) from None
     finally:
