@@ -22,12 +22,12 @@ SHA256 = re.compile(r'^[0-9a-f]{64}$')
 
 READONLY_METHODS = {'GET', 'HEAD', 'OPTIONS'}
 READONLY_FORBIDDEN_KEYS = {'payloads', 'attack', 'fuzzing', 'iterate-all', 'body', 'unsafe', 'race', 'pipeline', 'cookie-reuse',
-                           'code', 'javascript', 'headless', 'file', 'flow', 'workflows', 'self-contained'}
+                           'code', 'javascript', 'headless', 'file', 'flow', 'workflows', 'self-contained', 'protocol-redirects'}
 OAST_RE = re.compile(r'interactsh-url|interactsh_(?:protocol|request|response|ip)|interactsh server|\boast\b')
 ALLOWED_PROTOCOLS = {'http', 'requests', 'network', 'tcp', 'dns', 'ssl'}
 FORBIDDEN_PROTOCOLS = {'code', 'javascript', 'headless', 'file', 'workflows', 'flow'}
 ALLOWED_TOP_KEYS = ALLOWED_PROTOCOLS | {'id', 'info', 'variables', 'self-contained', 'stop-at-first-match'}
-FORBIDDEN_KEYS = {'self-contained', 'redirects', 'host-redirects', 'max-redirects', 'unsafe', 'race', 'pipeline',
+FORBIDDEN_KEYS = {'self-contained', 'redirects', 'host-redirects', 'max-redirects', 'protocol-redirects', 'unsafe', 'race', 'pipeline',
                   'code', 'javascript', 'headless', 'file', 'flow', 'workflows', 'resolvers', 'proxy',
                   'payloads', 'attack', 'fuzzing', 'iterate-all', 'threads', 'cookie-reuse', 'skip-variables-check', 'body'}
 PROTOCOL_SECTIONS = ('http', 'requests', 'network', 'tcp', 'dns', 'ssl')
