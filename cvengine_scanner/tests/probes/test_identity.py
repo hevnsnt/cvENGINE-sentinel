@@ -120,6 +120,25 @@ class DnsTests(unittest.TestCase):
         self.assertEqual(got['dns'], [{'id': 'p', 'status': 'ok', 'records': ['host.example.net.']}])
         self.assertEqual(resolver.asked, [('14.215.184.93.in-addr.arpa.', 'PTR')])
 
+    def test_no_question_starts_after_the_batch_deadline_and_the_rest_are_unknown(self):
+        """TL-11: the server stops waiting after 300 s, so the batch stops starting questions before that (240 s) and reports the rest unknown, not run."""
+        self.assertLess(identity.BATCH_SECONDS, 300)
+        now = [0.0]
+        resolver = FakeResolver({('www.example.test', 'NS'): FakeAnswer([FakeRdata('ns1.example.test.')])})
+        original = resolver.resolve
+
+        def slow(name, rtype, raise_on_no_answer=True):
+            now[0] += 100.0  # a resolver that takes 100 s to answer
+            return original(name, rtype, raise_on_no_answer)
+        resolver.resolve = slow
+        items = [item(str(i), 'www.example.test', 'NS') for i in range(6)]
+        certs = [{'id': 'c1', 'host': 'www.example.test', 'port': 443}]
+        got = identity.run_batch({'scope': SCOPE, 'dns': items, 'certs': certs}, resolver=resolver, clock=lambda: now[0])
+        self.assertEqual([r['status'] for r in got['dns']], ['ok', 'ok', 'ok', 'unknown', 'unknown', 'unknown'])
+        self.assertTrue(all(r['error'].startswith('not run:') for r in got['dns'][3:]))
+        self.assertEqual(got['certs'], [{'id': 'c1', 'status': 'unknown', 'names': [], 'error': 'not run: the batch ran out of time'}])
+        self.assertEqual(len(resolver.asked), 3)
+
     def test_a_question_the_policy_refuses_is_not_asked_and_is_unknown(self):
         got, resolver = self.run_dns([item('a', 'other.example.test', 'NS'), item('p', '10.0.0.5', 'PTR')], {})
         self.assertEqual(resolver.asked, [])

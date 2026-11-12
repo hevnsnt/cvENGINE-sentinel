@@ -257,7 +257,7 @@ class WafParsingTests(unittest.TestCase):
 
 class FlagsTests(unittest.TestCase):
     def test_nuclei_never_runs_denial_of_service_templates(self):
-        self.assertEqual(flags.NUCLEI_FLAGS[flags.NUCLEI_FLAGS.index('-etags') + 1], 'dos')
+        self.assertIn('dos', flags.NUCLEI_FLAGS[flags.NUCLEI_FLAGS.index('-etags') + 1].split(','))  # with the credential tags: ``flags.NUCLEI_CREDENTIAL_TAGS``
 
     def test_every_flag_list_is_plain_strings(self):
         for name in ('NMAP_FAST_FLAGS', 'NAABU_FLAGS', 'NUCLEI_FLAGS', 'TESTSSL_FLAGS', 'WPSCAN_ARGS', 'WPSCAN_THOROUGH_ARGS', 'DISCOVER_FLAGS'):

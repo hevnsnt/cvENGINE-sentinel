@@ -1088,6 +1088,15 @@ class KindPolicyTests(DaemonTestCase):
         self.assertEqual(runner.call_args.kwargs['timeout'], tools.task_seconds('nuclei_targeted', 9))
         self.assertLess(runner.call_args.kwargs['timeout'], 3600)
 
+    def test_a_nuclei_task_allows_credential_checks_only_when_its_field_is_true(self):
+        d = self.make()
+        for kind in ('nuclei_light', 'nuclei_targeted', 'nuclei_deep'):
+            for field, expected in (({}, False), ({'allow_credential_checks': False}, False), ({'allow_credential_checks': 'yes'}, False), ({'allow_credential_checks': True}, True)):
+                runner = mock.Mock(return_value={'findings': [], 'unreachable': []})
+                with self.subTest(kind=kind, field=field), mock.patch.dict(tools.RUNNERS, {kind: runner}), mock.patch.object(d, '_approved_templates', return_value=None):
+                    d._execute({'id': 46, 'kind': kind, 'target': {'targets': ['www.example.test'], 'tags': [], **field}}, None)
+                    self.assertIs(runner.call_args.kwargs.get('allow_credential_checks', False), expected)
+
     def test_a_nuclei_task_hands_its_service_labels_and_budget_to_the_tool(self):
         """The server's label of each host:port and the per-service budget reach run_nuclei, which enforces them."""
         d = self.make()

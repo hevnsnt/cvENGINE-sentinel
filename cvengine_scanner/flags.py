@@ -17,7 +17,11 @@ NAABU_FLAGS = ['-p', '-', '-rate', '1000', '-retries', '2', '-c', '25', '-warm-u
 NUCLEI_SEVERITIES = 'info,low,medium,high,critical'  # what a run reports when the task names no severities ('unknown' is left out)
 # The exclusion floor for every nuclei run, local or on a Sentinel: denial-of-service templates never run, whatever tags were asked for.
 NUCLEI_EXCLUDED_TAGS = ('dos',)
-NUCLEI_EXCLUDE_FLAGS = ['-etags', ','.join(NUCLEI_EXCLUDED_TAGS)]
+# Templates that send credentials (vendor default logins, brute force) never run unless a person turned them on: the task says so with
+# ``allow_credential_checks`` (the server's "Allow checks that send credentials" setting, off unless set). Without it they are in the exclusion of
+# every web and local run, and a targeted tag filter never names them. The service-port runs never send credentials, whatever the task says.
+NUCLEI_CREDENTIAL_TAGS = ('default-login', 'bruteforce')
+NUCLEI_EXCLUDE_FLAGS = ['-etags', ','.join((*NUCLEI_EXCLUDED_TAGS, *NUCLEI_CREDENTIAL_TAGS))]
 _NUCLEI_RUN = ['-jsonl', '-silent', '-duc', '-ni', '-nc', '-rl', '150', '-c', '40', '-timeout', '10', '-retries', '1']
 # A Sentinel's run. The raw request and response are kept (no -omit-raw): parse_nuclei_jsonl keeps them, clipped and with credentials redacted,
 # as the evidence of a finding (review M2). The severity filter is the task's own (client.tools adds -severity only when the task names one).
@@ -84,7 +88,7 @@ NUCLEI_SERVICE_CLASS_PAUSE_MS = {'ssh': 5500}
 # is off unless the owner turns it on: the same rule the OpenVAS and nmap runs follow (no brute force family, no intrusive script). The tags are only the
 # first line: many credential templates carry other tags (enum, vuln, authenticated), so the Sentinel also reads each template and refuses one with
 # ``payloads``, a login or an authentication step (``client.tools._paced_template``). No setting turns that on: no nuclei service run sends credentials.
-NUCLEI_SERVICE_EXCLUDED_TAGS = (*NUCLEI_EXCLUDED_TAGS, 'default-login', 'bruteforce', 'fuzz', 'intrusive')
+NUCLEI_SERVICE_EXCLUDED_TAGS = (*NUCLEI_EXCLUDED_TAGS, *NUCLEI_CREDENTIAL_TAGS, 'fuzz', 'intrusive')
 # the hosts that stop being scanned after this many failed requests (nuclei -mhe; its default is 30): a port that does not speak the protocol stops being tried
 NUCLEI_SERVICE_HOST_ERRORS = 10
 NUCLEI_SERVICE_SILENT_RUNS = 3  # template runs that get no answer at all before the port is given up on (one can fail for its own reasons)
@@ -197,26 +201,35 @@ def nuclei_service_listing_flags(selection):
     return flags + (['-tags', ','.join(selection['tags'])] if selection['tags'] else [])
 
 
-def nuclei_web_flags(hosts=1, budget=None):
+def _allow_credentials(argv):
+    """``argv`` with the credential tags taken out of its ``-etags`` (a person turned credential checks on); ``dos`` stays."""
+    argv = list(argv)
+    argv[argv.index('-etags') + 1] = ','.join(NUCLEI_EXCLUDED_TAGS)
+    return argv
+
+
+def nuclei_web_flags(hosts=1, budget=None, allow_credential_checks=False):
     """The shared run flags for web targets: raw tcp and javascript templates left out, because they connect to the ports their template names
     (22, 25, 3306...) whatever the target's own port is, so a bare host name would reach every one of them. The rate is per host
     (``-per-host-rate-limit``): ``NUCLEI_WEB_HOST_RATE`` (the task can lower it), or the global rate shared among ``hosts`` when that is less, so one host
-    never receives the whole global rate and a pass of many hosts stays near it."""
-    flags = [*NUCLEI_FLAGS, '-ept', ','.join(NUCLEI_TCP_TYPES)]
+    never receives the whole global rate and a pass of many hosts stays near it. The credential tags (``NUCLEI_CREDENTIAL_TAGS``) are excluded
+    unless ``allow_credential_checks`` is true."""
+    flags = [*(_allow_credentials(NUCLEI_FLAGS) if allow_credential_checks else NUCLEI_FLAGS), '-ept', ','.join(NUCLEI_TCP_TYPES)]
     global_rate = int(flags[flags.index('-rl') + 1])
     per_host = max(1, min(nuclei_service_budget(budget)['web_rate'], global_rate // max(1, int(hosts))))
     flags[flags.index('-rl') + 1] = str(per_host)
     return flags + ['-per-host-rate-limit']
 
 
-def nuclei_flags(tags=None, profile='normal', severities=None, tech=False, templates_dir=None, secret_file=None, proxy_args=()):
+def nuclei_flags(tags=None, profile='normal', severities=None, tech=False, templates_dir=None, secret_file=None, proxy_args=(), allow_credential_checks=False):
     """The nuclei flags of the server's local run (``cveFeed.nuclei_scan``), optionally narrowed to ``tags`` (an iterable of tag names the caller
     already checked against its allowlist, ``cveFeed.nuclei_templates``). ``profile='light'`` lowers concurrency and rate for a memory-constrained
     retry. ``severities`` narrows the severity list, and ``tech`` is the light technology-fingerprint pass (the http/technologies templates, info
     severity). ``secret_file`` (the path of a nuclei secrets file) makes it an authenticated run: nuclei reads the headers from that file, so no
     value is ever on the command line, and ``-dr`` stops it following redirects, which could carry a header to another host. ``proxy_args`` is the
-    egress proxy's argument list (empty for a direct run). ``-etags dos`` is always there."""
-    flags = list(NUCLEI_BASE_FLAGS)
+    egress proxy's argument list (empty for a direct run). ``-etags dos`` is always there, and the credential tags with it unless
+    ``allow_credential_checks`` is true."""
+    flags = _allow_credentials(NUCLEI_BASE_FLAGS) if allow_credential_checks else list(NUCLEI_BASE_FLAGS)
     if templates_dir:
         flags += ['-t', templates_dir]
     if severities or tech:

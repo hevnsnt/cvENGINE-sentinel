@@ -60,7 +60,8 @@ class VendoredTemplatesTests(unittest.TestCase):
             if (rule or decode) and tid not in self.data['reviewed_exceptions']:
                 failed.append((tid, rule, decode[:2]))
         self.assertEqual(failed, [])
-        self.assertEqual(sorted(self.data['reviewed_exceptions']), ['mongodb-unauth', 'perforce-detection', 'smb-signing'])
+        self.assertEqual(sorted(self.data['reviewed_exceptions']), sorted(['mongodb-unauth', 'perforce-detection', 'smb-signing', 'mongodb-detect', 'mongodb-info-enum', 'ldap-metadata',
+                         'rdp-detection', 'samba-detect', 'rtsp-detect', 'nats-server-enum', 'gost-ssh-detect', 'gost-socks5-detect', 'apache-rocketmq-broker-unauth']))
 
     def test_what_the_two_checks_flag_in_the_refused_templates_they_agree_on(self):
         """Where the content rule flags a template, the decode flags it too; the decode also flags what the rule cannot see (the seven the third review named)."""

@@ -2,8 +2,9 @@
 
 Exactly one read-only attempt with no credential, never a second username or password, and nothing is read once connected beyond what proves the
 door was open: a PONG, a version, or a count of database names (never their names, never a document). The server makes the finding; this module
-only answers ``open`` (True: the attempt was let through; False: it was not, or nothing answered; None: no client for this database here) and a
-short evidence line. The host answers are untrusted text: they are clipped here and again by the server.
+only answers ``open`` (True: the attempt was let through; False: the server answered and refused it; None: unknown, because there is no client for this
+database here or the attempt got no answer: refused connection, timeout, reset) and a short evidence line. A port that did not answer is never read as one
+that demanded a password: the server keeps an unknown service due. The host answers are untrusted text: they are clipped here and again by the server.
 """
 import json
 import socket
@@ -16,6 +17,10 @@ CONNECT_TIMEOUT = 3
 MAX_BODY_BYTES = 65536  # a status page or a list of database names; a server that sends more is not answering this question
 TOTAL_SECONDS = 10  # the whole request, so a server that drips one byte at a time cannot hold the task
 EVIDENCE_LEN = 300
+
+
+class _Refused(Exception):
+    """The server answered and said no (an HTTP 401 or 403)."""
 
 
 def _clip(text):
@@ -43,8 +48,12 @@ def check_redis(host, port):
         except Exception:  # noqa: BLE001 - the version is a nicety; the PONG is the evidence
             pass
         return True, reply
-    except Exception:  # noqa: BLE001 - NOAUTH, a protected-mode DENIED, refused, timeout: not exposed
+    except redis.exceptions.AuthenticationError:  # NOAUTH: the server answered and wants a password
         return False, ''
+    except redis.exceptions.ResponseError as exc:  # a protected-mode DENIED or another refusal is an answer; any other reply is not known to be one
+        return (False, '') if str(exc).upper().startswith(('NOAUTH', 'DENIED', 'WRONGPASS', 'ERR OPERATION NOT PERMITTED', 'NOPERM')) else (None, '')
+    except Exception:  # noqa: BLE001 - refused, reset, timeout: nothing answered, so nothing is known
+        return None, ''
     finally:
         if client is not None:
             try:
@@ -59,11 +68,11 @@ def check_memcached(host, port):
         with socket.create_connection((host, port), timeout=CONNECT_TIMEOUT) as sock:
             sock.sendall(b'version\r\n')
             reply = sock.recv(256)
-    except OSError:
-        return False, ''
+    except OSError:  # refused, reset, timeout: nothing answered
+        return None, ''
     if reply.startswith(b'VERSION'):
         return True, reply.decode('ascii', 'replace').strip().splitlines()[0]
-    return False, ''
+    return (False, '') if reply else (None, '')  # an answer that is not a version is a no; a connection closed without one tells nothing
 
 
 def _recv_exact(sock, size, deadline):
@@ -110,8 +119,8 @@ def check_postgres(host, port):
                 elif kind in (b'Z', b'E'):
                     break
             sock.sendall(b'X\0\0\0\4')  # Terminate
-    except (OSError, ValueError, struct.error):
-        return False, ''
+    except (OSError, ValueError, struct.error):  # refused, reset, too slow, cut short: nothing was answered, so nothing is known
+        return None, ''
     return True, f'PostgreSQL {version}' if version else 'connected as postgres, no password'
 
 
@@ -122,13 +131,17 @@ def _bounded_json(url):
     with requests.Session() as session:
         session.trust_env = False
         with session.get(url, timeout=CONNECT_TIMEOUT, allow_redirects=False, stream=True) as resp:
+            if resp.status_code in (401, 403):
+                raise _Refused(resp.status_code)
             if resp.status_code != 200:
                 return None
             body, size = [], 0
             for chunk in resp.iter_content(1):  # one byte per read, so a dripping server cannot hold a larger read past the deadline
                 body.append(chunk)
                 size += len(chunk)
-                if size > MAX_BODY_BYTES or time.monotonic() > deadline:
+                if time.monotonic() > deadline:
+                    raise TimeoutError('the server is too slow')
+                if size > MAX_BODY_BYTES:
                     return None
             return json.loads(b''.join(body)) if body else None
 
@@ -137,8 +150,10 @@ def check_elasticsearch(host, port):
     """A plain GET /: Elasticsearch with no security configured answers with cluster info and no challenge."""
     try:
         info = _bounded_json(f'http://{_netloc(host, port)}/')
-    except Exception:  # noqa: BLE001
+    except (_Refused, ValueError):  # a 401 or 403, or an answer that is not JSON
         return False, ''
+    except Exception:  # noqa: BLE001 - refused, reset, timeout: nothing answered
+        return None, ''
     if not isinstance(info, dict) or 'cluster_name' not in info:
         return False, ''
     version = info.get('version') if isinstance(info.get('version'), dict) else {}
@@ -149,8 +164,10 @@ def check_couchdb(host, port):
     """GET /_all_dbs: database names only, never a document. CouchDB with no admin ever configured answers it with no credential."""
     try:
         names = _bounded_json(f'http://{_netloc(host, port)}/_all_dbs')
-    except Exception:  # noqa: BLE001
+    except (_Refused, ValueError):  # a 401 or 403, or an answer that is not JSON
         return False, ''
+    except Exception:  # noqa: BLE001 - refused, reset, timeout: nothing answered
+        return None, ''
     if not isinstance(names, list):
         return False, ''
     return True, f'/_all_dbs answered with {len(names)} database name(s)'  # a count, never the names
@@ -168,8 +185,11 @@ def check_mysql(host, port):
                                read_timeout=CONNECT_TIMEOUT, write_timeout=CONNECT_TIMEOUT)
         version = conn.get_server_info()
         return True, f'connected as root with no password (MySQL {version})' if version else 'connected as root with no password'
-    except Exception:  # noqa: BLE001 - access denied, refused, reset: not exposed
-        return False, ''
+    except pymysql.err.OperationalError as exc:
+        # 1045 access denied, 1044 and 1130 (this host or user is not allowed) are the server saying no; a refused connection (2003), a lost one (2013) or a timeout is not an answer
+        return (False, '') if exc.args and exc.args[0] in (1044, 1045, 1130) else (None, '')
+    except Exception:  # noqa: BLE001 - refused, reset, timeout: nothing answered
+        return None, ''
     finally:
         if conn is not None:
             try:
@@ -190,8 +210,10 @@ def check_mongodb(host, port):
         client = pymongo.MongoClient(host=host, port=port, serverSelectionTimeoutMS=ms, connectTimeoutMS=ms, socketTimeoutMS=ms, directConnection=True)
         result = client.admin.command('listDatabases', 1, nameOnly=True)
         return True, f'listDatabases answered with {len(result.get("databases") or [])} database name(s)'  # a count, never the names
-    except Exception:  # noqa: BLE001 - Unauthorized, refused, timeout: not exposed
+    except pymongo.errors.OperationFailure:  # Unauthorized, AuthenticationFailed: the server answered and said no
         return False, ''
+    except Exception:  # noqa: BLE001 - no server selected, refused, timeout: nothing answered
+        return None, ''
     finally:
         if client is not None:
             try:
@@ -209,6 +231,6 @@ def probe(host, port, db):
     checker = CHECKS[db]
     try:
         opened, evidence = checker(host, port)
-    except Exception:  # noqa: BLE001 - a checker crashing is "not shown open", never a crashed task
-        opened, evidence = False, ''
+    except Exception:  # noqa: BLE001 - a checker crashing is "not known", never a crashed task and never a clean answer
+        opened, evidence = None, ''
     return {'open': opened, 'evidence': _clip(evidence) if opened else ''}

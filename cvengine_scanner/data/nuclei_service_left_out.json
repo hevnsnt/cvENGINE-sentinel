@@ -783,15 +783,6 @@
     "read by a person and refused: sends a command (help) to an unauthenticated service console; left out, not a read of what the server volunteers"
    ]
   },
-  "apache-rocketmq-broker-unauth": {
-   "path": "network/misconfig/apache-rocketmq-broker-unauth.yaml",
-   "severity": "high",
-   "sha256": "6e4e85285f55efee03bf7fc5da84a8f0a2ef5648e09fe15f22c270b5c8e5acca",
-   "reasons": [
-    "decode: hex /tcp[0]/inputs[0]/data: test (an account name in a packet)",
-    "exploit class (tags none, severity high) and not reviewed as read-only for this file content"
-   ]
-  },
   "api-mailchimp": {
    "path": "http/token-spray/api-mailchimp.yaml",
    "severity": "info",
@@ -1180,22 +1171,6 @@
     "exploit class (tags none, severity medium) and not reviewed as read-only for this file content"
    ]
   },
-  "gost-socks5-detect": {
-   "path": "javascript/detection/gost-socks5-detect.yaml",
-   "severity": "info",
-   "sha256": "fde598f94c0972f6692a8eb03d7b570384cde4fe21625e9ac08941b54134e033",
-   "reasons": [
-    "decode: plain /javascript[0]/code: auth"
-   ]
-  },
-  "gost-ssh-detect": {
-   "path": "javascript/detection/gost-ssh-detect.yaml",
-   "severity": "info",
-   "sha256": "918860f28949900549b4eaba7dc02fadc2bf75ea53224b1829cd46d277bdf1a3",
-   "reasons": [
-    "decode: plain /javascript[0]/code: auth"
-   ]
-  },
   "ikev2-detect": {
    "path": "javascript/detection/ikev2-detect.yaml",
    "severity": "info",
@@ -1502,14 +1477,6 @@
     "decode: plain /javascript[0]/code: authenticate; key /javascript[0]/args/User; key /javascript[0]/args/Pass; key /javascript[0]/payloads/usernames (+3 more)"
    ]
   },
-  "ldap-metadata": {
-   "path": "javascript/enumeration/ldap/ldap-metadata.yaml",
-   "severity": "info",
-   "sha256": "c5306fa52185b8aaeec6da5d9017d32317fceb6a8357f6b3c4f0b2fb7d9a2c43",
-   "reasons": [
-    "decode: plain /javascript[0]/args/Realm: anonymous (a sent account name)"
-   ]
-  },
   "mDNS-enum": {
    "path": "javascript/udp/misconfiguration/mdns-enum.yaml",
    "severity": "low",
@@ -1534,22 +1501,6 @@
     "also has a block of another protocol (code), which a service port never receives",
     "self-contained: it runs once against what the template names, not against the target",
     "exploit class (tags none, severity high) and not reviewed as read-only for this file content"
-   ]
-  },
-  "mongodb-detect": {
-   "path": "network/detection/mongodb-detect.yaml",
-   "severity": "info",
-   "sha256": "024f3898215880636311e15c6db5cee17c6d762d674232ac0362846fcf9dda91",
-   "reasons": [
-    "decode: hex /tcp[0]/inputs[0]/data: admin (an account name in a packet)"
-   ]
-  },
-  "mongodb-info-enum": {
-   "path": "network/enumeration/mongodb-info-enum.yaml",
-   "severity": "info",
-   "sha256": "0470f5797d3aeaed5f3ae374b02ec99301fddcc15a3878260361e9afdc299f6b",
-   "reasons": [
-    "decode: hex /tcp[0]/inputs[0]/data: admin (an account name in a packet)"
    ]
   },
   "mssql-browser-detect": {
@@ -1626,14 +1577,6 @@
     "content rule: the template carries payloads (guessed values, mostly accounts)",
     "decode: plain /javascript[0]/code: user; plain /javascript[0]/args/Query: user; key /javascript[0]/args/User; key /javascript[0]/args/Pass (+10 more)",
     "exploit class (tags none, severity high) and not reviewed as read-only for this file content"
-   ]
-  },
-  "nats-server-enum": {
-   "path": "javascript/enumeration/nats-server-enum.yaml",
-   "severity": "info",
-   "sha256": "d72a38aefb1cea68a6a7201a987b4d7af123f2531d02f0bd42d0eaaabc1ba88d",
-   "reasons": [
-    "decode: plain /javascript[0]/code: auth"
    ]
   },
   "netbios-udp-detect": {
@@ -1863,14 +1806,6 @@
     "exploit class (tags none, severity high) and not reviewed as read-only for this file content"
    ]
   },
-  "rdp-detection": {
-   "path": "network/detection/rdp-detection.yaml",
-   "severity": "info",
-   "sha256": "1207f5fff4c51b0fa5395cb252a1c32cf51583efdbe3a7c53cf81204164a38be",
-   "reasons": [
-    "decode: hex /tcp[0]/inputs[0]/data: cookie"
-   ]
-  },
   "redis-default-logins": {
    "path": "javascript/default-logins/redis-default-logins.yaml",
    "severity": "high",
@@ -1897,22 +1832,6 @@
    "sha256": "1ba22f9f4a63163850e0d8cf7c5a0396eadd829a1508caef779750715e46cd70",
    "reasons": [
     "read by a person and refused: sends two rtl_tcp control commands: 0x01 set centre frequency and 0x02 set sample rate, which reconfigures the tuner of the SDR dongle on the target (a configuration write, not a read)"
-   ]
-  },
-  "rtsp-detect": {
-   "path": "network/detection/rtsp-detect.yaml",
-   "severity": "info",
-   "sha256": "7d4132bbd617a21efa639f85bf4fa871cd4297f572e3dbf59ac162ad42f83172",
-   "reasons": [
-    "decode: hex /tcp[0]/inputs[0]/data: root (an account name in a packet)"
-   ]
-  },
-  "samba-detect": {
-   "path": "javascript/detection/samba-detect.yaml",
-   "severity": "info",
-   "sha256": "0c08b8de5eb6caccb194ffc1d60812f0d5b8cf0c2e7c20e4d49239629aba7cc0",
-   "reasons": [
-    "decode: plain /javascript[0]/code: ntlm"
    ]
   },
   "sap-router-info-leak": {

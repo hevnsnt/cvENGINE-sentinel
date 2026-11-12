@@ -2,8 +2,18 @@
  "nuclei_templates": "v10.5.2",
  "generated_by": "scripts/generate_service_allowlist.py",
  "reviewed_exceptions": [
+  "apache-rocketmq-broker-unauth",
+  "gost-socks5-detect",
+  "gost-ssh-detect",
+  "ldap-metadata",
+  "mongodb-detect",
+  "mongodb-info-enum",
   "mongodb-unauth",
+  "nats-server-enum",
   "perforce-detection",
+  "rdp-detection",
+  "rtsp-detect",
+  "samba-detect",
   "smb-signing"
  ],
  "templates": {
@@ -398,6 +408,15 @@
    "classes": [
     "unknown"
    ]
+  },
+  "apache-rocketmq-broker-unauth": {
+   "sha256": "6e4e85285f55efee03bf7fc5da84a8f0a2ef5648e09fe15f22c270b5c8e5acca",
+   "path": "network/misconfig/apache-rocketmq-broker-unauth.yaml",
+   "severity": "high",
+   "classes": [
+    "unknown"
+   ],
+   "restored": true
   },
   "argosoft-ftp-detect": {
    "sha256": "1e8d5f4d69ada3184b995d0363c109a0152f9c8ba1c21dec46d7aacd5f39e77f",
@@ -1089,6 +1108,24 @@
     "unknown"
    ]
   },
+  "gost-socks5-detect": {
+   "sha256": "fde598f94c0972f6692a8eb03d7b570384cde4fe21625e9ac08941b54134e033",
+   "path": "javascript/detection/gost-socks5-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ],
+   "restored": true
+  },
+  "gost-ssh-detect": {
+   "sha256": "918860f28949900549b4eaba7dc02fadc2bf75ea53224b1829cd46d277bdf1a3",
+   "path": "javascript/detection/gost-ssh-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ssh"
+   ],
+   "restored": true
+  },
   "gozi-malware-c2": {
    "sha256": "8f0eb929612ed305a2604432016ab06e548fca06dd8c43a747385f7553117fca",
    "path": "ssl/c2/gozi-malware-c2.yaml",
@@ -1262,6 +1299,15 @@
     "ftp"
    ]
   },
+  "ldap-metadata": {
+   "sha256": "c5306fa52185b8aaeec6da5d9017d32317fceb6a8357f6b3c4f0b2fb7d9a2c43",
+   "path": "javascript/enumeration/ldap/ldap-metadata.yaml",
+   "severity": "info",
+   "classes": [
+    "ldap"
+   ],
+   "restored": true
+  },
   "mac-c2-jarm": {
    "sha256": "dc7d139431e7a335219384b8df7ee9c826d7809ada7edd2f7774a9d0f743e714",
    "path": "network/jarm/c2/mac-c2-jarm.yaml",
@@ -1432,6 +1478,24 @@
     "unknown"
    ]
   },
+  "mongodb-detect": {
+   "sha256": "024f3898215880636311e15c6db5cee17c6d762d674232ac0362846fcf9dda91",
+   "path": "network/detection/mongodb-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "mongodb"
+   ],
+   "restored": true
+  },
+  "mongodb-info-enum": {
+   "sha256": "0470f5797d3aeaed5f3ae374b02ec99301fddcc15a3878260361e9afdc299f6b",
+   "path": "network/enumeration/mongodb-info-enum.yaml",
+   "severity": "info",
+   "classes": [
+    "mongodb"
+   ],
+   "restored": true
+  },
   "mongodb-unauth": {
    "sha256": "c3edbc6802d3631203bfc454a529e9f955c08daf35e2d1f48f587aef31251044",
    "path": "network/misconfig/mongodb-unauth.yaml",
@@ -1505,6 +1569,15 @@
     "tls",
     "unknown"
    ]
+  },
+  "nats-server-enum": {
+   "sha256": "d72a38aefb1cea68a6a7201a987b4d7af123f2531d02f0bd42d0eaaabc1ba88d",
+   "path": "javascript/enumeration/nats-server-enum.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ],
+   "restored": true
   },
   "ncftpd-detect": {
    "sha256": "ebb7ef68d540113879d50ab1c92b09d7854e97b5a7baedc5117855b326152525",
@@ -1802,6 +1875,15 @@
     "rdp"
    ]
   },
+  "rdp-detection": {
+   "sha256": "1207f5fff4c51b0fa5395cb252a1c32cf51583efdbe3a7c53cf81204164a38be",
+   "path": "network/detection/rdp-detection.yaml",
+   "severity": "info",
+   "classes": [
+    "rdp"
+   ],
+   "restored": true
+  },
   "red-lion-enip-detect": {
    "sha256": "c61a8931c537d4a9db24020063da2575a47569616e688501e63458c010d22f7d",
    "path": "network/detection/ics/red-lion-enip-detect.yaml",
@@ -1898,6 +1980,24 @@
    "classes": [
     "unknown"
    ]
+  },
+  "rtsp-detect": {
+   "sha256": "7d4132bbd617a21efa639f85bf4fa871cd4297f572e3dbf59ac162ad42f83172",
+   "path": "network/detection/rtsp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ],
+   "restored": true
+  },
+  "samba-detect": {
+   "sha256": "0c08b8de5eb6caccb194ffc1d60812f0d5b8cf0c2e7c20e4d49239629aba7cc0",
+   "path": "javascript/detection/samba-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ],
+   "restored": true
   },
   "sambar-ftp-detect": {
    "sha256": "722c01657d758d161a85888504aae99b08339de8b65e9b6f278cd9456791b7c0",

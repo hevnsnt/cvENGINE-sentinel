@@ -18,6 +18,7 @@ import ipaddress
 import logging
 import socket
 import ssl
+import time
 
 from . import names, transport
 from .policy import ScopePolicy
@@ -30,6 +31,7 @@ MAX_RECORDS = 50
 MAX_NAMES = 100
 DNS_TYPES = ('A', 'CNAME', 'NS', 'MX', 'PTR')
 DNS_TIMEOUT = 5  # seconds one question may take in all (the resolver's lifetime)
+BATCH_SECONDS = 240  # no question starts after this; the rest are reported unknown, not run (the server stops waiting at 300 s, and a result after that is thrown away)
 TLS_TIMEOUT = 3  # cveFeed.discovery.IP_LOOKUP_TIMEOUT: the connection and the handshake
 
 
@@ -154,9 +156,11 @@ def certificate_names(host, port, policy, timeout=TLS_TIMEOUT, handshake=None):
     return [n[:260] for n in [cn, *sans] if n][:MAX_NAMES]
 
 
-def run_batch(target, resolver=None, handshake=None):
+def run_batch(target, resolver=None, handshake=None, clock=time.monotonic, max_seconds=BATCH_SECONDS):
     """Run an ``identity_check`` task: ``target['dns']`` and ``target['certs']`` under ``target['scope']``. Returns ``{'dns': [...], 'certs': [...],
-    'touched', 'refused'}``. A question the policy refuses is reported ``unknown`` with an error; cvENGINE reads that as no answer, never as none."""
+    'touched', 'refused'}``. A question the policy refuses is reported ``unknown`` with an error; cvENGINE reads that as no answer, never as none. No
+    question starts after ``max_seconds`` (``BATCH_SECONDS``): the ones left are ``unknown`` with the error ``not run: the batch ran out of time`` and are
+    asked again."""
     raw_dns = target.get('dns') if isinstance(target.get('dns'), list) else []
     raw_certs = target.get('certs') if isinstance(target.get('certs'), list) else []
     if len(raw_dns) > MAX_DNS or len(raw_certs) > MAX_CERTS:
@@ -167,7 +171,11 @@ def run_batch(target, resolver=None, handshake=None):
         raise ValueError('a question is malformed')
     policy = ScopePolicy(target.get('scope'))
     dns_out, cert_out = [], []
+    deadline = clock() + max_seconds
     for item in dns_items:
+        if clock() > deadline:
+            dns_out.append({'id': item['id'], 'status': 'unknown', 'records': [], 'error': 'not run: the batch ran out of time'})
+            continue
         try:
             if resolver is None:
                 resolver = _resolver()
@@ -180,6 +188,9 @@ def run_batch(target, resolver=None, handshake=None):
         else:
             policy.touch(item['name'])
     for item in cert_items:
+        if clock() > deadline:
+            cert_out.append({'id': item['id'], 'status': 'unknown', 'names': [], 'error': 'not run: the batch ran out of time'})
+            continue
         try:
             found = certificate_names(item['host'], item['port'], policy, handshake=handshake)
         except ValueError as exc:
