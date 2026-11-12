@@ -56,5 +56,34 @@ class TemplateProblemsSayNothingAboutTheHost(unittest.TestCase):
         self.assertEqual(unreached_targets(['10.77.40.99'], parse_nuclei_errors(rows), set()), [])
 
 
+def closed(host, port, template='/t/x.yaml'):
+    return ('{"template":"%s","type":"http","input":"%s","address":"%s:%d","error":"port closed or filtered","kind":"network-permanent-error"}'
+            % (template, host, host, port))
+
+
+class OnlyTheHostsOwnPortsSayItIsDown(unittest.TestCase):
+    """A live web server answered on port 80 and logged nothing for it (a request that works and matches nothing is not an error), but an AJP template asked
+    it for port 8009 and logged ``port closed or filtered``. Read as "every logged request failed", the host was unreachable, was never recorded as scanned, and
+    came due again at every pass (seen on a lab nginx with the tags grafana, jira and tomcat)."""
+
+    def test_a_closed_port_some_template_asks_for_is_not_a_dead_host(self):
+        rows = closed('10.77.40.10', 8009) + '\n' + NEUTRAL_ROWS.replace('10.77.40.99', '10.77.40.10')
+        self.assertEqual(unreached_targets(['10.77.40.10'], parse_nuclei_errors(rows), set()), [])
+
+    def test_the_web_ports_of_a_bare_host_closed_say_it_is_down_whatever_else_was_logged(self):
+        rows = closed('10.77.40.99', 443) + '\n' + closed('10.77.40.99', 8009) + '\n' + NEUTRAL_ROWS
+        self.assertEqual(unreached_targets(['10.77.40.99'], parse_nuclei_errors(rows), set()), ['10.77.40.99'])
+
+    def test_a_host_with_a_port_is_judged_by_that_port(self):
+        self.assertEqual(unreached_targets(['10.77.40.99:8080'], parse_nuclei_errors(closed('10.77.40.99', 8080)), set()), ['10.77.40.99:8080'])
+        self.assertEqual(unreached_targets(['10.77.40.99:8080'], parse_nuclei_errors(closed('10.77.40.99', 443)), set()), [])
+
+    def test_a_url_is_judged_by_its_own_port(self):
+        self.assertEqual(unreached_targets(['https://10.77.40.99'], parse_nuclei_errors(closed('10.77.40.99', 443)), set()), ['https://10.77.40.99'])
+
+    def test_a_caller_that_built_its_own_plain_dict_is_read_as_before(self):
+        self.assertEqual(unreached_targets(['a.test'], {'a.test': ['dial tcp: connection refused']}, set()), ['a.test'])
+
+
 if __name__ == '__main__':
     unittest.main()
