@@ -1075,6 +1075,7 @@ def same_site_redirect(url, outcome):
     return target
 
 
+MIN_HOP_SECONDS = 60  # a redirected scan with less time than this left is not started (WPScan stops itself 30 s before its limit)
 MAX_REDIRECT_HOPS = 3  # http to https, apex to www, a path: more than that is a loop or a site that is not worth chasing
 
 
@@ -1082,15 +1083,20 @@ def _wpscan_following(url, token, timeout, register, args):
     """The scan of ``url``, carried through up to ``MAX_REDIRECT_HOPS`` redirects on the same site (``same_site_redirect``), never to a URL already
     scanned. The outcome of the last scan is returned: a redirect that leaves the site, or one past the limit, is that outcome's own text."""
     seen = {url.strip().rstrip('/')}
+    deadline = time.monotonic() + timeout  # one limit for the whole chain: the server waits, and the watchdog allows, for one scan's time
     outcome = _wpscan(url, token, timeout, register, wpscan_args_for(args, token))
     for _hop in range(MAX_REDIRECT_HOPS):
         target = same_site_redirect(url, outcome)
         if target is None or target.rstrip('/') in seen:
             break
-        logger.info('wpscan: %s redirects to %s on the same site; scanning that', url, target)
+        left = int(deadline - time.monotonic())
+        if left < MIN_HOP_SECONDS:  # not time for a scan: the redirect text is the outcome, as for a hop past the limit
+            logger.info('wpscan: %s redirects to %s but only %d s of the time limit is left; not scanning it', url, target, max(left, 0))
+            break
+        logger.info('wpscan: %s redirects to %s on the same site; scanning that (%d s left)', url, target, left)
         seen.add(target.rstrip('/'))
         url = target
-        outcome = _wpscan(url, token, timeout, register, wpscan_args_for(args, token))  # judged by scope again inside, as any URL
+        outcome = _wpscan(url, token, left, register, wpscan_args_for(args, token))  # judged by scope again inside, as any URL
     return outcome
 
 
