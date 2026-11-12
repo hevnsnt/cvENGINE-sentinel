@@ -252,7 +252,7 @@ def parse_nuclei_jsonl(text, evidence=True):
 # The errors that mean nothing answered a request: nothing listens, the name does not resolve, the connection or the answer timed out.
 # A failure of another kind (a broken body, a bad header) means something answered, so the host is reached.
 NUCLEI_CONNECTION_ERRORS = re.compile(r'connection refused|no such host|timeout|deadline exceeded|no route to host|network is unreachable|'
-                                      r'connection reset|could not resolve|dial tcp|no address', re.IGNORECASE)
+                                      r'connection reset|could not resolve|dial tcp|no address|port closed or filtered', re.IGNORECASE)  # the last is nuclei 3.11's own wording for a host that is down or a port nothing answers on
 
 
 def parse_nuclei_errors(text):
