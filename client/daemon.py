@@ -1269,7 +1269,7 @@ class Daemon:
         sha256 = answer.get('template_sha256') if isinstance(answer, dict) else None
         mode = answer.get('mode') if isinstance(answer, dict) else None
         targets = answer.get('targets') if isinstance(answer, dict) else None
-        if not isinstance(sha256, str) or not checks.SHA256.match(sha256) or mode not in ('validate', 'test'):
+        if not isinstance(sha256, str) or not checks.SHA256.fullmatch(sha256) or mode not in ('validate', 'test'):
             raise tools.Refused('refused: the server did not approve this check (no hash in its answer)')
         if not isinstance(targets, list) or len(targets) > tools.MAX_TARGETS or not all(isinstance(t, str) for t in targets):
             raise tools.Refused('refused: the server did not approve this check (its answer names no targets)')

@@ -29,7 +29,8 @@ def setUpModule():
     """No test here resolves a name for real, looks up this machine's own addresses, or depends on this machine's network setting."""
     for patcher in (mock.patch('socket.getaddrinfo', side_effect=fake_getaddrinfo),
                     mock.patch.object(scope, 'own_addresses', return_value=frozenset({'172.19.0.2'})),
-                    mock.patch.object(scope, 'internal_allowed', return_value=False)):
+                    mock.patch.object(scope, 'internal_allowed', return_value=False),
+                    mock.patch.object(tools, 'nuclei_version', return_value=(3, 11, 1))):  # not the nuclei of the machine running the tests
         patcher.start()
         unittest.addModuleCleanup(patcher.stop)
 

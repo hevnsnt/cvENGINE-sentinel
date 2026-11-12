@@ -1133,6 +1133,37 @@ def _check_env(work):
     return env
 
 
+# The oldest nuclei that may run an AI-written check outside the built-in scanner. Before v3.9.0 nuclei's expression lexer (Knetic's govaluate) ended
+# a string at either kind of quote, which is not how the allowlist (``cvengine_scanner.check_allowlist``) reads a string; the image pins 3.11.1, and
+# a ``CVENGINE_NUCLEI_BIN`` of another build is held to the same floor.
+NUCLEI_MIN_VERSION = (3, 9, 0)
+_NUCLEI_VERSION = re.compile(r'(?i)engine version:\s*v?(\d+)\.(\d+)\.(\d+)')
+_NUCLEI_VERSION_CACHE = {}
+
+
+def nuclei_version():
+    """The ``(major, minor, patch)`` this Sentinel's nuclei reports (``nuclei -version``, asked in the check environment, once per binary), or ``None``
+    when it does not answer or the answer is not a version."""
+    if NUCLEI_BIN not in _NUCLEI_VERSION_CACHE:
+        try:
+            ran = subprocess.run([NUCLEI_BIN, '-version'], capture_output=True, timeout=20, check=False, env=_check_env(None))
+            found = _NUCLEI_VERSION.search((ran.stdout + ran.stderr).decode('utf-8', 'replace'))
+        except (OSError, subprocess.SubprocessError):
+            found = None
+        _NUCLEI_VERSION_CACHE[NUCLEI_BIN] = tuple(int(g) for g in found.groups()) if found else None
+    return _NUCLEI_VERSION_CACHE[NUCLEI_BIN]
+
+
+def nuclei_floor_problem():
+    """Why this Sentinel's nuclei may not run an AI-written check (older than ``NUCLEI_MIN_VERSION``, or no version to read), or ``''``."""
+    found, floor = nuclei_version(), '.'.join(map(str, NUCLEI_MIN_VERSION))
+    if found is None:
+        return f'refused: this Sentinel could not read its nuclei version, and an AI-written check needs nuclei {floor} or newer'
+    if found < NUCLEI_MIN_VERSION:
+        return f'refused: this Sentinel has nuclei {".".join(map(str, found))}, and an AI-written check needs nuclei {floor} or newer'
+    return ''
+
+
 def _limit_memory():
     """In the child, before nuclei starts: a hard limit on its data segment (``CHECK_MEMORY_BYTES``), so a template that makes nuclei grow is stopped
     by the kernel, not by this container's out-of-memory killer."""
@@ -1172,7 +1203,9 @@ class PinnedResolver:
     """A DNS server on a loopback port of this Sentinel that nuclei is pointed at with ``-r`` for a check's run (review D5): it answers each name
     the task named with exactly the addresses that name resolved to when scope judged it (``pins``: ``{name: [address, ...]}``), and every other
     question with \"no such name\". A target name whose DNS answer changes after it was judged (DNS rebinding) still reaches only the judged
-    address, and a template's own name lookups reach no outside resolver. A context manager; ``path`` is the resolvers file for ``-r``."""
+    address, and a template's own name lookups reach no outside resolver. Two limits: an install proxy (``HTTP_PROXY`` and the like) resolves the
+    name at the proxy, outside this resolver, and a name with non-ASCII letters is pinned in its Unicode form while nuclei asks in punycode, so it
+    gets no answer (it fails closed). A context manager; ``path`` is the resolvers file for ``-r``."""
 
     def __init__(self, pins, work):
         self.pins = {str(k).rstrip('.').lower(): list(v) for k, v in (pins or {}).items()}
@@ -1423,7 +1456,7 @@ def _verified_template(path, text, template_sha256, approved, mode, builtin, tar
     Sentinel's own allowlist (``check_problem``) and its target limit (scope, one task's own hosts and ports, ``_template_test``) are the defence."""
     from cvengine_scanner import checks
     if not builtin or template_sha256 is not None:
-        if not isinstance(template_sha256, str) or not checks.SHA256.match(template_sha256):
+        if not isinstance(template_sha256, str) or not checks.SHA256.fullmatch(template_sha256):
             raise Refused('refused: the check names no valid template hash, so this Sentinel cannot tell it is the one the server approved')
     if not builtin or approved is not None:
         server_sha, server_mode, server_targets = _approval(approved)
@@ -1447,6 +1480,9 @@ def _verified_template(path, text, template_sha256, approved, mode, builtin, tar
         problem = checks.check_problem(on_disk)
         if problem:
             raise Refused(f'refused: {problem}'[:280])
+        problem = nuclei_floor_problem()
+        if problem:
+            raise Refused(problem[:280])
 
 
 def run_nuclei_validate(mode, template, targets=None, register=None, template_sha256=None, approved=None, builtin=False):

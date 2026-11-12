@@ -5,6 +5,9 @@ must give the same verdict on every case (its ``tests.test_ai_checks_on_sentinel
 import hashlib
 import json
 import unittest
+from unittest import mock
+
+import yaml
 
 from cvengine_scanner import check_allowlist, checks, contract
 
@@ -58,7 +61,13 @@ HOSTILE = ('resolve_in_header', 'resolve_in_dsl_matcher', 'resolve_in_dsl_extrac
            'json_extractor', 'raw_get_with_body', 'raw_get_with_body_no_length', 'raw_two_requests', 'raw_at_host_annotation', 'raw_annotation_after_request_line',
            'raw_host_literal_port', 'raw_transfer_encoding', 'raw_cookie', 'raw_http2', 'host_header', 'authorization_header', 'cookie_header',
            'api_key_header_name', 'credential_value_in_plain_header', 'jwt_value_in_header', 'x_forwarded_for_header', 'method_override_header',
-           'lowercase_method')
+           'lowercase_method',
+           # third pass: N1 (a quote of the other kind inside a string hides a helper call from the lexer), N7, N3, N4, N6 (still refused), N2
+           'q_mixed_quote_dsl', 'q_mixed_quote_header', 'q_mixed_quote_variable', 'q_dq_with_sq_inside', 'raw_get_blank_line_then_header_like_body',
+           'trailing_newline_in_header_name', 'trailing_newline_in_template_id', 'section_sign_by_escape_in_value', 'control_character_by_escape_in_value',
+           'lone_carriage_return', 'float_with_exponent', 'float_with_underscore', 'float_sexagesimal', 'metadata_key_yes_word', 'type_is_a_list',
+           'ssl_version_is_a_list', 'method_is_a_list', 'nested_6000_deep')
+ACCEPTED = ('plain_float_cvss_score', 'crlf_line_endings', 'upper_case_metadata_key', 'list_of_authors')
 
 
 class AllowlistTests(unittest.TestCase):
@@ -95,6 +104,96 @@ class AllowlistTests(unittest.TestCase):
         for expr in ('body.Len()', 'body[0]', '{body}', '`x`', '$x', 'a; b'):
             with self.subTest(expr=expr):
                 self.assertNotEqual(check_allowlist.expression_problem(expr), '')
+
+
+def _case(name):
+    return next(c for c in CORPUS if c['name'] == name)['template']
+
+
+class ThirdPassTests(unittest.TestCase):
+    """N1 to N7 of the third security review."""
+
+    def test_a_string_with_a_quote_of_either_kind_is_refused_whatever_it_hides(self):
+        for name in ('q_mixed_quote_dsl', 'q_mixed_quote_header', 'q_mixed_quote_variable', 'q_dq_with_sq_inside'):
+            with self.subTest(case=name):
+                self.assertEqual(checks.readonly_problem(_case(name)), '')  # nothing else refuses it: only the lexer rule does
+                self.assertIn('quote character', checks.check_problem(_case(name)))
+        for expr in ("contains(body, 'a\"b')", 'contains(body, "a\'b")', "contains(body, 'a\\'b')", "contains(body, 'a\"+resolve(\"x\",\"a\")+\"')"):
+            with self.subTest(expr=expr):
+                self.assertNotEqual(check_allowlist.expression_problem(expr), '')
+        self.assertEqual(check_allowlist.expression_problem("contains(body, 'ab') && contains(header, \"cd\")"), '')
+
+    def test_the_gate_refuses_and_never_raises(self):
+        deep = 'id: c\ninfo:\n  name: c\n  severity: info\nhttp: ' + '[' * 6000 + ']' * 6000 + '\n'
+        for name, text in (('deep', deep), ('type_list', _case('type_is_a_list')), ('ssl_list', _case('ssl_version_is_a_list')),
+                           ('method_list', _case('method_is_a_list')), ('condition_list', _case('type_is_a_list').replace('type: [word]', 'type: word\n        condition: [and]'))):
+            for gate in (checks.check_problem, check_allowlist.allowlist_problem):
+                with self.subTest(case=name, gate=gate.__name__):
+                    problem = gate(text)
+                    self.assertTrue(problem.startswith('template not validated: '), problem)
+
+    def test_a_document_nested_past_the_cap_is_refused_with_the_reason_and_the_cap_itself_passes(self):
+        text = lambda n: 'id: c\ninfo:\n  name: c\n  severity: info\n  tags: ' + '[' * n + ']' * n + '\n'  # noqa: E731
+        self.assertIn('nested', check_allowlist.yaml_problem(text(check_allowlist.MAX_DEPTH + 1)))
+        self.assertEqual(check_allowlist.yaml_problem(text(2)), '')
+
+    def test_an_error_inside_the_rules_is_a_refusal_with_a_reason(self):
+        good = _case('plain_get')
+        with mock.patch.object(check_allowlist, '_allowlist_problem', side_effect=ValueError('boom')):
+            problem = check_allowlist.allowlist_problem(good)
+        self.assertEqual(problem, 'template not validated: it could not be checked (ValueError), so it is refused')
+        with mock.patch.object(checks, 'scope_problem', side_effect=RuntimeError('boom')):
+            self.assertIn('RuntimeError', checks.check_problem(good))
+        with mock.patch.object(checks, 'readonly_problem', side_effect=RecursionError()):
+            self.assertIn('RecursionError', checks.check_problem(good))
+
+    def test_the_names_are_matched_whole_so_a_trailing_newline_is_refused(self):
+        self.assertIn('header name', check_allowlist.allowlist_problem(_case('trailing_newline_in_header_name')))
+        self.assertIn('id', check_allowlist.allowlist_problem(_case('trailing_newline_in_template_id')))
+        self.assertTrue(check_allowlist.header_problem('X-A\n', 'v'))
+        meta = "id: c\ninfo:\n  name: c\n  severity: info\n  metadata:\n    \"k\\n\": v\n" + _case('plain_get').split('severity: info\n', 1)[1]
+        self.assertIn('metadata', check_allowlist.allowlist_problem(meta))
+        var = _case('plain_get').replace('http:', 'variables:\n  "v\\n": x\nhttp:')
+        self.assertIn('variable name', check_allowlist.allowlist_problem(var))
+
+    def test_the_control_and_section_sign_scans_run_on_the_decoded_strings_too(self):
+        self.assertIn('U+00A7', check_allowlist.allowlist_problem(_case('section_sign_by_escape_in_value')))
+        self.assertIn('U+000B', check_allowlist.allowlist_problem(_case('control_character_by_escape_in_value')))
+        for escape, code in (('\\u202e', 'U+202E'), ('\\x00', 'U+0000'), ('\\x85', 'U+0085'), ('\\r', 'U+000D')):
+            with self.subTest(escape=escape):
+                text = _case('plain_get').replace('"marker-1.2.3"', f'"a{escape}b"')
+                self.assertIn(code, check_allowlist.allowlist_problem(text))
+
+    def test_what_both_yaml_readers_read_alike_is_accepted(self):
+        for name in ACCEPTED:
+            with self.subTest(case=name):
+                self.assertEqual(checks.check_problem(_case(name)), '')
+        self.assertTrue(_case('crlf_line_endings').count('\r\n') > 5)
+        self.assertEqual(yaml.safe_load(_case('plain_float_cvss_score'))['info']['classification']['cvss-score'], 9.8)
+
+    def test_a_crlf_document_decodes_to_the_same_strings_as_the_lf_one(self):
+        lf = _case('raw_get_host_header')
+        crlf = lf.replace('\n', '\r\n')
+        self.assertEqual(yaml.safe_load(crlf), yaml.safe_load(lf))
+        self.assertEqual(checks.check_problem(crlf), '')
+        self.assertIn('U+000D', check_allowlist.yaml_problem(lf.replace('\n', '\r', 1)))
+
+    def test_what_the_two_readers_read_differently_stays_refused_with_a_reason_the_author_can_act_on(self):
+        for name in ('float_with_exponent', 'float_with_underscore', 'float_sexagesimal', 'metadata_key_yes_word'):
+            with self.subTest(case=name):
+                self.assertIn('reads differently in YAML 1.1 and 1.2', check_allowlist.allowlist_problem(_case(name)))
+        for value in ('1e3', '.5', '0o7', '0x1F', '.inf', '1.', '09.8', '9.8.1x'):
+            with self.subTest(value=value):
+                text = _case('plain_get').replace('name: c', f'name: c\n  author: x\n  description: {value}', 1)
+                self.assertEqual(('reads differently' in check_allowlist.allowlist_problem(text)), value != '9.8.1x', value)
+
+    def test_the_raw_body_rule_alone_refuses_the_header_like_body(self):
+        text = _case('raw_get_blank_line_then_header_like_body')
+        self.assertEqual(checks.readonly_problem(text), '')
+        self.assertEqual(checks.scope_problem(text), '')
+        self.assertIn('body', check_allowlist.allowlist_problem(text))
+        self.assertEqual(check_allowlist.raw_problem('GET /x HTTP/1.1\nHost: {{Hostname}}\na: b\n'), '')  # without the blank line it is a header
+        self.assertIn('body', check_allowlist.raw_problem('GET /x HTTP/1.1\nHost: {{Hostname}}\n\na: b\n'))
 
 
 class BoundsTests(unittest.TestCase):

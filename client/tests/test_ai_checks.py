@@ -20,12 +20,14 @@ CORPUS = json.loads((contract.FIXTURES / 'checks' / 'corpus.json').read_text(enc
 TEXT = next(c for c in CORPUS if c['name'] == 'plain_get')['template']
 SHA = checks.digest(TEXT)
 OTHER = 'b' * 64
+REAL_NUCLEI_VERSION = tools.nuclei_version
 
 
 def setUpModule():
     for patcher in (mock.patch('socket.getaddrinfo', side_effect=OSError('no DNS in these tests')),
                     mock.patch.object(scope, 'own_addresses', return_value=frozenset({'172.19.0.2'})),
-                    mock.patch.object(scope, 'internal_allowed', return_value=False)):
+                    mock.patch.object(scope, 'internal_allowed', return_value=False),
+                    mock.patch.object(tools, 'nuclei_version', return_value=(3, 11, 1))):  # the floor itself is tested in NucleiVersionFloorTests
         patcher.start()
         unittest.addModuleCleanup(patcher.stop)
 
@@ -357,3 +359,47 @@ class NucleiProcessLimitsTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class NucleiVersionFloorTests(unittest.TestCase):
+    """Third review, N1: an AI-written check runs only on a nuclei whose expression lexer ends a string at the matching quote (v3.9.0 and later)."""
+
+    def setUp(self):
+        for patcher in (mock.patch.dict(tools._NUCLEI_VERSION_CACHE, clear=True), mock.patch.object(tools, 'nuclei_version', REAL_NUCLEI_VERSION)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def asked(self, text, raises=None):
+        tools._NUCLEI_VERSION_CACHE.clear()
+        answer = mock.Mock(stdout=b'', stderr=text.encode(), returncode=0)
+        with mock.patch.object(tools.subprocess, 'run', return_value=answer, side_effect=raises) as ran:
+            return tools.nuclei_floor_problem(), ran
+
+    def test_the_version_is_read_from_the_engine_line(self):
+        for text, expected in (('[INF] Nuclei Engine Version: v3.11.1\n[INF] Nuclei Config Directory: /x\n', (3, 11, 1)),
+                               ('[INF] Nuclei Engine Version: v3.8.0\n[INF] Nuclei Templates Version: v10.0.1', (3, 8, 0))):
+            with self.subTest(text=text[:40]):
+                tools._NUCLEI_VERSION_CACHE.clear()
+                with mock.patch.object(tools.subprocess, 'run', return_value=mock.Mock(stdout=b'', stderr=text.encode())):
+                    self.assertEqual(tools.nuclei_version(), expected)
+
+    def test_a_nuclei_at_or_above_the_floor_passes(self):
+        for version in ('v3.9.0', 'v3.11.1', 'v4.0.0'):
+            with self.subTest(version=version):
+                self.assertEqual(self.asked(f'[INF] Nuclei Engine Version: {version}')[0], '')
+
+    def test_a_nuclei_below_the_floor_or_with_no_readable_version_is_refused(self):
+        for text in ('[INF] Nuclei Engine Version: v3.8.0', '[INF] Nuclei Engine Version: v2.9.15', '[INF] Nuclei Engine Version: v3.8.99', 'garbage', ''):
+            with self.subTest(text=text):
+                self.assertTrue(self.asked(text)[0].startswith('refused: '), text)
+        self.assertIn('3.8.0', self.asked('[INF] Nuclei Engine Version: v3.8.0')[0])
+        self.assertIn('could not read', self.asked('', raises=OSError('no nuclei'))[0])
+
+    def test_an_old_nuclei_never_runs_an_approved_check_and_the_builtin_scanner_is_not_held_to_the_floor(self):
+        with mock.patch.object(tools, 'nuclei_version', return_value=(3, 8, 0)), mock.patch.object(tools, '_run_status', return_value=(0, '', '')) as started:
+            with self.assertRaises(tools.Refused) as caught:
+                run()
+            started.assert_not_called()
+            self.assertIn('nuclei 3.9.0 or newer', str(caught.exception))
+            with mock.patch.object(tools, '_benign_fixture', return_value=(True, '')):
+                run(builtin=True, approved=None, sha=None)

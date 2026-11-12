@@ -170,8 +170,8 @@ def _parse(text):
     import yaml
     try:
         doc = _load(text)
-    except yaml.YAMLError:
-        return None, 'template not validated: not valid YAML'
+    except (yaml.YAMLError, RecursionError):  # a document nested thousands deep is no template
+        return None, 'template not validated: not valid YAML, or nested too deeply'
     if not isinstance(doc, dict):
         return None, 'template not validated: not a template'
     return doc, ''
@@ -245,6 +245,10 @@ def scope_problem(text):
 def check_problem(text):
     """``readonly_problem``, then ``scope_problem``, then the allowlist (``check_allowlist.allowlist_problem``: one YAML document nuclei and PyYAML read
     alike, known keys only, only side-effect-free helpers and listed names in every expression, plain requests with no body, annotation,
-    credential or steering header): the whole rule for a check a Sentinel that is not the built-in scanner runs."""
+    credential or steering header): the whole rule for a check a Sentinel that is not the built-in scanner runs. It refuses, it never raises: an
+    error while judging a template is itself the reason to refuse it."""
     from cvengine_scanner import check_allowlist
-    return readonly_problem(text) or scope_problem(text) or check_allowlist.allowlist_problem(text)
+    try:
+        return readonly_problem(text) or scope_problem(text) or check_allowlist.allowlist_problem(text)
+    except Exception as exc:  # noqa: BLE001 - a gate that crashes must refuse
+        return f'template not validated: it could not be checked ({type(exc).__name__}), so it is refused'

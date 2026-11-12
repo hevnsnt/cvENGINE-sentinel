@@ -51,10 +51,17 @@
   `public_ip`, `wait_for`, `print_debug`, clock or random helpers); a raw request is exactly one GET, HEAD or OPTIONS request with no body or `@`
   annotation, and no request sets `Host` (outside raw), `Authorization`, `Cookie`, a forwarding header or a credential-looking value. The server's
   check answer names the task's sorted targets too, compared with the task's (hashes with `hmac.compare_digest`). nuclei is pointed with `-r` at a
-  resolver of the Sentinel's own that answers each target name only with the addresses scope judged (DNS rebinding closed) and nothing else, and
+  resolver of the Sentinel's own that answers each target name only with the addresses scope judged and nothing else (a name whose answer changes after
+  it was judged still reaches only the judged address; an install proxy resolves the name itself, outside this resolver, and a name with non-ASCII
+  letters is pinned in its Unicode form while nuclei asks in punycode, so it gets no answer), and
   runs with a minimal environment (no Sentinel secret), a 2 GiB data limit, its time limit and a 16 MiB cap on the output read. The hash protects
   against a check changed in transit, edited after dispatch or changed on disk before the run; not against a compromised server, against which the
   Sentinel's own allowlist and target limit are the defence.
+  Third security pass: a string literal in an expression may not contain a quote character of either kind (nuclei before 3.9.0 ended a string at either
+  kind, which hid a `resolve()` call from the allowlist), and a Sentinel refuses to run an AI-written check on a nuclei older than 3.9.0 or with no
+  readable version; the gate refuses with a reason instead of raising on a deeply nested document or a value of an unexpected type (nesting is capped at
+  20); names are matched whole (no trailing newline); control characters and U+00A7 are refused in decoded strings too; a plain decimal such as
+  `cvss-score: 9.8`, CRLF line ends, upper-case metadata keys and a list of authors are accepted (both YAML readers read them the same way).
 - Kingfisher 2.18.1 (was 2.16.0): the Dockerfile pin and both checksums (from the release's own files, build attestation verified), the library constant and the README row.
 - **The image's tools are checked against their newest releases.** `scripts/check_tool_versions.py` reads every pin (the Dockerfile versions and base image digest, `requirements.txt`, the pip bootstrap pins, the Greenbone image digests) and prints each one beside the newest upstream release. A weekly run keeps one issue open while something is behind, every pull request gets a warning, and *Tag a release* refuses to tag while a tool is behind or a lookup fails (`--fail-if-behind`).
 - A durable result spool (`client/spool.py`): a result cvENGINE does not take (an update, a restart, an outage) is written to disk (0600, atomic) and delivered oldest
