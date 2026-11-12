@@ -640,6 +640,9 @@ def _allowed_on_port(path, port):
     return not fixed or port in fixed
 
 
+NO_CHECK_REASON = 'no check exists for this service'  # the server shows it as it is
+
+
 def _run_service_port(target, klass, tags, budget, deadline, extra, templates, register, secret_file, listing_failed=None, spent=0.0):
     """One non-web ``host:port`` of class ``klass``: its template files, each as its own nuclei process, one at a time, with ``budget['pause_ms']`` between
     one run ending and the next starting, and ``budget['seconds']`` for the port (and never past ``deadline``). One connection is in flight at a time and a
@@ -649,6 +652,10 @@ def _run_service_port(target, klass, tags, budget, deadline, extra, templates, r
     Returns ``{'findings', 'unreachable', 'incomplete', 'no_templates', 'reason'}``; ``reason`` is why the port was not fully checked, else ``None``."""
     selection = flags.nuclei_service_selection(klass, tags)
     out = {'findings': [], 'unreachable': False, 'incomplete': False, 'no_templates': False, 'reason': None}
+    if not nuclei_allowlist.covers(klass):  # the list has no template for this service at all (or no list): nothing was checked, and the answer says so
+        out['no_templates'], out['reason'] = True, NO_CHECK_REASON
+        logger.warning('nuclei: the service-port allowlist has no template for the class %s: %s is not checked', klass, target)
+        return out
     if selection is None:
         out['no_templates'] = True  # the task asked for nothing that speaks this protocol
         return out

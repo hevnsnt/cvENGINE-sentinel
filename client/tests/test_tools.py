@@ -1329,7 +1329,7 @@ def _bundle_allowlist(directory):
                     raw = handle.read()
                 tid = nuclei_allowlist.template_id(raw.decode('utf-8', 'replace'))
                 if tid:
-                    templates[tid] = {'sha256': nuclei_allowlist.sha256_of(raw)}
+                    templates[tid] = {'sha256': nuclei_allowlist.sha256_of(raw), 'classes': [*tools.flags.NUCLEI_SERVICES, tools.flags.NUCLEI_UNKNOWN]}  # the fake nuclei does the class selection
     return {'nuclei_templates': 'test', 'templates': templates, 'reviewed_exceptions': set()}
 
 
@@ -2057,6 +2057,33 @@ class NucleiAllowlistRunTests(NucleiTestCase):
         self.nuclei.on_run = swap
         self.run_nuclei(['www.example.test:22'], services={'www.example.test:22': 'ssh'})
         self.assertEqual([r['given']['bytes'] for r in self.nuclei.service_runs], [verified])
+
+    def test_a_port_whose_class_has_no_allowlisted_template_is_reported_not_checked_with_the_plain_reason(self):
+        """postgres, mongodb (before mongodb-unauth) and ldap had no template: the port is named in ``not_checked``, even next to a port that ran."""
+        _add_real(self, 'openssh-detect')
+        ports = {'www.example.test:22': 'ssh', 'www.example.test:5432': 'postgres', 'www.example.test:389': 'ldap'}
+        result = self.run_nuclei(list(ports), services=ports)
+        self.assertEqual(self.ran('www.example.test:22'), ['openssh-detect'])
+        self.assertEqual(self.ran('www.example.test:5432'), [])
+        rows = {row['target']: row['reason'] for row in result['not_checked']}
+        self.assertEqual(rows, {'www.example.test:5432': 'no check exists for this service', 'www.example.test:389': 'no check exists for this service'})
+        self.assertIn('www.example.test:5432', result['unreachable'])  # the server keeps the port due, with its back-off
+        self.assertNotIn('www.example.test:22', rows)
+
+    def test_a_missing_list_reports_every_service_port_not_checked_never_an_empty_answer(self):
+        _add_real(self, 'openssh-detect')
+        with mock.patch.object(nuclei_allowlist, 'load_allowlist', side_effect=lambda path=None: {'nuclei_templates': '', 'templates': {}, 'reviewed_exceptions': set()}):
+            result = self.run_nuclei(['www.example.test:22'], services={'www.example.test:22': 'ssh'})
+        self.assertEqual(self.nuclei.service_runs, [])
+        self.assertEqual([row['target'] for row in result['not_checked']], ['www.example.test:22'])
+        self.assertEqual(result['not_checked'][0]['reason'], 'no check exists for this service')
+        self.assertFalse(result.get('no_templates'))
+
+    def test_a_filter_that_matches_nothing_on_a_class_that_has_templates_is_still_an_answer(self):
+        _add_real(self, 'openssh-detect')
+        result = self.run_nuclei(['www.example.test:22'], services={'www.example.test:22': 'ssh'}, tags=['nonexistent-tag'])
+        self.assertTrue(result.get('no_templates'))
+        self.assertNotIn('not_checked', result)
 
     def test_a_missing_list_runs_nothing_on_a_service_port(self):
         _add_real(self, 'openssh-detect')

@@ -60,6 +60,13 @@ def forget():
     _cache.clear()
 
 
+def covers(klass, allowlist=None):
+    """Whether the list names any template for the service class ``klass`` at all (a missing, unreadable or empty list covers none). A class it does not cover has no
+    check: a port of that class is reported as not checked, never as scanned clean."""
+    allowlist = allowlist if allowlist is not None else load_allowlist()
+    return any(isinstance(e, dict) and klass in (e.get('classes') or ()) for e in allowlist['templates'].values())
+
+
 def check_bytes(raw, allowlist=None):
     """``(allowed, reason, template_id)`` for the bytes of a template file: allowed only when its id is on the list and the sha256 of the bytes is the one
     recorded. The reason says which of the two failed."""
