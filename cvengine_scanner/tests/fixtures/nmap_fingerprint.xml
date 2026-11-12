@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE nmaprun>
+<!-- Nmap 7.993 scan, the fingerprint pass of the nmap kind (-sV, -O, -Pn, open ports only, the reviewed scripts). Hosts and names are RFC 5737 and RFC 2606 documentation values. -->
+<nmaprun scanner="nmap" args="nmap -sV -O -Pn --open --script banner,ssh-hostkey,ssl-cert,http-title,http-server-header,smb-os-discovery -oX - -iL targets.txt" start="1794499632" version="7.993" xmloutputversion="1.05">
+<scaninfo type="syn" protocol="tcp" numservices="1000" services="21-23,25,53,80,110-111,135,139,143,443,445,993,995,1723,3306,3389,5900,8080"/>
+<verbose level="0"/>
+<debugging level="0"/>
+<host starttime="1794499632" endtime="1794499650"><status state="up" reason="user-set" reason_ttl="0"/>
+<address addr="192.0.2.11" addrtype="ipv4"/>
+<hostnames></hostnames>
+<ports><extraports state="closed" count="995">
+<extrareasons reason="reset" count="995" proto="tcp" ports="1-20,24,26-52,54-79,81-109,112-134,136-138,140-142,144-442,444,446-992,994,996-1722,1724-3305,3307-3388,3390-5899,5901-8079,8081-65535"/>
+</extraports>
+<port protocol="tcp" portid="21"><state state="open" reason="syn-ack" reason_ttl="64"/><service name="ftp" product="vsftpd" version="3.0.5" ostype="Unix" method="probed" conf="10"><cpe>cpe:/a:vsftpd:vsftpd:3.0.5</cpe></service><script id="banner" output="220 (vsFTPd 3.0.5)"/><script id="ssl-cert" output="&#xa;Subject: commonName=ftp.example.test/organizationName=Example&#xa;Subject Alternative Name: DNS:ftp.example.test&#xa;Issuer: commonName=Example Test CA&#xa;Public Key type: rsa&#xa;Public Key bits: 2048&#xa;Signature Algorithm: sha256WithRSAEncryption&#xa;Not valid before: 2026-01-01T00:00:00&#xa;Not valid after:  2027-01-01T00:00:00&#xa;MD5:   0123 4567 89ab cdef 0123 4567 89ab cdef&#xa;SHA-1: 0123 4567 89ab cdef 0123 4567 89ab cdef 0123 4567"><table key="subject"><elem key="commonName">ftp.example.test</elem><elem key="organizationName">Example</elem></table></script></port>
+<port protocol="tcp" portid="22"><state state="open" reason="syn-ack" reason_ttl="64"/><service name="ssh" product="OpenSSH" version="9.6p1 Ubuntu 3ubuntu13.5" extrainfo="Ubuntu Linux; protocol 2.0" ostype="Linux" method="probed" conf="10"><cpe>cpe:/a:openbsd:openssh:9.6p1</cpe><cpe>cpe:/o:linux:linux_kernel</cpe></service><script id="banner" output="SSH-2.0-OpenSSH_9.6p1 Ubuntu-3ubuntu13.5"/><script id="ssh-hostkey" output="&#xa;  256 aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99 (ECDSA)"/></port>
+<port protocol="tcp" portid="80"><state state="open" reason="syn-ack" reason_ttl="64"/><service name="http" product="nginx" version="1.25.3" method="probed" conf="10"><cpe>cpe:/a:igor_sysoev:nginx:1.25.3</cpe></service><script id="http-title" output="Welcome to the lab"/><script id="http-server-header" output="nginx/1.25.3"/></port>
+<port protocol="tcp" portid="443"><state state="open" reason="syn-ack" reason_ttl="64"/><service name="http" product="nginx" version="1.25.3" tunnel="ssl" method="probed" conf="10"><cpe>cpe:/a:igor_sysoev:nginx:1.25.3</cpe></service><script id="ssl-cert" output="&#xa;Subject: commonName=web.example.test/organizationName=Example&#xa;Subject Alternative Name: DNS:web.example.test, DNS:www.example.test&#xa;Issuer: commonName=Example Test CA&#xa;Public Key type: rsa&#xa;Public Key bits: 2048&#xa;Signature Algorithm: sha256WithRSAEncryption&#xa;Not valid before: 2026-01-01T00:00:00&#xa;Not valid after:  2027-01-01T00:00:00&#xa;MD5:   fedc ba98 7654 3210 fedc ba98 7654 3210&#xa;SHA-1: fedc ba98 7654 3210 fedc ba98 7654 3210 fedc ba98"><table key="subject"><elem key="commonName">web.example.test</elem></table></script><script id="http-title" output="Welcome to the lab"/><script id="smuggled-version-script" output="rpcinfo output nobody reviewed"/></port>
+<port protocol="tcp" portid="2121"><state state="open" reason="syn-ack" reason_ttl="64"/><service name="ftp" product="vsftpd" version="3.0.5" method="probed" conf="10"/><script id="banner" output="220 plain ftp, no TLS offered"/></port>
+<port protocol="tcp" portid="9999"><state state="closed" reason="reset" reason_ttl="64"/><service name="abyss" method="table" conf="3"/></port>
+</ports>
+<os><portused state="open" proto="tcp" portid="21"/><portused state="closed" proto="tcp" portid="1"/><osmatch name="Linux 5.15 - 6.1" accuracy="97" line="61350"><osclass type="general purpose" vendor="Linux" osfamily="Linux" osgen="5.X" accuracy="97"><cpe>cpe:/o:linux:linux_kernel:5</cpe></osclass></osmatch><osmatch name="Linux 4.15" accuracy="94" line="60000"/></os>
+<hostscript><script id="smb-os-discovery" output="&#xa;  OS: Windows Server 2019 (Windows Server 2019 6.3)&#xa;  Computer name: LAB-SRV"/></hostscript>
+<times srtt="400" rttvar="100" to="100000"/>
+</host>
+<host starttime="1794499632" endtime="1794499640" timedout="true"><status state="up" reason="user-set" reason_ttl="0"/>
+<address addr="192.0.2.12" addrtype="ipv4"/>
+<ports><port protocol="tcp" portid="80"><state state="open" reason="syn-ack" reason_ttl="64"/><service name="http" method="table" conf="3"/></port></ports>
+</host>
+<runstats><finished time="1794499650" exit="success"/><hosts up="2" down="0" total="2"/></runstats>
+</nmaprun>

@@ -272,6 +272,43 @@ class CollectorTests(unittest.TestCase):
         match = cpe.match(stored)
         self.assertEqual((match.group(2), match.group(3)), ('openssh', '7.2p2'))
 
+    def test_a_finding_carries_its_port(self):
+        """SN-9: a bbot FINDING names a port (a TLS or TCP finding): it is kept, from the payload, the event or the URL, else left out."""
+        c = bbot.Collector(bbot.Policy(TARGET['scope']), self.dir)
+        c.add(event('FINDING', {'description': 'Weak cipher: x', 'host': 'www.example.com', 'port': 8443, 'severity': 'LOW'}, 'www.example.com', module='sslcert'))
+        c.add(event('FINDING', {'description': 'Open admin: y', 'host': 'www.example.com', 'severity': 'LOW'}, 'www.example.com', module='x', port=2222))
+        c.add(event('FINDING', {'description': 'Bad page: z', 'host': 'www.example.com', 'url': 'https://www.example.com:9443/a', 'severity': 'LOW'}, 'www.example.com', module='x'))
+        c.add(event('FINDING', {'description': 'Bad page: w', 'host': 'www.example.com', 'url': 'https://www.example.com/a', 'severity': 'LOW'}, 'www.example.com', module='x'))
+        c.add(event('FINDING', {'description': 'No port: v', 'host': 'www.example.com', 'severity': 'INFO'}, 'www.example.com', module='x'))
+        c.add(event('FINDING', {'description': 'Absurd: u', 'host': 'www.example.com', 'port': 99999, 'severity': 'INFO'}, 'www.example.com', module='x'))
+        batch = c.take(1)
+        self.assertEqual([f.get('port') for f in batch['findings']], [8443, 2222, 9443, 443, None, None])
+        self.assertEqual(list(Draft202012Validator(contract.partial_schema('bbot_discovery')).iter_errors(batch)), [])
+
+    def test_a_list_cut_at_the_run_cap_is_counted(self):
+        """SN-6: events, http responses and screenshots past the run's cap are dropped, and the collector says how many."""
+        os.makedirs(os.path.join(self.dir, 'demo_scan', 'gowitness'))
+        with open(os.path.join(self.dir, 'demo_scan', 'gowitness', 'shot.png'), 'wb') as handle:
+            handle.write(PNG)
+        c = bbot.Collector(bbot.Policy(TARGET['scope']), self.dir)
+        c.add(event('SCAN', {'name': 'demo_scan'}))
+        with mock.patch.object(bbot, 'MAX_EVENTS', 3), mock.patch.object(bbot, 'MAX_HTTP', 2), mock.patch.object(bbot, 'MAX_SCREENSHOTS', 1):
+            for i in range(5):
+                c.add(event('DNS_NAME', f'h{i}.example.com', f'h{i}.example.com'))
+                c.add(event('HTTP_RESPONSE', {'url': f'https://www.example.com/{i}', 'status_code': 200}, 'www.example.com'))
+                c.add(event('WEBSCREENSHOT', {'path': 'gowitness/shot.png', 'url': f'https://www.example.com/{i}'}, 'www.example.com'))
+        got = {row['what']: row for row in c.cuts.as_list()}
+        self.assertEqual({k: (v['kind'], v['dropped']) for k, v in got.items()}, {'events': ('items', 7), 'http': ('items', 3), 'screenshots': ('items', 4)})
+        self.assertEqual(got['events']['limit'], 3)
+
+    def test_a_repeated_event_past_the_cap_is_counted_once(self):
+        c = bbot.Collector(bbot.Policy(TARGET['scope']), self.dir)
+        with mock.patch.object(bbot, 'MAX_EVENTS', 1):
+            for _ in range(3):
+                c.add(event('DNS_NAME', 'a.example.com', 'a.example.com'))
+                c.add(event('DNS_NAME', 'b.example.com', 'b.example.com'))
+        self.assertEqual([r['dropped'] for r in c.cuts.as_list()], [1])
+
     def test_a_list_over_its_cap_spills_into_the_next_batch(self):
         c = bbot.Collector(bbot.Policy(TARGET['scope']), self.dir)
         for i in range(bbot.LIMITS['subdomains'] + 5):
@@ -350,6 +387,25 @@ class RunTests(unittest.TestCase):
         with mock.patch.object(bbot.egress, 'for_tool', side_effect=bbot.egress.ProxyUnavailable('no proxy suits bbot')):
             with self.assertRaises(bbot.RunError):
                 self.run_with(FakeProc(self.LINES))
+
+    def test_a_run_that_hit_a_cap_or_its_time_limit_says_so_in_its_result(self):
+        class InstantTimer:  # the time limit passes as soon as the run starts
+            def __init__(self, seconds, function):
+                self.function, self.daemon = function, True
+
+            def start(self):
+                self.function()
+
+            def cancel(self):
+                pass
+        with mock.patch.object(bbot, 'MAX_EVENTS', 1), mock.patch.object(bbot.threading, 'Timer', InstantTimer):
+            result, _client, _seen = self.run_with(FakeProc(self.LINES))
+        self.assertIn('time limit', result['incomplete'])
+        self.assertEqual(sorted((c['what'], c['kind']) for c in result['cuts']), [('events', 'items'), ('time_limit', 'time')])
+        self.assertEqual([c for c in result['cuts'] if c['what'] == 'events'][0]['dropped'], 1)
+        self.assertEqual(list(Draft202012Validator(contract.result_schema('bbot_discovery')).iter_errors(result)), [])
+        whole, _c, _s = self.run_with(FakeProc(self.LINES))
+        self.assertNotIn('cuts', whole)
 
     def test_a_run_that_fails_part_way_is_incomplete_and_one_that_found_nothing_is_an_error(self):
         result, _client, _seen = self.run_with(FakeProc(self.LINES, code=-9))

@@ -225,6 +225,14 @@ def detected_tools():
     return _detected['tools']
 
 
+def detected_versions():
+    """``tools.tool_versions()``: the versions the same probes printed, kept once per process like the tool names."""
+    detected_tools()  # the probes run once, for the names; the versions come out of those runs
+    if 'versions' not in _detected:
+        _detected['versions'] = tools.tool_versions()
+    return _detected['versions']
+
+
 def _cap_concurrency(value):
     """``value`` as a whole number between 1 and the most the server grants (``config.MAX_AUTO_CONCURRENT``): whatever reaches a bootstrap, a
     registration or the daemon is held to it, so the server never answers 400 to an over-large explicit setting."""
@@ -278,6 +286,9 @@ def info():
         out['spool'] = dict(_spool_report)  # optional: a server that does not know the field ignores it
     if _watchdog_report:
         out['watchdog'] = dict(_watchdog_report)  # optional: a server that does not know the field ignores it; no target, finding or secret is ever in it
+    versions = detected_versions()
+    if versions:
+        out['tool_versions'] = dict(versions)  # {tool: version} from the start-up probes: the server compares them with the versions it ships (optional: an older server ignores it)
     out['waiting'] = list(_waiting_report)[:6]  # heavy kinds that wait for memory, tasks taken back and still stopping: shown on the Sentinels page (empty says nothing waits now)
     if 'ssh_probe' in declared_kinds():
         try:

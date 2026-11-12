@@ -14,6 +14,8 @@ Each run function returns the exact typed shape ``agentapi.sentinel_broker.clean
 (``{'hosts': [...]}`` for nmap, ``{'ports': {...}}`` for naabu, ``{'findings': [...]}`` for nuclei), ready to be sent
 back under ``{'outcome': 'done', **result}``.
 """
+import contextvars
+import functools
 import ipaddress
 import json
 import logging
@@ -36,7 +38,7 @@ from cvengine_scanner.flags import (DISCOVER_FLAGS, KERNEL_MARKERS, MAX_DISCOVER
                                     NMAP_VERIFY_FLAGS, NSE_SCRIPT_TIMEOUT, NSE_SCRIPTS, NUCLEI_FIXTURE_FLAGS, NUCLEI_FLAGS, NUCLEI_TEMPLATE_FLAGS,
                                     NUCLEI_VALIDATE_FLAGS, PATH_PROBE_ODD, PATH_PROBE_PLAIN, TESTSSL_FLAGS, UDP_NSE_SCRIPTS, UDP_PORTS, WAFW00F_TIMEOUT,
                                     WPSCAN_ARGS, WPSCAN_THOROUGH_ARGS, host_of, thorough_timeout, udp_nmap_flags, wafw00f_flags)
-from cvengine_scanner.parsers import (MAX_FINDINGS, MAX_FINDINGS_BYTES, MAX_LIST_ITEMS, ToolOutputError, parse_discover_xml,  # noqa: F401
+from cvengine_scanner.parsers import (MAX_FINDINGS, MAX_FINDINGS_BYTES, MAX_LIST_ITEMS, Cuts, ToolOutputError, parse_discover_xml,  # noqa: F401
                                       nmap_scanned_total, parse_naabu_output, parse_nmap_xml, parse_nuclei_errors, parse_nuclei_jsonl, parse_port_reasons, parse_testssl_report,
                                       testssl_result, unreached_targets,
                                       parse_waf_output)
@@ -415,7 +417,7 @@ def run_nmap(addresses, timeout=None, register=None, ports=None):
         raise TargetError(str(exc)) from None
     resolve = _resolver()
     addresses = _pinned(validate_targets(addresses, resolver=resolve), resolve)
-    out = []
+    out, cuts = [], Cuts()
     for group, flags in (([a for a in addresses if not _is_ipv6(a)], []), ([a for a in addresses if _is_ipv6(a)], ['-6'])):
         if not group:
             continue
@@ -423,13 +425,18 @@ def run_nmap(addresses, timeout=None, register=None, ports=None):
         try:
             argv = [NMAP_BIN, *flags, *pass_flags, '-oX', '-', '-iL', path]
             xml = _run(argv, timeout or nmap_timeout(len(group)), register)
-            rows = parse_nmap_xml(xml, strict=True)['hosts']
+            parsed = parse_nmap_xml(xml, strict=True)
+            rows = parsed['hosts']
+            cuts.merge(parsed.get('cuts'))  # a host nmap gave up on, a port list or a text cut: said in the result, never silent (contract 5)
             out.extend(rows + _scanned_without_open_ports(group, rows, nmap_scanned_total(xml)))
         finally:
             os.unlink(path)
     # An address the report does not list and nmap did not count as scanned gets no row: the server reads a missing row as "this Sentinel did not cover it"
     # (review H3: a padded row read as a clean host).
-    return {'hosts': out, 'os_reliable': os_guess_reliable()}
+    result = {'hosts': out, 'os_reliable': os_guess_reliable()}
+    if cuts:
+        result['cuts'] = cuts.as_list()
+    return result
 
 
 def _scanned_without_open_ports(group, rows, total):
@@ -819,6 +826,32 @@ def _banner_is_ssh(target, resolve=None):
     return bool(banner) and banner.startswith(b'SSH-')
 
 
+_NUCLEI_CUTS = contextvars.ContextVar('nuclei_cuts', default=None)  # the ``Cuts`` of the nuclei run of this thread: its parses and passes add to it
+
+
+def _nuclei_cuts():
+    cuts = _NUCLEI_CUTS.get()
+    return cuts if cuts is not None else Cuts()
+
+
+def _reports_cuts(run):
+    """The nuclei runner, with the cuts of every parse and pass inside it (findings over the cap, a text clipped, a pass stopped at its time limit) added to
+    its result as ``cuts``: nothing a run left out is silent (contract 5)."""
+    @functools.wraps(run)
+    def wrapper(*args, **kwargs):
+        cuts = Cuts()
+        token = _NUCLEI_CUTS.set(cuts)
+        try:
+            result = run(*args, **kwargs)
+        finally:
+            _NUCLEI_CUTS.reset(token)
+        if cuts:
+            result['cuts'] = cuts.as_list()
+        return result
+    return wrapper
+
+
+@_reports_cuts
 def run_nuclei(targets, tags=None, severities=None, timeout=3600, register=None, templates=None, secret_file=None, services=None, budget=None, allow_credential_checks=False):
     """Host names are passed to nuclei as names, because each finding reports the host it was given. They were judged by scope (and by
     every address they resolved to) just before; nuclei resolves them again, so a name whose DNS answer changes in between is the one gap.
@@ -949,7 +982,8 @@ def _nuclei_pass(targets, argv_flags, timeout, register, secret_file, filtered):
             # out of time: what it found so far is kept, and every target is named unfinished, so none of them is recorded as scanned clean (the server
             # keeps findings and puts each unreachable target back as due). Before, the whole run was lost: two deep passes of one host each ran their full hour
             # on the VPS and returned nothing.
-            found = parse_nuclei_jsonl(getattr(exc, 'partial', '') or '', evidence=secret_file is None)
+            found = parse_nuclei_jsonl(getattr(exc, 'partial', '') or '', evidence=secret_file is None, cuts=_nuclei_cuts())
+            _nuclei_cuts().time('time_limit', timeout)
             logger.warning('nuclei ran out of its %s s for %d target(s); %d finding(s) kept, every target stays due', timeout, len(targets), len(found))
             return {'findings': found, 'unreachable': list(targets), 'incomplete': True, 'no_templates': False}
         except ToolExitError as exc:
@@ -961,7 +995,7 @@ def _nuclei_pass(targets, argv_flags, timeout, register, secret_file, filtered):
             raise
         finally:
             os.unlink(path)
-        found = parse_nuclei_jsonl(output, evidence=secret_file is None)  # a signed-in run keeps no request or response (its sign-in is in them)
+        found = parse_nuclei_jsonl(output, evidence=secret_file is None, cuts=_nuclei_cuts())  # a signed-in run keeps no request or response (its sign-in is in them)
         errors = parse_nuclei_errors(_read_error_log(errlog))
     return {'findings': found, 'unreachable': unreached_targets(targets, errors, {f['host'] for f in found}), 'incomplete': False, 'no_templates': False}
 
@@ -2165,11 +2199,25 @@ def gvm_ready():
     return gvm_status()[0]
 
 
+_VERSION = re.compile(r'v?(\d+(?:\.\d+){1,5}(?:[-+.~]?[0-9A-Za-z]{1,12})?)')
+_PROBED = {'versions': None}  # {tool: version} of the last ``detect_tools`` probe: the same runs, so reporting the versions costs no second probe
+
+
+def _version_in(ran):
+    """The first version number in what a version probe printed (nuclei and naabu print it on stderr), clipped and printable: tool output is text, never trusted."""
+    for stream in (getattr(ran, 'stdout', None), getattr(ran, 'stderr', None)):
+        text = stream.decode('utf-8', 'replace') if isinstance(stream, bytes) else stream if isinstance(stream, str) else ''
+        found = _VERSION.search(text)
+        if found:
+            return ''.join(c for c in found.group(1) if c.isprintable())[:40]
+    return ''
+
+
 def detect_tools():
     """The tool names whose binary actually ran when probed with its own version flag, plus ``gvm`` once this
     Sentinel's own GVM stack is reachable: what a Sentinel declares in ``tools`` at bootstrap. Never raises; a
-    missing or broken tool (or a GVM stack still syncing its feeds) is simply left out."""
-    found = []
+    missing or broken tool (or a GVM stack still syncing its feeds) is simply left out. The versions those probes printed are kept for ``tool_versions``."""
+    found, versions = [], {}
     for name, argv in VERSION_ARGS.items():
         try:
             ran = subprocess.run(argv, capture_output=True, timeout=10, check=False)
@@ -2177,6 +2225,18 @@ def detect_tools():
             continue
         if ran.returncode == 0:  # a binary that starts and then fails its own version probe is broken: declaring it would take tasks it cannot run (review L1)
             found.append(name)
+            version = _version_in(ran)
+            if version:
+                versions[name] = version
+    _PROBED['versions'] = versions
     if gvm_available():
         found.append('gvm')
     return found
+
+
+def tool_versions():
+    """``{tool: version}`` of the tools whose version probe ran and printed a version (``detect_tools``'s probes, run once if none ran yet): what the Sentinel
+    reports in its registration and heartbeat info, so the server can tell a Sentinel on stale tools. Never raises."""
+    if _PROBED['versions'] is None:
+        detect_tools()
+    return dict(_PROBED['versions'] or {})

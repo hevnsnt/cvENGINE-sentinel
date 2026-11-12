@@ -51,3 +51,4 @@ def _quiesce():
 atexit.register(_quiesce)
 
 daemon._detected['tools'] = []  # registration never probes the real tool binaries; a test that checks the probe sets its own
+daemon._detected['versions'] = {}  # ... nor reads their versions
