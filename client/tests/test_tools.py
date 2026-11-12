@@ -1447,7 +1447,7 @@ class NucleiTestCase(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.dir = os.path.join(self.tmp.name, 'bundle')
         self.clock = FakeClock()
-        self.nuclei = FakeNuclei(self.dir, TEMPLATES, self.clock)
+        self.nuclei = FakeNuclei(self.dir, dict(TEMPLATES), self.clock)  # a copy: a test adds templates to its own bundle
         self.banner = mock.Mock(return_value=None)  # no test connects to anything: the banner of an unknown port is read by ``tools._probe_banner``
         for target, value in (('_run', mock.Mock(side_effect=self.nuclei)), ('_clock', self.clock), ('_sleep', self.clock.sleep), ('_probe_banner', self.banner)):
             patcher = mock.patch.object(tools, target, value, create=True)
