@@ -1772,6 +1772,23 @@ def _host_key(value):
     return value.rsplit(':', 1)[0] if value.count(':') == 1 else value
 
 
+def _host_port(value):
+    """The port a host or URL names (``host:port``, ``[v6]:port``, ``https://host:port/``), the scheme's default for a URL that names none, else 0."""
+    value = str(value or '').strip().lower()
+    scheme, _, rest = value.rpartition('://') if '://' in value else ('', '', value)
+    rest = rest.split('/', 1)[0]
+    if rest.startswith('['):
+        port = rest.split(']', 1)[1].lstrip(':')
+    else:
+        port = rest.rsplit(':', 1)[1] if rest.count(':') == 1 else ''
+    return int(port) if port.isdigit() else {'https': 443, 'http': 80}.get(scheme, 0)
+
+
+def _hit_port(row):
+    """The port a result line's ``matched-at`` (else its ``host``) names, 0 when it names none (a DNS match, or a bare host)."""
+    return next((p for p in (_host_port(row.get(k)) for k in ('matched-at', 'host')) if p), 0)
+
+
 def _hit_host(row):
     """The host a result line is a hit for, or ``None`` when its ``host`` and ``matched-at`` name different hosts (a template that reached somewhere
     else than the target it was run against) or it names none. Only a host the task named is ever given an outcome (``_template_test``)."""
@@ -1800,7 +1817,7 @@ def _template_test(path, hosts, register):
             allowed.append(host)
         except TargetError as exc:
             refused[host] = str(exc)[:300]
-    rows, hits, error, unreached = {}, {}, '', set()
+    hits, error, unreached = {}, '', set()
     if allowed:
         proxy = _proxy_args('nuclei', allowed)  # cvENGINE's egress proxy, as the server's own template test (cveFeed.templategen._run_template) takes it
         host_path = _targets_file(allowed)
@@ -1830,8 +1847,7 @@ def _template_test(path, hosts, register):
                 key = _hit_host(row)
                 if key is None:
                     continue  # a line whose host and matched-at disagree, or name no host: never a hit for anyone
-                hits.setdefault(key, []).append(line)
-                rows.setdefault(key, row)
+                hits.setdefault(key, []).append((_hit_port(row), line, row))
         if not error:  # a host nothing answered is an error, never a negative test (review H4)
             unreached = set(unreached_targets(allowed, errors, set(hits)))
     outcomes = []
@@ -1843,9 +1859,10 @@ def _template_test(path, hosts, register):
         elif host in unreached:
             outcomes.append({'host': host, 'vulnerable': False, 'output': '', 'error': 'nuclei never reached this host (no answer to any request)'})
         else:
-            key = _host_key(host)
-            outcomes.append({'host': host, 'vulnerable': bool(hits.get(key)), 'output': '\n'.join(hits.get(key, []))[-2000:],
-                             'hit': _trim_hit(rows.get(key))})
+            key, port = _host_key(host), _host_port(host)  # a host asked with a port is answered only by a hit on that port (one that names no port is kept)
+            mine = [(line, row) for hit_port, line, row in hits.get(key, []) if not port or not hit_port or hit_port == port]
+            outcomes.append({'host': host, 'vulnerable': bool(mine), 'output': '\n'.join(line for line, _ in mine)[-2000:],
+                             'hit': _trim_hit(mine[0][1] if mine else None)})
     return outcomes
 
 

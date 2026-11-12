@@ -153,9 +153,11 @@ def destination_problem(doc):
                     if not _HOST_OK.match(str(h)):
                         return f'network {key} must be {{{{Hostname}}}} or {{{{Host}}}} (optionally with a port): {str(h)[:60]!r}'
     for block in doc.get('ssl') or []:
+        requests_seen += 1
         if isinstance(block, dict) and str(block.get('address', '{{Host}}:{{Port}}')) != '{{Host}}:{{Port}}':
             return 'ssl address must be {{Host}}:{{Port}}'
     for block in doc.get('dns') or []:
+        requests_seen += 1
         if isinstance(block, dict) and str(block.get('name', '{{FQDN}}')) != '{{FQDN}}':
             return 'dns name must be {{FQDN}}'
     if requests_seen > MAX_REQUESTS:
