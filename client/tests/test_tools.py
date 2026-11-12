@@ -584,7 +584,7 @@ class TestsslRunnerTests(unittest.TestCase):
         def fake_popen(argv, **kwargs):
             captured['argv'] = argv
             return self._FakeProc(argv, [])
-        with mock.patch('client.tools.subprocess.Popen', side_effect=fake_popen):
+        with mock.patch('client.tools.subprocess.Popen', side_effect=fake_popen), mock.patch('client.tools.ipv6_route', return_value=True):  # not this machine's own routes
             tools.run_testssl('2606:4700:4700::1111', '2606:4700:4700::1111', 443)
         self.assertEqual(captured['argv'][-1], '[2606:4700:4700::1111]:443')
 
