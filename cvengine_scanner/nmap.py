@@ -103,8 +103,11 @@ def _banner_from(scripts, service):
     return raw.strip()[:BANNER_CAP]
 
 
+_FINGERPRINTS = {"MD5": ("fingerprint_md5", 32), "SHA-1": ("fingerprint_sha1", 40), "SHA-256": ("fingerprint_sha256", 64)}
+
+
 def parse_ssl_cert(text):
-    """``{subject, issuer, sans, not_before, not_after, key, signature}`` from the ssl-cert script's output (``Subject: commonName=...``
+    """``{subject, issuer, sans, not_before, not_after, key_type, key_bits, signature, fingerprint_md5, fingerprint_sha1, fingerprint_sha256}`` from the ssl-cert script's output (``Subject: commonName=...``
     lines); only the fields it printed, each clipped. {} for output that is not a certificate."""
     out = {}
     for raw in str(text or "").splitlines():
@@ -128,6 +131,10 @@ def parse_ssl_cert(text):
             out["key_bits"] = value[:10]
         elif key == "Signature Algorithm":
             out["signature"] = value[:60]
+        elif key in _FINGERPRINTS:  # "MD5:   0123 4567 ..." and "SHA-1: ...": hex in groups of four, kept as one lowercase run when it is hex of the right length
+            digest = "".join(value.split()).lower()
+            if len(digest) == _FINGERPRINTS[key][1] and all(c in "0123456789abcdef" for c in digest):
+                out[_FINGERPRINTS[key][0]] = digest
     return out if "subject" in out else {}
 
 

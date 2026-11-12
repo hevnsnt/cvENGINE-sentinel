@@ -3,7 +3,7 @@
   "$id": "https://github.com/hevnsnt/CVEngine/agentapi/sentinel_contract.json",
   "title": "cvENGINE Sentinel result contract",
   "description": "Both halves of the exchange between cvENGINE and a Sentinel. $defs/targets is what the server hands a Sentinel for each task kind (the task's target); $defs/results is what a Sentinel sends to POST /api/v1/sentinel/tasks/{id}/result; $defs/partials is what a streamed kind (bbot_discovery) sends to POST /api/v1/sentinel/tasks/{id}/partial while it runs, before the result that closes it. The server clips and validates every result anyway (agentapi.sentinel_broker.clean_result); this file is what a correct client keeps to, so the server never has to. Bounds are asserted equal to the server's own limits, and every target the server builds is validated against it, by tests/test_sentinel_contract.py. Bump contract_version (and say so in CHANGELOG) for any change a client must follow.",
-  "contract_version": 4,
+  "contract_version": 5,
   "min_supported_contract_version": 1,
   "kind_since": {"nmap": 1, "naabu": 1, "nuclei_light": 1, "nuclei_targeted": 1, "nuclei_deep": 1, "testssl": 1, "nmap_udp": 1, "wpscan": 1, "discover": 1, "openvas": 1, "waf": 2, "bbot_discovery": 3, "http_probe": 3, "dns_resolve": 3, "bucket_check": 3, "vhost_probe": 3, "subdir_probe": 3, "alive_check": 3, "supplier_check": 3, "secrets_scan": 3, "nmap_full": 3, "nmap_verify": 3, "node2shell": 3, "rdp_shot": 3, "db_probe": 3, "path_probe": 3, "nuclei_validate": 3, "hygiene_check": 3, "dangling_dns_check": 3, "route_probe": 3, "wpscan_thorough": 3, "identity_check": 3, "web_screenshot": 3, "route_probe_signed": 3, "page_read": 3, "ssh_probe": 3},
   "external_since": {"nuclei_validate": 4, "path_probe": 3},
@@ -65,6 +65,123 @@
         "version": {
           "type": "string",
           "maxLength": 80
+        },
+        "service_extra": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Optional (5): nmap extra info of the service (extrainfo)."
+        },
+        "ostype": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "method": {
+          "enum": [
+            "probed",
+            "table"
+          ],
+          "description": "Optional (5): probed (the service answered) or table (the name was guessed from the port number)."
+        },
+        "tunnel": {
+          "enum": [
+            "ssl"
+          ],
+          "description": "Optional (5): the service is wrapped in TLS (name http and tunnel ssl is HTTPS). Absent for a plain service."
+        },
+        "hostname": {
+          "type": "string",
+          "maxLength": 255
+        },
+        "devicetype": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "confidence": {
+          "type": "string",
+          "pattern": "^([0-9]|10)$"
+        },
+        "cpe": {
+          "type": "string",
+          "maxLength": 255
+        },
+        "cpes": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "string",
+            "maxLength": 255
+          }
+        },
+        "banner": {
+          "type": "string",
+          "maxLength": 1024
+        },
+        "scripts": {
+          "type": "object",
+          "maxProperties": 24,
+          "propertyNames": {
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "maxLength": 4000
+          },
+          "description": "Optional (5): the output of the reviewed NSE scripts that ran, by script id. At most 4000 characters a script (a longer one is cut and named in cuts as script_output) and 16000 a port or host in all; control characters other than newline and tab removed; text from a scanned host, never interpreted."
+        },
+        "tls": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Optional (5): the certificate nmap read (ssl-cert), each field clipped; text from the scanned host.",
+          "properties": {
+            "subject": {
+              "type": "string",
+              "maxLength": 300
+            },
+            "issuer": {
+              "type": "string",
+              "maxLength": 300
+            },
+            "sans": {
+              "type": "array",
+              "maxItems": 40,
+              "items": {
+                "type": "string",
+                "maxLength": 200
+              }
+            },
+            "not_before": {
+              "type": "string",
+              "maxLength": 40
+            },
+            "not_after": {
+              "type": "string",
+              "maxLength": 40
+            },
+            "key_type": {
+              "type": "string",
+              "maxLength": 20
+            },
+            "key_bits": {
+              "type": "string",
+              "maxLength": 10
+            },
+            "signature": {
+              "type": "string",
+              "maxLength": 60
+            },
+            "fingerprint_sha1": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$"
+            },
+            "fingerprint_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "fingerprint_md5": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{32}$"
+            }
+          }
         }
       }
     },
@@ -181,6 +298,92 @@
                     "timed_out": {
                       "type": "boolean",
                       "description": "Optional: true when nmap gave up on this host (its host timeout). The host was not fingerprinted and is not a clean host."
+                    },
+                    "os_accuracy": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 0,
+                      "maximum": 100
+                    },
+                    "os_matches": {
+                      "type": "array",
+                      "maxItems": 3,
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "name"
+                        ],
+                        "properties": {
+                          "name": {
+                            "type": "string",
+                            "maxLength": 100
+                          },
+                          "accuracy": {
+                            "type": [
+                              "integer",
+                              "null"
+                            ],
+                            "minimum": 0,
+                            "maximum": 100
+                          },
+                          "cpe": {
+                            "type": "string",
+                            "maxLength": 120
+                          }
+                        }
+                      },
+                      "description": "Optional (5): the best OS guesses, runners-up included."
+                    },
+                    "closed_tcp": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 65535,
+                      "description": "Optional (5): the closed TCP port nmap used for OS detection (a reset came back): the path check probes it."
+                    },
+                    "scanned_ranges": {
+                      "type": "array",
+                      "maxItems": 4096,
+                      "items": {
+                        "type": "array",
+                        "minItems": 2,
+                        "maxItems": 2,
+                        "items": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 65535
+                        }
+                      },
+                      "description": "Optional (5): the TCP ports the run probed, as [low, high] ranges, so the server can close a port that was probed and is not open now."
+                    },
+                    "hostscripts": {
+                      "type": "object",
+                      "maxProperties": 24,
+                      "propertyNames": {
+                        "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+                      },
+                      "additionalProperties": {
+                        "type": "string",
+                        "maxLength": 4000
+                      },
+                      "description": "Optional (5): output of host-level NSE scripts (smb-os-discovery, nbstat)."
+                    },
+                    "status": {
+                      "enum": [
+                        "up",
+                        "down"
+                      ]
+                    },
+                    "extraports": {
+                      "type": "array",
+                      "maxItems": 8,
+                      "items": {
+                        "type": "string",
+                        "maxLength": 20
+                      },
+                      "description": "Optional (5): the states of the ports nmap summarised instead of listing (closed, filtered...): \"closed\" says the host answered."
                     }
                   }
                 }
@@ -188,6 +391,9 @@
               "os_reliable": {
                 "type": "boolean",
                 "description": "send the literal false on Docker Desktop; anything else means reliable"
+              },
+              "cuts": {
+                "$ref": "#/$defs/cuts"
               }
             }
           }
@@ -380,6 +586,9 @@
                 "type": "string",
                 "maxLength": 80,
                 "description": "Optional: the template set this run used: approved:<bundle sha256> for an approved bundle, image:<release> for the templates baked into the Sentinel image."
+              },
+              "cuts": {
+                "$ref": "#/$defs/cuts"
               }
             }
           }
@@ -533,6 +742,9 @@
                 "type": "string",
                 "maxLength": 80,
                 "description": "Optional: the template set this run used: approved:<bundle sha256> for an approved bundle, image:<release> for the templates baked into the Sentinel image."
+              },
+              "cuts": {
+                "$ref": "#/$defs/cuts"
               }
             }
           }
@@ -686,6 +898,9 @@
                 "type": "string",
                 "maxLength": 80,
                 "description": "Optional: the template set this run used: approved:<bundle sha256> for an approved bundle, image:<release> for the templates baked into the Sentinel image."
+              },
+              "cuts": {
+                "$ref": "#/$defs/cuts"
               }
             }
           }
@@ -1151,6 +1366,9 @@
                   ]
                 },
                 "description": "modules whose set-up failed (gowitness without a working browser)"
+              },
+              "cuts": {
+                "$ref": "#/$defs/cuts"
               }
             },
             "if": {
@@ -2792,6 +3010,9 @@
                     "type": "boolean"
                   }
                 }
+              },
+              "cuts": {
+                "$ref": "#/$defs/cuts"
               }
             },
             "if": {
@@ -7050,6 +7271,12 @@
                 "module": {
                   "type": "string",
                   "maxLength": 64
+                },
+                "port": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65535,
+                  "description": "Optional (5): the port the finding is about (bbot FINDING events carry one for TCP and TLS findings)."
                 }
               },
               "required": [
@@ -7289,6 +7516,46 @@
             "maxLength": 50
           },
           "description": "CIDR ranges the server never scans"
+        }
+      }
+    },
+    "cuts": {
+      "type": "array",
+      "maxItems": 24,
+      "description": "Optional (5): everything this result cut, in one shape, so a capped list or a clipped text never looks like a whole one. what names the thing (events, http, screenshots, findings, ports, script_output, banner, evidence, fetched, references, time_limit...), kind says how it was counted (items dropped from a list, chars clipped from a text, time: a tool stopped at its limit, limit in seconds, dropped not counted), limit is the cap that applied, dropped how many were lost (absent for kind time), target the address or host it applies to when it is one.",
+      "items": {
+        "type": "object",
+        "required": [
+          "what",
+          "kind"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "what": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 40,
+            "pattern": "^[a-z0-9_]+$"
+          },
+          "kind": {
+            "enum": [
+              "items",
+              "chars",
+              "time"
+            ]
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "dropped": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "target": {
+            "type": "string",
+            "maxLength": 260
+          }
         }
       }
     }

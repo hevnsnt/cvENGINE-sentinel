@@ -142,6 +142,19 @@ class RunTests(unittest.TestCase):
         self.assertEqual({r['kind'] for r in result['references']}, {'firebase_rtdb', 's3'})
         self.assertFalse(os.path.exists(dirs[0]))  # the bodies are gone with the task
 
+    def test_findings_and_references_over_their_caps_are_counted_in_the_result(self):
+        """SN-6 / TL-13: ``stats.truncated`` says a cap was hit; ``cuts`` says what and how many."""
+        def many(directory):
+            page = next(name for name in os.listdir(directory) if name.endswith('.html'))
+            record = {'rule': {'id': 'betterleaks.gcp-api-key', 'name': 'gcp'}, 'finding': {'snippet': 'AIzaSyA1B2C3D4E5F6G7H8I9J0KLMNOPQRSTUVw', 'path': f'{directory}/{page}', 'line': 1}}
+            return json.dumps({'findings': [record] * 6})
+        with mock.patch.object(kf, 'MAX_FINDINGS', 4):
+            result, _site, _calls, _dirs = self.run_task(target(), many)
+        self.assertTrue(result['stats']['truncated'])
+        self.assertEqual(result['cuts'], [{'what': 'findings', 'kind': 'items', 'limit': 4, 'dropped': 2}])
+        clean, _s, _c, _d = self.run_task(target(), report)
+        self.assertNotIn('cuts', clean)
+
     def test_a_host_outside_the_scope_or_behind_the_floor_is_never_read(self):
         task = target(hosts=[{'host': 'inside.example.test', 'urls': ['https://inside.example.test/']},
                              {'host': 'other.example.test', 'urls': ['https://other.example.test/']}])
