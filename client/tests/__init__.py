@@ -16,6 +16,9 @@ os.environ['CVENGINE_OPENVAS_CREDENTIALS_FILE'] = os.path.join(_state, 'openvas-
 atexit.register(shutil.rmtree, _state, ignore_errors=True)
 
 from client import daemon  # noqa: E402 - after the environment above, so nothing reads the real paths first
+from client import tools as _tools  # noqa: E402
+
+_tools.route_probe = lambda address: True  # no test asks the kernel for a route (the answer depends on the machine; CI has no IPv6); a test that needs "no route" patches client.tools.ipv6_route
 
 
 

@@ -369,14 +369,24 @@ class NoIpv6Route(ToolExitError):
 
 
 def ipv6_route(address):
-    """Whether this machine has a route to the IPv6 ``address``. A UDP socket's ``connect`` asks the kernel for the route and sends nothing, so
-    this touches no host. An OS with IPv6 off, or no route, is False."""
+    """Whether this machine has a route to the IPv6 ``address``: asked of ``route_probe``, which tests replace (``client/tests/__init__.py``) so no
+    test depends on the routes of the machine it runs on. Only asked after the scope rule has allowed the address, and its answer is never a scope
+    decision: no route is reported as ``NoIpv6Route`` or ``unfinished``, not as a refused target."""
+    return bool(route_probe(address))
+
+
+def _kernel_route(address):
+    """A UDP socket's ``connect`` asks the kernel for the route and sends nothing, so this touches no host. An OS with IPv6 off, or no route, is
+    False."""
     try:
         with socket.socket(socket.AF_INET6, socket.SOCK_DGRAM) as sock:
             sock.connect((str(address).strip().strip('[]'), 9))
         return True
     except OSError:
         return False
+
+
+route_probe = _kernel_route
 
 
 def os_guess_reliable():

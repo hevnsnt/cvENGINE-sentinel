@@ -21,7 +21,7 @@ class RouteProbeTests(unittest.TestCase):
         sock = mock.MagicMock()
         sock.__enter__.return_value = sock
         with mock.patch('client.tools.socket.socket', return_value=sock) as make:
-            self.assertTrue(tools.ipv6_route(V6))
+            self.assertTrue(tools._kernel_route(V6))
         make.assert_called_once_with(socket.AF_INET6, socket.SOCK_DGRAM)
         sock.connect.assert_called_once_with((V6, 9))
         sock.send.assert_not_called()
@@ -33,9 +33,9 @@ class RouteProbeTests(unittest.TestCase):
             sock.__enter__.return_value = sock
             sock.connect.side_effect = failure
             with self.subTest(failure=failure), mock.patch('client.tools.socket.socket', return_value=sock):
-                self.assertFalse(tools.ipv6_route(V6))
+                self.assertFalse(tools._kernel_route(V6))
         with mock.patch('client.tools.socket.socket', side_effect=OSError(97, 'no ipv6')):
-            self.assertFalse(tools.ipv6_route(V6))
+            self.assertFalse(tools._kernel_route(V6))
 
 
 class TesstslTests(unittest.TestCase):
