@@ -1,6 +1,7 @@
 import json
 import math
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -11,6 +12,7 @@ import unittest
 from unittest import mock
 
 from client import scope, tools
+from cvengine_scanner import nuclei_allowlist
 
 FIXTURES = os.path.join(os.path.dirname(__file__), '..', '..', 'cvengine_scanner', 'tests', 'fixtures')  # the library's samples: the parsers' tests use them too
 
@@ -1312,6 +1314,25 @@ class WpscanToolReviewTests(unittest.TestCase):
 REAL_PROBE = getattr(tools, '_probe_banner', None)  # before a test replaces it
 
 
+def _slug(rel):
+    return re.sub(r'[^A-Za-z0-9]+', '-', os.path.splitext(rel)[0]).strip('-')
+
+
+def _bundle_allowlist(directory):
+    """The service-port allowlist of a fake bundle: every template file in it, with the sha256 of its content now. The tests of the pacing, the classes and the content
+    rule run on this list, so what they prove is not hidden behind the shipped list; the shipped list has its own tests (NucleiAllowlistTests)."""
+    templates = {}
+    for folder, _dirs, names in os.walk(directory):
+        for name in names:
+            if name.endswith('.yaml'):
+                with open(os.path.join(folder, name), 'rb') as handle:
+                    raw = handle.read()
+                tid = nuclei_allowlist.template_id(raw.decode('utf-8', 'replace'))
+                if tid:
+                    templates[tid] = {'sha256': nuclei_allowlist.sha256_of(raw)}
+    return {'nuclei_templates': 'test', 'templates': templates, 'reviewed_exceptions': set()}
+
+
 class FakeNuclei:
     """A miniature nuclei for the service runs: ``-tl`` lists the templates its filters (-pt, -tags, -etags) select, a run with ``-t <file>`` answers
     for that one template, and the clock a test replaces advances by what a run is told to take. Records every listing and every run."""
@@ -1324,7 +1345,7 @@ class FakeNuclei:
             path = os.path.join(directory, rel)
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, 'w', encoding='utf-8') as handle:
-                handle.write(spec.get('text', 'id: x\n'))
+                handle.write(spec.get('text', f'id: {_slug(rel)}\n'))  # one id per file, as in the real library: the allowlist is keyed by id
 
     def _selected(self, argv):
         types = set(_flag(argv, '-pt').split(',')) if '-pt' in argv else None
@@ -1432,6 +1453,9 @@ class NucleiTestCase(unittest.TestCase):
             patcher = mock.patch.object(tools, target, value, create=True)
             patcher.start()
             self.addCleanup(patcher.stop)
+        patcher = mock.patch.object(nuclei_allowlist, 'load_allowlist', side_effect=lambda path=None: _bundle_allowlist(self.dir))
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def run_nuclei(self, targets=HOST_PORTS, **kwargs):
         kwargs.setdefault('templates', self.dir)
@@ -1728,6 +1752,7 @@ class NucleiTimeShareTests(NucleiTestCase):
 
 def _add_template(case, rel, text, kind='javascript', tags=('enum',)):
     """A template file in the fake bundle, listed by the fake ``nuclei -tl`` under the generic (unknown) class."""
+    text = re.sub(r'(?m)^id: .*$', f'id: {_slug(rel)}', text, count=1)  # one id per file
     case.nuclei.templates[rel] = {'type': kind, 'tags': list(tags), 'text': text}
     path = os.path.join(case.dir, rel)
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -1894,3 +1919,180 @@ class NucleiSshBehindAnotherPortTests(NucleiTestCase):
         with mock.patch.object(tools, '_proxy_args', return_value=['-proxy', 'http://p:3128']):
             self.run_nuclei(['www.example.test:9999'], services={'www.example.test:9999': 'unknown'})
         self.banner.assert_not_called()
+
+
+REAL_LOAD = nuclei_allowlist.load_allowlist  # the shipped list, before a test replaces it
+_FIXTURES = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '..', 'cvengine_scanner', 'fixtures')
+
+
+def _add_real(case, template_id, refused=False):
+    """A real nuclei-templates v10.5.1 file in the fake bundle (a vendored allowlisted one, or one of the refused ten), listed by the fake ``nuclei -tl`` for the
+    types and tags its own header gives, so the run meets what a run on the real library meets."""
+    import yaml
+    source = os.path.join(_FIXTURES, 'nuclei_service_refused', f'{template_id}.yaml') if refused else None
+    if source is None:
+        entry = REAL_LOAD()['templates'][template_id]
+        source = os.path.join(_FIXTURES, 'nuclei_templates', entry['path'])
+    with open(source, 'rb') as handle:
+        raw = handle.read()
+    doc = yaml.safe_load(raw.decode('utf-8'))
+    kind = next(k for k in ('tcp', 'javascript', 'ssl') if doc.get(k))
+    tags = doc['info'].get('tags', [])
+    tags = [t.strip() for t in tags.split(',')] if isinstance(tags, str) else list(tags)
+    rel = f'network/real/{template_id}.yaml'
+    case.nuclei.templates[rel] = {'type': kind, 'tags': tags}
+    path = os.path.join(case.dir, rel)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'wb') as handle:
+        handle.write(raw)
+    return rel, path
+
+
+class NucleiAllowlistRunTests(NucleiTestCase):
+    """Fourth pass: a service port runs only what the shipped allowlist names, with the content it records (default deny)."""
+
+    def setUp(self):
+        super().setUp()
+        patcher = mock.patch.object(nuclei_allowlist, 'load_allowlist', side_effect=lambda path=None: REAL_LOAD())  # the shipped list, not the fake bundle's
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    SEVEN = ('backdoored-zte', 'tidb-unauth', 'clickhouse-unauth', 'CVE-2022-24706', 'CVE-2026-83548', 'CVE-2026-55040', 'CVE-2024-54772')
+
+    def ran(self, target):
+        return sorted(os.path.basename(t)[:-5] for t in self.templates_run_on(target))
+
+    def test_a_template_that_is_not_on_the_list_never_reaches_a_service_run(self):
+        """The fake bundle holds a dozen templates no list names (including ones a content rule would accept): none is run, on any class."""
+        self.run_nuclei(HOST_PORTS + ['www.example.test:9999'], services={**LABELS, 'www.example.test:9999': 'unknown'})
+        self.assertEqual(self.nuclei.service_runs, [])
+        self.assertEqual(len(self.nuclei.web_runs), 1)  # the web pass is not governed by the list
+
+    def test_the_seven_templates_the_review_named_are_never_selected_on_any_class_or_tag(self):
+        for tid in self.SEVEN:
+            _add_real(self, tid, refused=True)
+        _add_real(self, 'openssh-detect')
+        ports = {'www.example.test:22': 'ssh', 'www.example.test:23': 'telnet', 'www.example.test:3306': 'mysql', 'www.example.test:4000': 'unknown',
+                 'www.example.test:6379': 'redis', 'www.example.test:8291': 'unknown', 'www.example.test:9999': 'unknown', 'www.example.test:21': 'ftp'}
+        for tags in (None, ['ssh'], ['mysql', 'redis'], ['telnet', 'cve']):
+            self.nuclei.runs.clear()
+            self.run_nuclei(list(ports), services=ports, tags=tags)
+            ran = {os.path.basename(r['template'])[:-5] for r in self.nuclei.service_runs}
+            self.assertFalse(ran & set(self.SEVEN), (tags, ran & set(self.SEVEN)))
+            for tid in self.SEVEN:  # not even listed as a candidate that survives
+                self.assertNotIn(tid, REAL_LOAD()['templates'])
+
+    def test_an_allowlisted_template_runs_where_its_class_speaks_and_nowhere_else(self):
+        _add_real(self, 'openssh-detect')
+        _add_real(self, 'ftp-detect')
+        self.run_nuclei(['www.example.test:22', 'www.example.test:21'], services={'www.example.test:22': 'ssh', 'www.example.test:21': 'ftp'})
+        self.assertEqual(self.ran('www.example.test:22'), ['openssh-detect'])
+        self.assertEqual(self.ran('www.example.test:21'), ['ftp-detect'])
+
+    def test_a_template_whose_content_differs_from_the_listed_hash_never_runs(self):
+        rel, path = _add_real(self, 'openssh-detect')
+        self.run_nuclei(['www.example.test:22'], services={'www.example.test:22': 'ssh'})
+        self.assertEqual(self.ran('www.example.test:22'), ['openssh-detect'])
+        self.nuclei.runs.clear()
+        tools._TEMPLATE_LISTINGS.clear()
+        with open(path, 'ab') as handle:
+            handle.write(b'# the library changed this file\n')  # one comment line: a different sha256
+        result = self.run_nuclei(['www.example.test:22'], services={'www.example.test:22': 'ssh'})
+        self.assertEqual(self.nuclei.service_runs, [])
+        self.assertTrue(result.get('no_templates') or result['unreachable'] == [], result)
+
+    def test_a_template_that_changes_after_it_was_listed_is_not_run(self):
+        _add_real(self, 'openssh-detect')
+        _rel2, second = _add_real(self, 'ssh-auth-methods')
+        slept = []
+
+        def pause(seconds):
+            slept.append(seconds)
+            with open(second, 'ab') as handle:
+                handle.write(b'# swapped between the runs\n')
+            self.clock.sleep(seconds)
+        with mock.patch.object(tools, '_sleep', pause):
+            result = self.run_nuclei(['www.example.test:22'], services={'www.example.test:22': 'ssh'})
+        self.assertEqual(self.ran('www.example.test:22'), ['openssh-detect'])  # the second was listed, then changed: never sent
+        self.assertEqual([n['target'] for n in result['not_checked']], ['www.example.test:22'])
+        self.assertIn('changed', result['not_checked'][0]['reason'])
+        self.assertEqual(result['unreachable'], ['www.example.test:22'])  # the port stays due
+
+    def test_a_missing_list_runs_nothing_on_a_service_port(self):
+        _add_real(self, 'openssh-detect')
+        with mock.patch.object(nuclei_allowlist, 'load_allowlist', side_effect=lambda path=None: {'nuclei_templates': '', 'templates': {}, 'reviewed_exceptions': set()}):
+            self.run_nuclei(['www.example.test:22'], services={'www.example.test:22': 'ssh'})
+        self.assertEqual(self.nuclei.service_runs, [])
+
+    def test_a_template_that_names_a_port_of_its_own_runs_only_on_that_port(self):
+        _add_real(self, 'perforce-detection')  # it connects to {{Host}}:1666 as well as to the target
+        self.run_nuclei(['www.example.test:1666', 'www.example.test:9999'], services={'www.example.test:1666': 'unknown', 'www.example.test:9999': 'unknown'})
+        self.assertEqual(self.ran('www.example.test:1666'), ['perforce-detection'])
+        self.assertEqual(self.ran('www.example.test:9999'), [])
+
+    def test_a_restored_template_runs_though_the_content_rule_would_refuse_it_and_any_other_is_still_held_to_the_rule(self):
+        rel, path = _add_real(self, 'smb-signing')
+        self.assertIsNotNone(tools._paced_template(path))  # User and Pass: the name rule refuses it; a person read it and it is restored
+        self.run_nuclei(['www.example.test:445'], services={'www.example.test:445': 'smb'})
+        self.assertEqual(self.ran('www.example.test:445'), ['smb-signing'])
+        # a template on a list that is not a reviewed exception is held to the content rule as well
+        _add_template(self, 'network/x/with-payloads.yaml', 'id: with-payloads\ntcp:\n  - inputs:\n      - data: "x"\n    attack: batteringram\n    payloads:\n      a:\n        - b\n', 'tcp', tags=('smb',))
+        with open(os.path.join(self.dir, 'network/x/with-payloads.yaml'), 'rb') as handle:
+            entry = {'sha256': nuclei_allowlist.sha256_of(handle.read()), 'classes': ['smb']}
+        shipped = REAL_LOAD()
+        patched = {**shipped, 'templates': {**shipped['templates'], 'with-payloads': entry}}
+        self.nuclei.runs.clear()
+        tools._TEMPLATE_LISTINGS.clear()
+        with mock.patch.object(nuclei_allowlist, 'load_allowlist', side_effect=lambda path=None: patched):
+            self.run_nuclei(['www.example.test:445'], services={'www.example.test:445': 'smb'})
+        self.assertEqual(self.ran('www.example.test:445'), ['smb-signing'])
+
+
+class NucleiBannerBudgetTests(NucleiTestCase):
+    """Fourth pass, N12: the banner probe is part of the port's budget, and a name is resolved once."""
+
+    def setUp(self):
+        super().setUp()
+        for i in range(3):
+            _add_template(self, f'network/generic/unknown-{i}.yaml', f'id: u{i}\ntcp:\n  - inputs:\n      - data: "x"\n', 'tcp', tags=('generic',))
+
+    def run_unknown(self, probe_seconds):
+        def probe(host, port, resolve=None):
+            self.clock.advance(probe_seconds)
+            return None
+        self.banner.side_effect = probe
+        self.nuclei.duration[None] = 2
+        return self.run_nuclei(['www.example.test:9999'], services={'www.example.test:9999': 'unknown'}, budget={'seconds': 10}, tags=['generic'])
+
+    def test_without_the_probe_time_every_template_of_a_ten_second_port_runs(self):
+        result = self.run_unknown(0)
+        self.assertEqual(len(self.nuclei.service_runs), 3)
+        self.assertNotIn('not_checked', result)
+
+    def test_the_time_the_probe_took_is_taken_from_the_ports_budget(self):
+        result = self.run_unknown(6)  # 6 s of the 10 are gone: only two of the three runs fit
+        self.assertEqual(len(self.nuclei.service_runs), 2)
+        self.assertIn('its time ran out after 2 of 3', result['not_checked'][0]['reason'])
+        self.assertEqual(result['unreachable'], ['www.example.test:9999'])
+
+    def test_a_host_name_is_resolved_once_for_the_judgment_and_the_probe_connects_to_what_was_judged(self):
+        asked = []
+        real = fake_getaddrinfo
+
+        def counting(name, port, *args, **kwargs):
+            asked.append(name)
+            return real(name, port, *args, **kwargs)
+        sock = mock.MagicMock()
+        sock.__enter__.return_value = sock
+        sock.recv.return_value = b''
+        with mock.patch('socket.getaddrinfo', side_effect=counting), mock.patch.object(tools, '_probe_banner', REAL_PROBE), \
+                mock.patch.object(tools.socket, 'create_connection', return_value=sock) as connect:
+            self.run_nuclei(['www.example.test:9999'], services={'www.example.test:9999': 'unknown'}, tags=['generic'])
+        self.assertEqual(asked.count('www.example.test'), 1)  # not a second time for the probe
+        connect.assert_called_once()
+        self.assertEqual(connect.call_args.args[0], ('93.184.215.14', 9999))  # the address scope judged, not the name
+
+    def test_the_probe_of_a_name_that_does_not_resolve_connects_to_nothing(self):
+        with mock.patch.object(tools.socket, 'create_connection') as connect:
+            self.assertIsNone(REAL_PROBE('gone.example.test', 2200, mock.Mock(side_effect=OSError('no such name'))))
+        connect.assert_not_called()

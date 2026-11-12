@@ -18,6 +18,11 @@ The Chromium build Playwright drives is an advisory row (Chrome's newest stable 
 with that release): shown, never a gate. Not covered: the gems of docker/wpscan/Gemfile.lock (WPScan's own pin is) and the nuclei templates the
 server supplies at run time (the baked-in set is).
 
+The nuclei-templates pin has a second gate: the service-port allowlist (cvengine_scanner/data/nuclei_service_allowlist.json, made by
+scripts/generate_service_allowlist.py) lists the templates a service run may send for ONE release. When the pinned release is not the release the list was generated
+for (or the list is missing), the line "regenerate the service-port allowlist" is printed and --fail-if-behind fails: a new release must be regenerated and reviewed
+before it ships, because a template the list does not know is not run on a service port.
+
 Network use is this script's own fixed https lookups; the tests feed recorded answers and never touch the network (client/tests/test_tool_versions.py)."""
 import json
 import os
@@ -208,6 +213,26 @@ def pins(root):
     return found
 
 
+ALLOWLIST = 'cvengine_scanner/data/nuclei_service_allowlist.json'
+
+
+def allowlist_problem(root=ROOT):
+    """The line to print when the service-port allowlist is not the one for the pinned nuclei-templates release, else ``None``: a different release, or a list that is
+    missing or unreadable (the gate fails closed, like every other pin)."""
+    match = re.search(r'(?m)^ARG NUCLEI_TEMPLATES_VERSION=v?(\S+)$', read(root, 'Dockerfile'))
+    if not match:
+        return None  # no pin: the pin's own row already says so
+    pinned = match.group(1)
+    fix = 'regenerate the service-port allowlist (python3 scripts/generate_service_allowlist.py --templates <the pinned nuclei-templates> --write), review what it keeps and leaves out, and commit it'
+    try:
+        generated = str(json.loads(read(root, ALLOWLIST))['nuclei_templates']).lstrip('v')
+    except (ValueError, KeyError, TypeError):
+        return f'The service-port allowlist ({ALLOWLIST}) is missing or unreadable: {fix}.'
+    if generated != pinned:
+        return f'nuclei-templates is pinned at {pinned} but the service-port allowlist was generated for {generated or "no release"}: {fix}.'
+    return None
+
+
 def collect(get=fetch, root=ROOT):
     rows, cache = [], {}
     for label, have, url, reader, make, as_json in pins(root):
@@ -270,10 +295,13 @@ def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     root = Path(argv[argv.index('--root') + 1]) if '--root' in argv else ROOT
     rows = collect(root=root)
+    problem = allowlist_problem(root)
     print(json.dumps(rows) if '--json' in argv else report(rows))
+    if problem:
+        print(problem, file=sys.stderr if '--json' in argv else sys.stdout)
     if '--github-warnings' in argv:
-        print('\n'.join(warnings(rows)))
-    if '--fail-if-behind' in argv and failing(rows):
+        print('\n'.join(warnings(rows) + ([f'::warning::{problem}'] if problem else [])))
+    if '--fail-if-behind' in argv and (failing(rows) or problem):
         sys.exit(1)
 
 

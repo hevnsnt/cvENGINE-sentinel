@@ -29,7 +29,7 @@ import threading
 import time
 import xml.etree.ElementTree as ET
 
-from cvengine_scanner import flags
+from cvengine_scanner import flags, nuclei_allowlist
 from cvengine_scanner.flags import (DISCOVER_FLAGS, KERNEL_MARKERS, MAX_DISCOVER_ADDRESSES, MAX_DISCOVER_HOSTS, MAX_OPEN_PER_IP,  # noqa: F401
                                     MAX_PATH_TARGETS, MAX_TARGETS, MAX_TEMPLATE_BYTES, MAX_VERIFY_PORTS, NAABU_FLAGS, NMAP_FULL_FLAGS, TASK_LIMITS,
                                     nmap_pass_flags, task_seconds,
@@ -538,6 +538,9 @@ _clock = time.monotonic  # the clocks of the service passes: a test replaces the
 _sleep = time.sleep
 
 
+# Default deny: a service run sends only a template on the pinned allowlist (``cvengine_scanner/nuclei_allowlist.py``, made by scripts/generate_service_allowlist.py)
+# whose file still has the sha256 the list records. The content rule below is the second line: it is applied to every allowlisted template that is not one a person
+# read and restored (``reviewed_exceptions``), and it is one of the checks the generator makes.
 # What a service run may never send: credentials. Nothing that sends one, guesses a password or can lock an account runs unless a project turns it on,
 # and no such switch exists for nuclei, so it never runs. The tags (``default-login``, ``bruteforce``) are the template authors' word and miss most of them
 # (``pgsql-default-db`` is tagged enum; ``mysql-empty-password`` vuln), so the template is read: a ``payloads`` block, a call that logs in, a command that
@@ -588,8 +591,9 @@ def _paced_template(path):
 
 def _service_templates(selection, templates, extra, register, timeout=120):
     """The template files a service class runs, from nuclei's own listing of the set (``templates``: the approved bundle directory, else the baked
-    set) with the filters of ``selection`` and the task's severities in ``extra``, minus the templates that set their own parallelism. Cached per set. An
-    empty list means the set has no template for this class: nothing is started for it."""
+    set) with the filters of ``selection`` and the task's severities in ``extra``: only a template on the service-port allowlist whose file has the recorded
+    sha256 (default deny: one the list does not know, or that the library changed, is not run), and that still passes the content rule unless a person read and
+    restored it. Cached per set. An empty list means nothing of this set may run for this class: nothing is started for it."""
     severities = tuple(extra[extra.index('-severity') + 1].split(',')) if '-severity' in extra else ()
     key = (templates or f'image:{IMAGE_TEMPLATES_VERSION}', tuple(selection['types']), tuple(selection['tags']), tuple(selection['etags']), severities)
     if key in _TEMPLATE_LISTINGS:
@@ -606,22 +610,37 @@ def _service_templates(selection, templates, extra, register, timeout=120):
         elif line.endswith('.yaml'):
             paths.append(line)
     base = base or os.path.join(os.path.expanduser('~'), 'nuclei-templates')
-    files, skipped = [], 0
+    allowlist = nuclei_allowlist.load_allowlist()
+    files, skipped, unlisted = [], 0, 0
     for rel in paths:
         path = rel if os.path.isabs(rel) else os.path.join(base, rel)
-        if _paced_template(path) is None:
-            files.append(path)
-        else:
+        allowed, _why, tid = nuclei_allowlist.check_file(path, allowlist)
+        if not allowed:
+            unlisted += 1
+        elif tid not in allowlist['reviewed_exceptions'] and _paced_template(path) is not None:
             skipped += 1
-    if skipped:
-        logger.info('nuclei: %d of %d templates for this service send credentials or payloads, set their own parallelism or spray requests and are not run on a service', skipped, len(paths))
+        else:
+            files.append(path)
+    if skipped or unlisted:
+        logger.info('nuclei: of %d templates listed for this service %d are not on the service-port allowlist (or their file changed) and %d fail the content rule; %d run', len(paths), unlisted, skipped, len(files))
     if len(_TEMPLATE_LISTINGS) >= _LISTING_KEPT:
         _TEMPLATE_LISTINGS.clear()
     _TEMPLATE_LISTINGS[key] = files
     return files
 
 
-def _run_service_port(target, klass, tags, budget, deadline, extra, templates, register, secret_file, listing_failed=None):
+def _allowed_on_port(path, port):
+    """Whether a listed template may be sent to a target on ``port``: it is on the allowlist with the recorded sha256 now, and when it names a port of its own
+    (``fixed_ports``: a literal port in its host or address) the target is on that port, so it never reaches a port the task did not name."""
+    allowlist = nuclei_allowlist.load_allowlist()
+    allowed, _why, tid = nuclei_allowlist.check_file(path, allowlist)
+    if not allowed:
+        return False
+    fixed = allowlist['templates'][tid].get('fixed_ports') or ()
+    return not fixed or port in fixed
+
+
+def _run_service_port(target, klass, tags, budget, deadline, extra, templates, register, secret_file, listing_failed=None, spent=0.0):
     """One non-web ``host:port`` of class ``klass``: its template files, each as its own nuclei process, one at a time, with ``budget['pause_ms']`` between
     one run ending and the next starting, and ``budget['seconds']`` for the port (and never past ``deadline``). One connection is in flight at a time and a
     new template starts no sooner than the pause, which is the bound on what the port receives (see ``flags.NUCLEI_SERVICE_BUDGET``). The third run in a row
@@ -646,19 +665,25 @@ def _run_service_port(target, klass, tags, budget, deadline, extra, templates, r
         if listing_failed is not None:
             listing_failed[klass] = out['reason']
         return out
+    port = (flags.nuclei_label_key(target) or (None, None))[1]
+    files = [path for path in files if _allowed_on_port(path, port)]
     if not files:
-        out['no_templates'] = True  # this template set has nothing for this class: no process is started
+        out['no_templates'] = True  # nothing of this set may run for this class on this port: no process is started
         return out
     argv = nuclei_flags_for_budget(flags.nuclei_service_flags(selection, budget)) + extra
-    port_deadline = min(deadline, _clock() + budget['seconds'])
+    port_deadline = min(deadline, _clock() + budget['seconds'] - spent)  # what the banner probe took is part of the port's budget
     pause = flags.nuclei_service_pause_ms(klass, budget) / 1000.0
-    reached = failed = quiet = silent = 0
+    reached = failed = quiet = silent = changed = 0
     last_error = None
     for index, path in enumerate(files):
         left = port_deadline - _clock()
         if left <= 0:
             out['incomplete'], out['reason'] = True, f'its time ran out after {index} of {len(files)} templates'
             break
+        if not nuclei_allowlist.check_file(path)[0]:  # the file is read again just before it is sent: one that changed since the list was made never runs
+            changed += 1
+            logger.warning('nuclei: %s changed since it was listed and is no longer on the service-port allowlist; it is not run', path)
+            continue
         try:
             got = _nuclei_pass([target], argv + ['-t', path], max(1, min(flags.NUCLEI_SERVICE_TEMPLATE_SECONDS, math.ceil(left))), register, secret_file, filtered=True)
         except ToolExitError as exc:  # one template that fails does not fail the port, or the task
@@ -678,6 +703,8 @@ def _run_service_port(target, klass, tags, budget, deadline, extra, templates, r
                 reached += 1
         if index + 1 < len(files):
             _sleep(max(0.0, min(pause, deadline - _clock())))  # never a pause that runs past the task's own time
+    if changed and not out['reason']:
+        out['reason'] = f'{changed} of {len(files)} template files changed while the port was being checked and were not run'
     out['no_templates'] = quiet == len(files)  # every run said its filter matched no template: nothing to check
     if not reached and silent and not failed and not out['findings']:
         out['unreachable'], out['reason'] = True, 'nothing answered on this port'
@@ -694,10 +721,16 @@ BANNER_TIMEOUT = 3
 BANNER_BYTES = 64
 
 
-def _probe_banner(host, port):
+def _probe_banner(host, port, resolve=None):
     """The first bytes a service on ``host:port`` sends by itself on connect, or ``None``: one short connection, nothing sent. sshd names itself this way
     (``SSH-2.0-...``), and the one place it matters is a port the server could not name, which would otherwise get some 600 short connections that each count
-    toward OpenSSH's per-source penalties."""
+    toward OpenSSH's per-source penalties. ``resolve`` is the task's own resolver (``_resolver``, the answers scope judged): a host name is connected by the first
+    address it was judged by and is not resolved again."""
+    if resolve is not None and not _is_ip(host):
+        try:
+            host = next(i[4][0] for i in resolve(host, None) if _is_ip(i[4][0]))
+        except (OSError, UnicodeError, StopIteration):
+            return None
     try:
         with socket.create_connection((host, port), timeout=BANNER_TIMEOUT) as sock:
             sock.settimeout(BANNER_TIMEOUT)
@@ -706,9 +739,9 @@ def _probe_banner(host, port):
         return None
 
 
-def _banner_is_ssh(target):
+def _banner_is_ssh(target, resolve=None):
     key = flags.nuclei_label_key(target)
-    banner = _probe_banner(key[0], key[1]) if key else None
+    banner = _probe_banner(key[0], key[1], resolve) if key else None
     return bool(banner) and banner.startswith(b'SSH-')
 
 
@@ -725,7 +758,8 @@ def run_nuclei(targets, tags=None, severities=None, timeout=3600, register=None,
     ports then share. Each non-web host:port runs its own templates one at a time, paced (``_run_service_port``), under the bound ``budget`` puts on one
     service (``flags.nuclei_service_budget``: a task can make it gentler, never harsher). A port or run that fails, or runs out of time, does not fail the
     task or lose the findings already found: the result's ``not_checked`` names each port not fully checked and why."""
-    targets = validate_targets(targets, endpoint=True)
+    resolve = _resolver()  # one resolver for the task: the names are resolved once, for the scope judgment, and the banner probe connects to what was judged
+    targets = validate_targets(targets, endpoint=True, resolver=resolve)
     web, service_runs = _split_by_service(targets, services)
     extra = _proxy_args('nuclei', targets)
     proxied = bool(extra)  # a run through the egress proxy never connects directly, so it reads no banner either
@@ -789,9 +823,13 @@ def run_nuclei(targets, tags=None, severities=None, timeout=3600, register=None,
             stop_for([target], 'the task ran out of time before this port')
             continue
         attempts += 1
-        if klass == flags.NUCLEI_UNKNOWN and not proxied and _banner_is_ssh(target):
-            klass = 'ssh'  # sshd on a port nothing named: it gets the ssh templates at the ssh pace
-        got = _run_service_port(target, klass, clean_tags, spend, deadline, extra, templates, register, secret_file, listing_failed)
+        spent = 0.0
+        if klass == flags.NUCLEI_UNKNOWN and not proxied:
+            began = _clock()
+            if _banner_is_ssh(target, resolve):
+                klass = 'ssh'  # sshd on a port nothing named: it gets the ssh templates at the ssh pace
+            spent = max(0.0, _clock() - began)  # the probe is charged to this port's budget
+        got = _run_service_port(target, klass, clean_tags, spend, deadline, extra, templates, register, secret_file, listing_failed, spent)
         findings += got['findings']
         incomplete = incomplete or got['incomplete']
         quiet.append(got['no_templates'])

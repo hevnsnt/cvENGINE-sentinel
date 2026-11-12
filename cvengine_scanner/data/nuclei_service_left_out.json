@@ -1,0 +1,2060 @@
+{
+ "nuclei_templates": "v10.5.1",
+ "generated_by": "scripts/generate_service_allowlist.py",
+ "templates": {
+  "CVE-2004-2687": {
+   "path": "network/cves/2004/CVE-2004-2687.yaml",
+   "severity": "high",
+   "sha256": "0d640c5b61bc901319a9dd6ba7b84ffc54836701753a6d5d4c4b35134b2d9e67",
+   "reasons": [
+    "read by a person and refused: executes a command (sh -c id) through distccd"
+   ]
+  },
+  "CVE-2010-20103": {
+   "path": "javascript/cves/2010/CVE-2010-20103.yaml",
+   "severity": "critical",
+   "sha256": "20a20d216a7f018c395eecf559d71040d504a04d08e37a759f3444c13e379a3e",
+   "reasons": [
+    "read by a person and refused: sends the ProFTPD backdoor trigger (HELP ACIDBITCHEZ), which opens a shell"
+   ]
+  },
+  "CVE-2011-2523": {
+   "path": "network/cves/2011/CVE-2011-2523.yaml",
+   "severity": "critical",
+   "sha256": "301c380f3fde6fc3b116a7ef48cdfd66ef1f49bb5eaac5ffe18c28e57a5aebd2",
+   "reasons": [
+    "content rule: the template performs a login or an authentication step (a service run never sends credentials)",
+    "decode: plain /variables/cmd: passwd; plain /tcp[0]/inputs[0]/data: user",
+    "exploit class (tags cve, severity critical) and not reviewed as read-only for this file content"
+   ]
+  },
+  "CVE-2012-2122": {
+   "path": "javascript/cves/2012/CVE-2012-2122.yaml",
+   "severity": "medium",
+   "sha256": "44c9479c83ff285557aa863addfd89e8ee13786f3bb87bb15b3fafec6a9f2a6e",
+   "reasons": [
+    "carries the excluded tag fuzz",
+    "calls ExecuteQuery, which is not on the read-only list of library calls",
+    "content rule: the template performs a login or an authentication step (a service run never sends credentials)",
+    "decode: plain /javascript[0]/code: user; key /javascript[0]/args/User; plain /javascript[0]/args/User: root (a sent account name); key /javascript[0]/args/Pass",
+    "exploit class (tags cve, severity medium) and not reviewed as read-only for this file content"
+   ]
+  },
+  "CVE-2015-3306": {
+   "path": "network/cves/2015/CVE-2015-3306.yaml",
+   "severity": "critical",
+   "sha256": "100014bb9b1a676382400c8311df40203b12302887de8fbc5e29a03da1c3515d",
+   "reasons": [
+    "read by a person and refused: writes files on the target (site cpfr/cpto into the web root)"
+   ]
+  },
+  "CVE-2016-2004": {
+   "path": "network/cves/2016/CVE-2016-2004.yaml",
+   "severity": "critical",
+   "sha256": "fe9ef3fd7623ee7a2fd9558da7d89ebfb0216a856b4f17a689691bf56959c9eb",
+   "reasons": [
+    "read by a person and refused: executes a command (perl -esystem whoami) through HP Data Protector"
+   ]
+  },
+  "CVE-2016-3510": {
+   "path": "network/cves/2016/CVE-2016-3510.yaml",
+   "severity": "critical",
+   "sha256": "8d0efbab99f1f530458b92c6b9d3b90442979f32cfae28b202311bc1968bca30",
+   "reasons": [
+    "read by a person and refused: sends a Java deserialization gadget (runs code on the target) and also connects to port 7001"
+   ]
+  },
+  "CVE-2016-8706": {
+   "path": "javascript/cves/2016/CVE-2016-8706.yaml",
+   "severity": "high",
+   "sha256": "7ceab250d023470f784dc4d2e3bfaa7fec9e3e77837fce9fddc86a2980fd3858",
+   "reasons": [
+    "read by a person and refused: sends an overflow-sized SASL packet to memcached (an exploit attempt that can crash it)"
+   ]
+  },
+  "CVE-2017-3881": {
+   "path": "network/cves/2017/CVE-2017-3881.yaml",
+   "severity": "critical",
+   "sha256": "422692592390f7b77711e042fd4c9d647d506d638f7185354966d0d40e90edec",
+   "reasons": [
+    "read by a person and refused: sends the Cisco telnet overflow payload and connects to port 23"
+   ]
+  },
+  "CVE-2017-5645": {
+   "path": "network/cves/2017/CVE-2017-5645.yaml",
+   "severity": "critical",
+   "sha256": "464e5059501a94f46f2d649aec899612dc292a6a2999b6da16ebf7da493eba5e",
+   "reasons": [
+    "read by a person and refused: sends a Java deserialization gadget (runs code on the target) and connects to port 4712"
+   ]
+  },
+  "CVE-2018-0171": {
+   "path": "javascript/cves/2018/CVE-2018-0171.yaml",
+   "severity": "critical",
+   "sha256": "52df4f898afbdb0c527fb6a79908cd7193524e912b49eced1687e4f739caa152",
+   "reasons": [
+    "sends UDP: a service port is a TCP port, so the datagrams would go to a port nobody named",
+    "read by a person and refused: asks the switch to copy its startup configuration to a TFTP server (Smart Install config download) and sends UDP"
+   ]
+  },
+  "CVE-2018-2628": {
+   "path": "network/cves/2018/CVE-2018-2628.yaml",
+   "severity": "critical",
+   "sha256": "0892d1e5a72cdcec44469b49e390ffa993582bf7bee29a3985318859ef685c71",
+   "reasons": [
+    "decode: hex /tcp[0]/inputs[2]/data: authenticate",
+    "exploit class (tags cve, deserialization, kev, vkev, severity critical) and not reviewed as read-only for this file content"
+   ]
+  },
+  "CVE-2018-2893": {
+   "path": "network/cves/2018/CVE-2018-2893.yaml",
+   "severity": "critical",
+   "sha256": "3e313fae6a0cf0932466935699a669f54084f0b5cd17fc0ca5f29a7d6fd62105",
+   "reasons": [
+    "decode: hex /tcp[0]/inputs[2]/data: authenticate",
+    "exploit class (tags cve, deserialization, rce, vkev, severity critical) and not reviewed as read-only for this file content"
+   ]
+  },
+  "CVE-2018-6882": {
+   "path": "http/cves/2018/CVE-2018-6882.yaml",
+   "severity": "medium",
+   "sha256": "f20ffd5e9d446b1f49106dcc51274bfbbf7704442a9365467c0a8553b8578196",
+   "reasons": [
+    "carries the excluded tag intrusive",
+    "also has a block of another protocol (http), which a service port never receives",
+    "content rule: the template performs a login or an authentication step (a service run never sends credentials)",
+    "decode: key /variables/pass; plain /variables/pass: pass; key /variables/user; plain /variables/user: user (+3 more)",
+    "exploit class (tags cve, intrusive, kev, vkev, severity medium) and not reviewed as read-only for this file content"
+   ]
+  },
+  "CVE-2018-8011": {
+   "path": "javascript/cves/2018/CVE-2018-8011.yaml",
+   "severity": "high",
+   "sha256": "14955ffab3bc669ed70904c44803ed7768ce9c25fc37efaf7e5d5d2933e2a1ff",
+   "reasons": [
+    "carries the excluded tag dos",
+    "exploit class (tags cve, vkev, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "CVE-2019-5544": {
+   "path": "network/cves/2019/CVE-2019-5544.yaml",
+   "severity": "critical",
+   "sha256": "871fc61711c54089f9c7959fd4d965d3849e7e8735da0199d2f18dd16e3e289c",
+   "reasons": [
+    "carries the excluded tag dos, intrusive",
+    "decode: hex /tcp[0]/inputs[0]/data: default (an account name in a packet)",
+    "exploit class (tags cve, intrusive, kev, vkev, severity critical) and not reviewed as read-only for this file content"
+   ]
+  },
+  "CVE-2019-6443": {
+   "path": "javascript/cves/2019/CVE-2019-6443.yaml",
+   "severity": "critical",
+   "sha256": "fb654d290fce878dbc9aca69de7fe2c866511e9140a3a675051ff13bcdfc4759",
+   "reasons": [
+    "sends UDP: a service port is a TCP port, so the datagrams would go to a port nobody named",
+    "read by a person and refused: sends a crafted NTP control packet that triggers the out-of-bounds read (UDP)"
+   ]
+  },
+  "CVE-2019-9193": {
+   "path": "javascript/cves/2019/CVE-2019-9193.yaml",
+   "severity": "high",
+   "sha256": "e7e5a1722789e461403a1fd3f34f59daa38f6e0b862e6d374dc81fff18b46eeb",
+   "reasons": [
+    "carries the excluded tag intrusive",
+    "uses the javascript library postgres",
+    "calls ExecuteQuery, which is not on the read-only list of library calls",
+    "content rule: the template carries payloads (guessed values, mostly accounts)",
+    "decode: plain /javascript[0]/code: user; key /javascript[0]/args/User; key /javascript[0]/args/Pass; plain /javascript[0]/args/Pass: password (+5 more)",
+    "exploit class (tags cve, intrusive, vkev, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "CVE-2020-0796": {
+   "path": "network/cves/2020/CVE-2020-0796.yaml",
+   "severity": "critical",
+   "sha256": "5ccb5accdf24bebd10993162a868c0b40df8fbce7ce79da4c2370f526ff16f0f",
+   "reasons": [
+    "decode: hex /tcp[0]/inputs[1]/data: ntlmssp",
+    "exploit class (tags cve, kev, vkev, severity critical) and not reviewed as read-only for this file content"
+   ]
+  },
+  "CVE-2020-11981": {
+   "path": "network/cves/2020/CVE-2020-11981.yaml",
+   "severity": "critical",
+   "sha256": "b2bc6e9e139a04cd3b2538a376d56d52a02ebc4318a6972ca5fa02f6ff769e35",
+   "reasons": [
+    "carries the excluded tag intrusive",
+    "exploit class (tags cve, intrusive, severity critical) and not reviewed as read-only for this file content"
+   ]
+  },
+  "CVE-2020-14644": {
+   "path": "javascript/cves/2020/CVE-2020-14644.yaml",
+   "severity": "critical",
+   "sha256": "2c440cd43c7e1761de1cb66edf536c44bb2dfc6d53cea85eb7484bb292569302",
+   "reasons": [
+    "read by a person and refused: sends a Java deserialization gadget that runs curl on the target"
+   ]
+  },
+  "CVE-2020-1938": {
+   "path": "network/cves/2020/CVE-2020-1938.yaml",
+   "severity": "critical",
+   "sha256": "9bd99bef781d9e8ebf934183d913ac0a82cc752fa6224d32d1880253f56ed389",
+   "reasons": [
+    "read by a person and refused: reads a file through the Ghostcat AJP flaw (WEB-INF/web.xml) and connects to port 8009"
+   ]
+  },
+  "CVE-2020-2883": {
+   "path": "javascript/cves/2020/CVE-2020-2883.yaml",
+   "severity": "critical",
+   "sha256": "6e7ce964c3ebb73a4f2ce1ddc56b9bcc97239b66de77285db1de71e5f19a76ed",
+   "reasons": [
+    "carries the excluded tag intrusive",
+    "also has a block of another protocol (http), which a service port never receives",
+    "decode: plain /http[0]/path[0]: login",
+    "exploit class (tags cve, intrusive, kev, rce, vkev, severity critical) and not reviewed as read-only for this file content"
+   ]
+  },
+  "CVE-2020-4429": {
+   "path": "javascript/cves/2020/CVE-2020-4429.yaml",
+   "severity": "critical",
+   "sha256": "860d1a0789f46a8f23cb593b6b64f40ed6927f89e862b06440d85fed2e925924",
+   "reasons": [
+    "carries the excluded tag default-login",
+    "calls Connect, which is not on the read-only list of library calls",
+    "content rule: the template performs a login or an authentication step (a service run never sends credentials)",
+    "decode: plain /javascript[0]/pre-condition: password; plain /javascript[0]/code: username; key /javascript[0]/args/Username; key /javascript[0]/args/Password",
+    "exploit class (tags cve, vkev, severity critical) and not reviewed as read-only for this file content"
+   ]
+  },
+  "CVE-2020-7247": {
+   "path": "javascript/cves/2020/CVE-2020-7247.yaml",
+   "severity": "critical",
+   "sha256": "d8f179c70ba0b39a5e26516bd65c53d9ad7981e66aad7026371de07d30ec73d4",
+   "reasons": [
+    "uses the javascript library smtp",
+    "calls Body, From, SMTPMessage, SendMail, To, which is not on the read-only list of library calls",
+    "decode: plain /javascript[0]/args/To: root (a sent account name)",
+    "read by a person and refused: sends mail with a shell command in the sender (executes on the target)"
+   ]
+  },
+  "CVE-2021-2135": {
+   "path": "http/cves/2021/CVE-2021-2135.yaml",
+   "severity": "critical",
+   "sha256": "39ac55be672dd3604770ff598c90808bb79ff684ac08d9d6e39e73e868527c4e",
+   "reasons": [
+    "read by a person and refused: sends a Java deserialization gadget that runs curl on the target"
+   ]
+  },
+  "CVE-2021-27877": {
+   "path": "javascript/cves/2021/CVE-2021-27877.yaml",
+   "severity": "high",
+   "sha256": "429fb5626d0ba78ff3a79fb75bef46338441dfdffd683dfa2dea937feeb0d51d",
+   "reasons": [
+    "read by a person and refused: an NDMP request to Veritas Backup Exec port 10000; the request type was not confirmed read-only, left out"
+   ]
+  },
+  "CVE-2021-3122": {
+   "path": "network/cves/2021/CVE-2021-3122.yaml",
+   "severity": "critical",
+   "sha256": "62f1b3e0ad68d78820869ecae4d1247909ff8f654a637dfb7f8c2d308e475457",
+   "reasons": [
+    "carries the excluded tag intrusive",
+    "exploit class (tags cve, intrusive, rce, vkev, severity critical) and not reviewed as read-only for this file content"
+   ]
+  },
+  "CVE-2021-35394": {
+   "path": "javascript/cves/2021/CVE-2021-35394.yaml",
+   "severity": "critical",
+   "sha256": "5a533778264385f564a17a6394556417694ba7da7963f912226a81b0d9728dc5",
+   "reasons": [
+    "sends UDP: a service port is a TCP port, so the datagrams would go to a port nobody named",
+    "read by a person and refused: command injection (nslookup) over UDP"
+   ]
+  },
+  "CVE-2021-36754": {
+   "path": "javascript/cves/2021/CVE-2021-36754.yaml",
+   "severity": "high",
+   "sha256": "d7fbfd42811199dcf6c77315eba28d122df8923e9c600400a1b1d7d2c49d10b7",
+   "reasons": [
+    "carries the excluded tag dos, intrusive",
+    "sends UDP: a service port is a TCP port, so the datagrams would go to a port nobody named",
+    "decode: hex /javascript[0]/code: bind",
+    "exploit class (tags cve, intrusive, vkev, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "CVE-2021-44521": {
+   "path": "network/cves/2021/CVE-2021-44521.yaml",
+   "severity": "critical",
+   "sha256": "d3ef7df8813f4869bdc5280bf41c528a34f954326ed949927cbd3029807eaf10",
+   "reasons": [
+    "decode: hex /tcp[0]/inputs[2]/data: test (an account name in a packet)",
+    "exploit class (tags cve, rce, severity critical) and not reviewed as read-only for this file content"
+   ]
+  },
+  "CVE-2022-0543": {
+   "path": "network/cves/2022/CVE-2022-0543.yaml",
+   "severity": "critical",
+   "sha256": "0e4d495544d41c0ef99dc154da65a270cc0d5c87ddf8942dfbf2966a598aa039",
+   "reasons": [
+    "decode: plain /tcp[0]/inputs[0]/data: usr",
+    "exploit class (tags cve, kev, rce, vkev, severity critical) and not reviewed as read-only for this file content"
+   ]
+  },
+  "CVE-2022-24637": {
+   "path": "http/cves/2022/CVE-2022-24637.yaml",
+   "severity": "critical",
+   "sha256": "909f7edc7d721be9afdf0cfa8825e293511c8fa5f9d29b75837bce79512bdf01",
+   "reasons": [
+    "carries the excluded tag intrusive",
+    "also has a block of another protocol (http), which a service port never receives",
+    "content rule: the template performs a login or an authentication step (a service run never sends credentials)",
+    "decode: key /variables/password; key /variables/secret; key /variables/secret_b64; plain /variables/secret_b64: secret (+4 more)",
+    "exploit class (tags cve, intrusive, rce, severity critical) and not reviewed as read-only for this file content"
+   ]
+  },
+  "CVE-2022-24706": {
+   "path": "network/cves/2022/CVE-2022-24706.yaml",
+   "severity": "critical",
+   "sha256": "7739fb0c8caf7ec2874ac6b07fdc51f5852676c29b2eb854579d88a1c2617cfe",
+   "reasons": [
+    "decode: key /variables/cookie; hex /variables/cmd: user; plain /tcp[0]/inputs[2]/data: cookie",
+    "exploit class (tags cve, kev, rce, vkev, severity critical) and not reviewed as read-only for this file content"
+   ]
+  },
+  "CVE-2022-31793": {
+   "path": "network/cves/2022/CVE-2022-31793.yaml",
+   "severity": "high",
+   "sha256": "3fcdfc560d45dba347b4c7fa7418ee0e4a5ac1bdd626022222e03549189da3ab",
+   "reasons": [
+    "decode: hex /tcp[0]/inputs[0]/data: passwd",
+    "exploit class (tags cve, lfi, vkev, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "CVE-2023-21839": {
+   "path": "javascript/cves/2023/CVE-2023-21839.yaml",
+   "severity": "high",
+   "sha256": "87784dee7561c693d8bd09f5ce8773006e7e0af5ce2b6ce4083838fdd1ca1598",
+   "reasons": [
+    "calls Bytes, Len, which is not on the read-only list of library calls",
+    "decode: hex /javascript[0]/code: test (an account name in a packet)",
+    "exploit class (tags cve, kev, vkev, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "CVE-2023-33246": {
+   "path": "network/cves/2023/CVE-2023-33246.yaml",
+   "severity": "critical",
+   "sha256": "59d907b0f766a6062a9146dd364df9fcc3d3f871b5d76665f68629cabbaf0e4c",
+   "reasons": [
+    "carries the excluded tag intrusive",
+    "exploit class (tags cve, intrusive, kev, oast, rce, vkev, severity critical) and not reviewed as read-only for this file content"
+   ]
+  },
+  "CVE-2023-34039": {
+   "path": "javascript/cves/2023/CVE-2023-34039.yaml",
+   "severity": "critical",
+   "sha256": "c3e6036e9a9b742a8b1832383a32420ca6bd9f51fb8211f6673ff8b992847713",
+   "reasons": [
+    "carries the excluded tag fuzz",
+    "calls ConnectWithKey, which is not on the read-only list of library calls",
+    "content rule: the template carries payloads (guessed values, mostly accounts)",
+    "exploit class (tags cve, rce, severity critical) and not reviewed as read-only for this file content"
+   ]
+  },
+  "CVE-2023-34992": {
+   "path": "network/cves/2023/CVE-2023-34992.yaml",
+   "severity": "critical",
+   "sha256": "bfade54d2fac3a211fbcdd3c887b515eb864f748f74b42826e0ffa6cf1922479",
+   "reasons": [
+    "read by a person and refused: FortiSIEM command injection (executes curl on the target)"
+   ]
+  },
+  "CVE-2023-37582": {
+   "path": "network/cves/2023/CVE-2023-37582.yaml",
+   "severity": "critical",
+   "sha256": "5b277262b73b71798aff54fbb1ce26c6ab5c2638519debe64509913d8faa245d",
+   "reasons": [
+    "carries the excluded tag intrusive",
+    "decode: hex /tcp[0]/inputs[0]/data: test (an account name in a packet)",
+    "exploit class (tags cve, intrusive, vkev, severity critical) and not reviewed as read-only for this file content"
+   ]
+  },
+  "CVE-2023-45249": {
+   "path": "javascript/cves/2023/CVE-2023-45249.yaml",
+   "severity": "critical",
+   "sha256": "0527efc5cbad847d72f63740730ddd514c8c8dccb6e4d41a075c5c1597c7911b",
+   "reasons": [
+    "carries the excluded tag default-login",
+    "uses the javascript library postgres",
+    "calls ExecuteQuery, which is not on the read-only list of library calls",
+    "content rule: the template performs a login or an authentication step (a service run never sends credentials)",
+    "decode: plain /javascript[0]/code: user; key /javascript[0]/args/User; key /javascript[0]/args/Pass",
+    "exploit class (tags cve, kev, vkev, severity critical) and not reviewed as read-only for this file content"
+   ]
+  },
+  "CVE-2023-46604": {
+   "path": "javascript/cves/2023/CVE-2023-46604.yaml",
+   "severity": "critical",
+   "sha256": "7e072a1e12424846322d08aa76630e6ac478756e89c5c3a0bb18fe27ab02c400",
+   "reasons": [
+    "read by a person and refused: ActiveMQ deserialization (loads a remote Spring XML and runs it)"
+   ]
+  },
+  "CVE-2023-48788": {
+   "path": "network/cves/2023/CVE-2023-48788.yaml",
+   "severity": "critical",
+   "sha256": "15a670c8be5e10bd18b2d8c868828620862999364ca6992e5ec675d26976312d",
+   "reasons": [
+    "decode: base64 /tcp[0]/inputs[0]/data: user",
+    "exploit class (tags cve, kev, sqli, vkev, severity critical) and not reviewed as read-only for this file content"
+   ]
+  },
+  "CVE-2023-6329": {
+   "path": "http/cves/2023/CVE-2023-6329.yaml",
+   "severity": "critical",
+   "sha256": "46253e91250076f13e71c6a8d0f5fca298a88c6e840b25025cb9b4cc84181d34",
+   "reasons": [
+    "carries the excluded tag intrusive",
+    "also has a block of another protocol (http), which a service port never receives",
+    "content rule: the template performs a login or an authentication step (a service run never sends credentials)",
+    "decode: key /variables/username; key /variables/password; key /variables/passwordRandom; key /javascript[0]/args/passwordRandom (+2 more)",
+    "exploit class (tags cve, intrusive, vkev, severity critical) and not reviewed as read-only for this file content"
+   ]
+  },
+  "CVE-2024-23108": {
+   "path": "network/cves/2024/CVE-2024-23108.yaml",
+   "severity": "critical",
+   "sha256": "982415c54c9c82ae5e35f4bcc0a93faeb3e2c62619a941ddb3bbcd0ad48d6f6a",
+   "reasons": [
+    "read by a person and refused: FortiSIEM command injection (runs echo id)"
+   ]
+  },
+  "CVE-2024-23897": {
+   "path": "javascript/cves/2024/CVE-2024-23897.yaml",
+   "severity": "high",
+   "sha256": "a815f970455a501482243e7f10682bae9fa3826ecc15c6a47680d749e656e005",
+   "reasons": [
+    "decode: hex /variables/payload: passwd; plain /javascript[0]/code: session_id",
+    "exploit class (tags cve, kev, lfi, rce, vkev, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "CVE-2024-45519": {
+   "path": "javascript/cves/2024/CVE-2024-45519.yaml",
+   "severity": "critical",
+   "sha256": "02f5963499bf3773440ed1610b948d45aa03a2c7735d0e936a916d1f3f399894",
+   "reasons": [
+    "read by a person and refused: Zimbra command injection through an SMTP recipient (executes curl)"
+   ]
+  },
+  "CVE-2024-47176": {
+   "path": "javascript/cves/2024/CVE-2024-47176.yaml",
+   "severity": "high",
+   "sha256": "f99092e10bdbb31a895e8a860d1ef76a099e21f1549e87e31dc5d992413409c5",
+   "reasons": [
+    "carries the excluded tag intrusive",
+    "sends UDP: a service port is a TCP port, so the datagrams would go to a port nobody named",
+    "exploit class (tags cve, intrusive, oast, rce, vkev, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "CVE-2024-51978": {
+   "path": "http/cves/2024/CVE-2024-51978.yaml",
+   "severity": "critical",
+   "sha256": "ceb251c6328fe2a707cf5d049ffddeec3c3d4401d033dd83912c8de49d35a36c",
+   "reasons": [
+    "carries the excluded tag default-login, intrusive",
+    "also has a block of another protocol (http), which a service port never receives",
+    "exploit class (tags cve, intrusive, vkev, severity critical) and not reviewed as read-only for this file content"
+   ]
+  },
+  "CVE-2024-54772": {
+   "path": "network/cves/2024/CVE-2024-54772.yaml",
+   "severity": "medium",
+   "sha256": "f64bfd7127cf27a1bdabd7ba9627a5611ae9f153ca15e75c6a79a0873ab4c2b8",
+   "reasons": [
+    "decode: hex /tcp[0]/inputs[0]/data: admin (an account name in a packet)",
+    "exploit class (tags cve, severity medium) and not reviewed as read-only for this file content"
+   ]
+  },
+  "CVE-2025-12101": {
+   "path": "javascript/cves/2025/CVE-2025-12101.yaml",
+   "severity": "medium",
+   "sha256": "32b4cf513db43198b36c41cc1d6f71e6fc00effd3240c9ef9cb3d061e6ef0f2b",
+   "reasons": [
+    "also has a block of another protocol (http), which a service port never receives",
+    "exploit class (tags cve, severity medium) and not reviewed as read-only for this file content"
+   ]
+  },
+  "CVE-2025-14847": {
+   "path": "network/cves/2025/CVE-2025-14847.yaml",
+   "severity": "high",
+   "sha256": "c8fcbcdaad5488fd04ef840b36a50ae68a79f283a5d342ec02b048d061f86c7f",
+   "reasons": [
+    "decode: hex /tcp[0]/inputs[0]/data: admin (an account name in a packet)",
+    "exploit class (tags cve, kev, vkev, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "CVE-2025-1974-k8s": {
+   "path": "cloud/kubernetes/cves/2025/CVE-2025-1974-k8s.yaml",
+   "severity": "critical",
+   "sha256": "520148ad3268aa66e91755124638f8281a0968d1122ecb8d3393fa74db84d676",
+   "reasons": [
+    "also has a block of another protocol (code), which a service port never receives",
+    "self-contained: it runs once against what the template names, not against the target",
+    "exploit class (tags cve, vkev, severity critical) and not reviewed as read-only for this file content"
+   ]
+  },
+  "CVE-2025-25256": {
+   "path": "network/cves/2025/CVE-2025-25256.yaml",
+   "severity": "critical",
+   "sha256": "87d76a174030ec95a35e15084a412dd90da57bba9fac9f22c58e8046212ee5cb",
+   "reasons": [
+    "read by a person and refused: FortiSIEM command injection"
+   ]
+  },
+  "CVE-2025-46817": {
+   "path": "javascript/cves/2025/CVE-2025-46817.yaml",
+   "severity": "critical",
+   "sha256": "17df82c6cb875089f09785592833464cfc4bdfebaf9437a08c5a97ff1ff6d664",
+   "reasons": [
+    "calls RunLuaScript, which is not on the read-only list of library calls",
+    "content rule: the template carries payloads (guessed values, mostly accounts)",
+    "decode: plain /javascript[1]/code: password; key /javascript[1]/args/Password; key /javascript[1]/payloads/passwords",
+    "exploit class (tags cve, severity critical) and not reviewed as read-only for this file content"
+   ]
+  },
+  "CVE-2025-46818": {
+   "path": "javascript/cves/2025/CVE-2025-46818.yaml",
+   "severity": "high",
+   "sha256": "3f9302aea641ab6284f545f65c2e790ddff7317ca24f2923f3ae2b5352853731",
+   "reasons": [
+    "calls RunLuaScript, which is not on the read-only list of library calls",
+    "content rule: the template carries payloads (guessed values, mostly accounts)",
+    "decode: plain /javascript[1]/code: password; key /javascript[1]/args/Password; key /javascript[1]/payloads/passwords",
+    "exploit class (tags cve, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "CVE-2025-46819": {
+   "path": "javascript/cves/2025/CVE-2025-46819.yaml",
+   "severity": "high",
+   "sha256": "78fed5ead3650d2da3e4a701e5a0c83014998a2438ae17509114cac3ee839356",
+   "reasons": [
+    "calls RunLuaScript, which is not on the read-only list of library calls",
+    "content rule: the template carries payloads (guessed values, mostly accounts)",
+    "decode: plain /javascript[1]/code: password; key /javascript[1]/args/Password; key /javascript[1]/payloads/passwords",
+    "exploit class (tags cve, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "CVE-2025-49844": {
+   "path": "javascript/cves/2025/CVE-2025-49844.yaml",
+   "severity": "critical",
+   "sha256": "45f0391b195f70d4d0169ec585b46c470667294a1d4229b4ce7798cfa6711ca1",
+   "reasons": [
+    "calls RunLuaScript, which is not on the read-only list of library calls",
+    "content rule: the template carries payloads (guessed values, mostly accounts)",
+    "decode: plain /javascript[1]/code: password; key /javascript[1]/args/Password; key /javascript[1]/payloads/passwords",
+    "exploit class (tags cve, vkev, severity critical) and not reviewed as read-only for this file content"
+   ]
+  },
+  "CVE-2025-53770": {
+   "path": "http/cves/2025/CVE-2025-53770.yaml",
+   "severity": "critical",
+   "sha256": "31492101e6b0555db46aa9e7252c66969ed49954086ec21c69c0571850fad29a",
+   "reasons": [
+    "also has a block of another protocol (http), which a service port never receives",
+    "calls Bytes, which is not on the read-only list of library calls",
+    "exploit class (tags cve, kev, rce, vkev, severity critical) and not reviewed as read-only for this file content"
+   ]
+  },
+  "CVE-2025-53771": {
+   "path": "http/cves/2025/CVE-2025-53771.yaml",
+   "severity": "medium",
+   "sha256": "bacd7a97f20000f602d101dd7d9a31ba06a393db0366ad189abf5d8bf1ebbc69",
+   "reasons": [
+    "also has a block of another protocol (http), which a service port never receives",
+    "calls Bytes, which is not on the read-only list of library calls",
+    "exploit class (tags cve, vkev, severity medium) and not reviewed as read-only for this file content"
+   ]
+  },
+  "CVE-2025-8286": {
+   "path": "network/cves/2025/CVE-2025-8286.yaml",
+   "severity": "critical",
+   "sha256": "456f13a8285e35ee63061150f8b0f9a59c150ec184ca1b6c510a4deb9a2c8e77",
+   "reasons": [
+    "read by a person and refused: sends commands to an unauthenticated device shell (system info)"
+   ]
+  },
+  "CVE-2026-0257": {
+   "path": "javascript/cves/2026/CVE-2026-0257.yaml",
+   "severity": "critical",
+   "sha256": "7bb642b1861ba56c704768cdaef5022bad6020cbc1d0575179a826cef81eb3cf",
+   "reasons": [
+    "also has a block of another protocol (http), which a service port never receives",
+    "content rule: the template sends more requests than a service may receive",
+    "decode: plain /http[0]/path[0]: login; plain /javascript[0]/code: user",
+    "exploit class (tags cve, kev, vkev, severity critical) and not reviewed as read-only for this file content"
+   ]
+  },
+  "CVE-2026-15409": {
+   "path": "javascript/cves/2026/CVE-2026-15409.yaml",
+   "severity": "critical",
+   "sha256": "1bdee7e08c4d14ee300b2f6f7183f256217d962e191eba777b290f1a3a60dc3d",
+   "reasons": [
+    "decode: plain /javascript[0]/code: user",
+    "exploit class (tags cve, kev, rce, ssrf, vkev, severity critical) and not reviewed as read-only for this file content"
+   ]
+  },
+  "CVE-2026-16232": {
+   "path": "javascript/cves/2026/CVE-2026-16232.yaml",
+   "severity": "critical",
+   "sha256": "305c4b3abb33f504fd9d292325ca51d05fb3ddb46f1b8375e950ccb0db08343a",
+   "reasons": [
+    "read by a person and refused: performs the Check Point SmartConsole authentication handshake (an authentication bypass check) and connects to port 18190"
+   ]
+  },
+  "CVE-2026-1731": {
+   "path": "javascript/cves/2026/CVE-2026-1731.yaml",
+   "severity": "critical",
+   "sha256": "e5f2243b456f016b0156557b3c6b262bab9be204275351fda649497de206d2a6",
+   "reasons": [
+    "also has a block of another protocol (http), which a service port never receives",
+    "calls Len, which is not on the read-only list of library calls",
+    "decode: plain /javascript[0]/code: usr",
+    "exploit class (tags cve, kev, rce, vkev, severity critical) and not reviewed as read-only for this file content"
+   ]
+  },
+  "CVE-2026-23829": {
+   "path": "network/cves/2026/CVE-2026-23829.yaml",
+   "severity": "medium",
+   "sha256": "3c24312ba374db88f624360076a7c7bb7ed888823cfeea53af94f87f710939bc",
+   "reasons": [
+    "read by a person and refused: sends a mail through Mailpit with an injected header (creates a message)"
+   ]
+  },
+  "CVE-2026-27886": {
+   "path": "javascript/cves/2026/CVE-2026-27886.yaml",
+   "severity": "critical",
+   "sha256": "5db23f74fc696c9ed0432d9ed217d2711b2b8434a83c9e2fb6d96a9518e9a6bc",
+   "reasons": [
+    "carries the excluded tag intrusive",
+    "also has a block of another protocol (http), which a service port never receives",
+    "content rule: the template sends more requests than a service may receive",
+    "decode: plain /flow: token; plain /http[9]/raw[0]: password",
+    "exploit class (tags cve, intrusive, severity critical) and not reviewed as read-only for this file content"
+   ]
+  },
+  "CVE-2026-33439": {
+   "path": "http/cves/2026/CVE-2026-33439.yaml",
+   "severity": "critical",
+   "sha256": "d04dee7687496acfc125d9711c8bbdab0bb030e5ec1359f3bf7e3eea127e98ec",
+   "reasons": [
+    "also has a block of another protocol (http), which a service port never receives",
+    "exploit class (tags cve, deserialization, oast, rce, severity critical) and not reviewed as read-only for this file content"
+   ]
+  },
+  "CVE-2026-33453": {
+   "path": "javascript/cves/2026/CVE-2026-33453.yaml",
+   "severity": "critical",
+   "sha256": "9e082eda800068e6d1959236a3ffd1e2290efb3f3167e20bef3652bf5d86e8fd",
+   "reasons": [
+    "sends UDP: a service port is a TCP port, so the datagrams would go to a port nobody named",
+    "read by a person and refused: CoAP request that executes code through Apache Camel"
+   ]
+  },
+  "CVE-2026-34486": {
+   "path": "http/cves/2026/CVE-2026-34486.yaml",
+   "severity": "critical",
+   "sha256": "af313e1bb8fd55dba93b2c7b2ac99407caee6e1e40b625da31903ec9829bbd4f",
+   "reasons": [
+    "read by a person and refused: Java deserialization gadget (Tomcat Tribes) that makes the target contact an address"
+   ]
+  },
+  "CVE-2026-39363": {
+   "path": "javascript/cves/2026/CVE-2026-39363.yaml",
+   "severity": "high",
+   "sha256": "67804ad759ccb93c0e821ca04c37e6de3b107cbb1a34e89da2c25bcd96089940",
+   "reasons": [
+    "decode: hex /javascript[0]/code: passwd",
+    "exploit class (tags cve, lfi, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "CVE-2026-39987": {
+   "path": "javascript/cves/2026/CVE-2026-39987.yaml",
+   "severity": "critical",
+   "sha256": "d3575294af7ab53557f4637599d1764a7de445620ab1588902d0878633f44254",
+   "reasons": [
+    "read by a person and refused: opens the Marimo terminal websocket and sends keystrokes (a shell)"
+   ]
+  },
+  "CVE-2026-42167": {
+   "path": "network/cves/2026/CVE-2026-42167.yaml",
+   "severity": "high",
+   "sha256": "4b30e33c85158b066a29b63fbe9d130a023f2e1e5ed9a4cc5c88ab478d3f1158",
+   "reasons": [
+    "content rule: the template performs a login or an authentication step (a service run never sends credentials)",
+    "decode: plain /tcp[0]/inputs[0]/data: user; plain /tcp[0]/inputs[1]/data: pass",
+    "exploit class (tags cve, rce, sqli, vkev, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "CVE-2026-44578": {
+   "path": "javascript/cves/2026/CVE-2026-44578.yaml",
+   "severity": "high",
+   "sha256": "1019a1b0e993ff8ede8f09fae0b54a71e3206f37e59069b43f20d18e2bb92d78",
+   "reasons": [
+    "read by a person and refused: SSRF: asks the Next.js app to fetch another address"
+   ]
+  },
+  "CVE-2026-50751": {
+   "path": "http/cves/2026/CVE-2026-50751.yaml",
+   "severity": "critical",
+   "sha256": "7f65982480a7f0bbf1d14537fcf7a0f874cba6a31def31d6cccd90027a2bdbaa",
+   "reasons": [
+    "sends UDP: a service port is a TCP port, so the datagrams would go to a port nobody named",
+    "content rule: the template performs a login or an authentication step (a service run never sends credentials)",
+    "decode: plain /javascript[0]/code: authentication; hex /javascript[0]/code: users1 (an account name in a packet); hex /javascript[0]/code: nuclei (an account name in a packet); hex /javascript[0]/code: admin (an account name in a packet) (+2 more)",
+    "exploit class (tags cve, kev, vkev, severity critical) and not reviewed as read-only for this file content"
+   ]
+  },
+  "CVE-2026-55040": {
+   "path": "javascript/cves/2026/CVE-2026-55040.yaml",
+   "severity": "critical",
+   "sha256": "e0879dde26b3cb2bb786a3a423a39439616bfd53c0d5ba55c18e79c9e02ea5fc",
+   "reasons": [
+    "decode: plain /javascript[0]/code: jwt",
+    "exploit class (tags cve, kev, vkev, severity critical) and not reviewed as read-only for this file content"
+   ]
+  },
+  "CVE-2026-58644": {
+   "path": "http/cves/2026/CVE-2026-58644.yaml",
+   "severity": "critical",
+   "sha256": "69bbfc4928feac42cf7aa35d7e3c22f32b78ae1a17f4891395fa004645e1928d",
+   "reasons": [
+    "also has a block of another protocol (http), which a service port never receives",
+    "calls Bytes, which is not on the read-only list of library calls",
+    "decode: plain /http[1]/raw[0]: cookie",
+    "exploit class (tags cve, deserialization, kev, rce, vkev, severity critical) and not reviewed as read-only for this file content"
+   ]
+  },
+  "CVE-2026-73570": {
+   "path": "network/cves/2026/CVE-2026-73570.yaml",
+   "severity": "high",
+   "sha256": "f95d777cab105067557905c9a498118e4ab607f55c1ec80147afe183c57bc6d8",
+   "reasons": [
+    "also has a block of another protocol (http), which a service port never receives",
+    "exploit class (tags cve, kev, oast, rce, vkev, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "CVE-2026-83548": {
+   "path": "javascript/cves/2026/CVE-2026-83548.yaml",
+   "severity": "critical",
+   "sha256": "739b0245204edee74e6851a754bbb129eb62634f9fc516b1c4151b6f1dc910d8",
+   "reasons": [
+    "decode: plain /javascript[0]/code: authorization; base64 /javascript[0]/code: admin (an account name in a packet)",
+    "exploit class (tags cve, kev, rce, ssrf, vkev, severity critical) and not reviewed as read-only for this file content"
+   ]
+  },
+  "adbhoney-honeypot-cnxn-detect": {
+   "path": "network/honeypot/adbhoney-honeypot-cnxn-detect.yaml",
+   "severity": "info",
+   "sha256": "9f15b31a60927d1685006ab35191d5d1b2a3f0112084a18ae634acecf3800f78",
+   "reasons": [
+    "read by a person and refused: opens an Android Debug Bridge session (CNXN), the same bytes as exposed-adb: an unauthenticated access attempt"
+   ]
+  },
+  "adbhoney-honeypot-shell-detect": {
+   "path": "network/honeypot/adbhoney-honeypot-shell-detect.yaml",
+   "severity": "info",
+   "sha256": "76e81456ea95fb42dea9c7ee5e14a0d860465bd0e1c72e454b84bd850ae6528f",
+   "reasons": [
+    "decode: hex /tcp[0]/inputs[3]/data: pwd"
+   ]
+  },
+  "apache-dubbo-unauth": {
+   "path": "network/misconfig/apache-dubbo-unauth.yaml",
+   "severity": "high",
+   "sha256": "d1c8820d1c2ee1be20cb9b79bb19dc639d5e26f4cf1302e5b1b9a3883648b568",
+   "reasons": [
+    "read by a person and refused: sends a command (help) to an unauthenticated service console; left out, not a read of what the server volunteers"
+   ]
+  },
+  "apache-rocketmq-broker-unauth": {
+   "path": "network/misconfig/apache-rocketmq-broker-unauth.yaml",
+   "severity": "high",
+   "sha256": "6e4e85285f55efee03bf7fc5da84a8f0a2ef5648e09fe15f22c270b5c8e5acca",
+   "reasons": [
+    "decode: hex /tcp[0]/inputs[0]/data: test (an account name in a packet)",
+    "exploit class (tags none, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "api-mailchimp": {
+   "path": "http/token-spray/api-mailchimp.yaml",
+   "severity": "info",
+   "sha256": "3dfb1076a7fd9219aee0c42d030053b5b148804995ab41c1cc91d2f5f7b0f26a",
+   "reasons": [
+    "self-contained: it runs once against what the template names, not against the target",
+    "content rule: the template performs a login or an authentication step (a service run never sends credentials)",
+    "decode: plain /flow: token; plain /tcp[0]/inputs[0]/data: auth"
+   ]
+  },
+  "azure-blob-immutable-not-enabled": {
+   "path": "cloud/azure/storageaccounts/azure-blob-immutable-not-enabled.yaml",
+   "severity": "high",
+   "sha256": "5a0256e7bb04bff74d572f13f555a0686d513f50b446f65a9aff4c65bb0e354a",
+   "reasons": [
+    "also has a block of another protocol (code), which a service port never receives",
+    "self-contained: it runs once against what the template names, not against the target",
+    "exploit class (tags none, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "backdoored-zte": {
+   "path": "network/backdoor/backdoored-zte.yaml",
+   "severity": "critical",
+   "sha256": "aa15dc9466343033f110a08e3a696f988067bc1607928a95bad9658e4deb5361",
+   "reasons": [
+    "decode: plain /tcp[0]/inputs[0]/data: root (a sent account name)",
+    "read by a person and refused: sends the telnet login root and the backdoor password as plain text"
+   ]
+  },
+  "cisco-ios-xe-panel": {
+   "path": "http/exposed-panels/cisco/cisco-ios-xe-panel.yaml",
+   "severity": "info",
+   "sha256": "ab4a5eb288a0942a0daa9cdfa88808c076d2d70719f89258589c1402826fc8ad",
+   "reasons": [
+    "also has a block of another protocol (http), which a service port never receives"
+   ]
+  },
+  "clamav-unauth": {
+   "path": "network/misconfig/clamav-unauth.yaml",
+   "severity": "high",
+   "sha256": "5b3e024c3bc6f1a56fdd9cd6551a137850c5f8ea4e04e253d7ac723bdc133458",
+   "reasons": [
+    "read by a person and refused: sends SCAN to clamd, which makes the service act on a path"
+   ]
+  },
+  "clickhouse-unauth": {
+   "path": "network/misconfig/clickhouse-unauth.yaml",
+   "severity": "high",
+   "sha256": "15d193b420245d3049409b00a089e8ec0a5bf3baaff22b79a0c5db82490f0a1c",
+   "reasons": [
+    "decode: hex /tcp[0]/inputs[0]/data: an authentication packet",
+    "exploit class (tags none, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "clockwatch-enterprise-rce": {
+   "path": "network/vulnerabilities/clockwatch-enterprise-rce.yaml",
+   "severity": "critical",
+   "sha256": "96f2e3090680f4e68648f9968e44d17ce0773f1e5e846f8da37519f9b8f2a5a3",
+   "reasons": [
+    "read by a person and refused: command injection (nslookup)"
+   ]
+  },
+  "cookies-without-httponly": {
+   "path": "http/misconfiguration/cookies-without-httponly.yaml",
+   "severity": "info",
+   "sha256": "57bb6c47db154b227ac20f1bfd1f67417e578d05eda6b5067e5fdc120589d7c1",
+   "reasons": [
+    "also has a block of another protocol (http), which a service port never receives",
+    "decode: plain /javascript[0]/code: cookie"
+   ]
+  },
+  "cookies-without-secure": {
+   "path": "http/misconfiguration/cookies-without-secure.yaml",
+   "severity": "info",
+   "sha256": "07053e22c4ef28f450ad1b8148f4b9f307ce810ad4404387ed53883203f6b685",
+   "reasons": [
+    "also has a block of another protocol (http), which a service port never receives",
+    "decode: plain /javascript[0]/code: cookie"
+   ]
+  },
+  "daytime-detect": {
+   "path": "javascript/udp/detection/daytime-detect.yaml",
+   "severity": "info",
+   "sha256": "0aa1ea045f0dca218f72f42c8c33b8f1ad031712ff5c173c5049076f622545cf",
+   "reasons": [
+    "sends UDP: a service port is a TCP port, so the datagrams would go to a port nobody named"
+   ]
+  },
+  "db2-discover": {
+   "path": "javascript/udp/detection/db2-discover.yaml",
+   "severity": "info",
+   "sha256": "a7e27c52fd8879e49bbceccc709cb5fcde4a9f02d7dec9ca379af55c46cfc495",
+   "reasons": [
+    "sends UDP: a service port is a TCP port, so the datagrams would go to a port nobody named"
+   ]
+  },
+  "dionaea-ftp-honeypot-detect": {
+   "path": "network/honeypot/dionaea-ftp-honeypot-detect.yaml",
+   "severity": "info",
+   "sha256": "499e878e8f2c49105f68393774277ee9bd8cd93ec8ed6b0c872740c16bb41101",
+   "reasons": [
+    "content rule: the template performs a login or an authentication step (a service run never sends credentials)",
+    "decode: plain /tcp[0]/inputs[0]/data: user; plain /tcp[0]/inputs[1]/data: pass"
+   ]
+  },
+  "dionaea-mqtt-honeypot-detect": {
+   "path": "network/honeypot/dionaea-mqtt-honeypot-detect.yaml",
+   "severity": "info",
+   "sha256": "c081e06a4a7db3c76065d563eecc0fe24931b445eb3db86ad48328574958b4aa",
+   "reasons": [
+    "read by a person and refused: sends an MQTT CONNECT (an unauthenticated session), like unauth-mqtt-broker"
+   ]
+  },
+  "echo-detect": {
+   "path": "javascript/detection/echo-detect.yaml",
+   "severity": "info",
+   "sha256": "c9fc36e9919dac49b11a0ed91d3159919e57cd50fb855a1bb20d7442565fec47",
+   "reasons": [
+    "sends UDP: a service port is a TCP port, so the datagrams would go to a port nobody named"
+   ]
+  },
+  "exposed-adb": {
+   "path": "network/exposures/exposed-adb.yaml",
+   "severity": "critical",
+   "sha256": "04e17f8842d5e23bbd2102a8ac3e68be483f0e2f47c2fc77ea3e400ae707e2a9",
+   "reasons": [
+    "read by a person and refused: opens an Android Debug Bridge session (CNXN), an unauthenticated access attempt"
+   ]
+  },
+  "exposed-zookeeper": {
+   "path": "network/exposures/exposed-zookeeper.yaml",
+   "severity": "high",
+   "sha256": "9909c559d6b33a0861e9979a2dab2787b5e55c19df5f69c12b17f66811cc086d",
+   "reasons": [
+    "read by a person and refused: opens a ZooKeeper session and asks for its children: an unauthenticated session, left out"
+   ]
+  },
+  "ftp-anonymous-login": {
+   "path": "network/default-login/ftp-anonymous-login.yaml",
+   "severity": "medium",
+   "sha256": "dbeb276a5c3b911bb474c2da1b33e938c42708f424bf6b4969c1d68373977f6f",
+   "reasons": [
+    "carries the excluded tag default-login",
+    "content rule: the template performs a login or an authentication step (a service run never sends credentials)",
+    "decode: plain /tcp[0]/inputs[0]/data: user; plain /tcp[0]/inputs[1]/data: pass",
+    "exploit class (tags none, severity medium) and not reviewed as read-only for this file content"
+   ]
+  },
+  "ftp-weak-credentials": {
+   "path": "network/default-login/ftp-weak-credentials.yaml",
+   "severity": "high",
+   "sha256": "ea11f6291b1bb9a37c7abf7973a072f457ba23bf2e40eb470bc1b18e468b9369",
+   "reasons": [
+    "carries the excluded tag default-login",
+    "content rule: the template carries payloads (guessed values, mostly accounts)",
+    "decode: plain /tcp[0]/inputs[0]/data: user; plain /tcp[0]/inputs[1]/data: pass; key /tcp[0]/payloads/username; plain /tcp[0]/payloads/username[0]: admin (a sent account name) (+6 more)",
+    "exploit class (tags none, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "gcloud-api-keys-present": {
+   "path": "cloud/gcp/iam/gcloud-api-keys-present.yaml",
+   "severity": "low",
+   "sha256": "fa0a0eda90f9441a8a35184cda2a5e109cfb92d5a7096e6d2895609810f9c96f",
+   "reasons": [
+    "also has a block of another protocol (code), which a service port never receives",
+    "self-contained: it runs once against what the template names, not against the target",
+    "decode: plain /flow: apikey; plain /javascript[0]/code: apikey"
+   ]
+  },
+  "gcloud-iam-primitive-roles": {
+   "path": "cloud/gcp/iam/gcloud-iam-primitive-roles.yaml",
+   "severity": "medium",
+   "sha256": "027803eb532d5ab395078205fe8e08e10b73c7e1ce65d0e089a7bc610615d2d4",
+   "reasons": [
+    "also has a block of another protocol (code), which a service port never receives",
+    "self-contained: it runs once against what the template names, not against the target",
+    "exploit class (tags none, severity medium) and not reviewed as read-only for this file content"
+   ]
+  },
+  "gcloud-iam-separation-duties": {
+   "path": "cloud/gcp/iam/gcloud-iam-separation-duties.yaml",
+   "severity": "medium",
+   "sha256": "4d91f58a1b846755527c5abe4edd0541d495ad5aa9a4c275d643c378f116ba3b",
+   "reasons": [
+    "also has a block of another protocol (code), which a service port never receives",
+    "self-contained: it runs once against what the template names, not against the target",
+    "decode: plain /javascript[0]/code: user",
+    "exploit class (tags none, severity medium) and not reviewed as read-only for this file content"
+   ]
+  },
+  "gcloud-iam-service-roles-project-level": {
+   "path": "cloud/gcp/iam/gcloud-iam-service-roles-project-level.yaml",
+   "severity": "medium",
+   "sha256": "04044b2fcc4d3c2661fa7949db3764a7fddb3aada38735256b094cdbf128bbce",
+   "reasons": [
+    "also has a block of another protocol (code), which a service port never receives",
+    "self-contained: it runs once against what the template names, not against the target",
+    "exploit class (tags none, severity medium) and not reviewed as read-only for this file content"
+   ]
+  },
+  "gcloud-log-retention-period-insufficient": {
+   "path": "cloud/gcp/logging/gcloud-log-retention-period-insufficient.yaml",
+   "severity": "high",
+   "sha256": "c20359c2979ff91e1dc5dfa4a509ff4340d52ac0bfd634cdd5061b77f24fd576",
+   "reasons": [
+    "also has a block of another protocol (code), which a service port never receives",
+    "self-contained: it runs once against what the template names, not against the target",
+    "exploit class (tags none, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "gcloud-logging-global-buckets-check": {
+   "path": "cloud/gcp/logging/gcloud-global-logging-not-enabled.yaml",
+   "severity": "medium",
+   "sha256": "a82e32234ad60f12bdbb8c90fafb66d8bcbe8ed3f166e01c9b14a94b34d32504",
+   "reasons": [
+    "also has a block of another protocol (code), which a service port never receives",
+    "self-contained: it runs once against what the template names, not against the target",
+    "exploit class (tags none, severity medium) and not reviewed as read-only for this file content"
+   ]
+  },
+  "gcloud-nat-private-subnet-disabled": {
+   "path": "cloud/gcp/nat/gcloud-nat-private-subnet-disabled.yaml",
+   "severity": "medium",
+   "sha256": "565e7265cb0cf44ca267d3ef99861ef2be74b6f146c5be693ed8dd44132cebea",
+   "reasons": [
+    "also has a block of another protocol (code), which a service port never receives",
+    "self-contained: it runs once against what the template names, not against the target",
+    "exploit class (tags none, severity medium) and not reviewed as read-only for this file content"
+   ]
+  },
+  "gcloud-service-account-admin-restriction": {
+   "path": "cloud/gcp/iam/gcloud-service-account-admin-restriction.yaml",
+   "severity": "medium",
+   "sha256": "e447864e05dc6bebaf188407613f1f8028e78cd3abc64da87e79db284930e016",
+   "reasons": [
+    "also has a block of another protocol (code), which a service port never receives",
+    "self-contained: it runs once against what the template names, not against the target",
+    "exploit class (tags none, severity medium) and not reviewed as read-only for this file content"
+   ]
+  },
+  "gcloud-unrestricted-dns-access": {
+   "path": "cloud/gcp/vpc/gcloud-unrestricted-dns-access.yaml",
+   "severity": "high",
+   "sha256": "2a938614da5021f241e51e3e2a28421bdd134768c92a52a4b7d225c5bac24a58",
+   "reasons": [
+    "also has a block of another protocol (code), which a service port never receives",
+    "self-contained: it runs once against what the template names, not against the target",
+    "exploit class (tags none, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "gcloud-unrestricted-ftp-access": {
+   "path": "cloud/gcp/vpc/gcloud-unrestricted-ftp-access.yaml",
+   "severity": "high",
+   "sha256": "ec93fe9c2b97d2b1b22689f1452c85ea16474cdb7f38514cd9dd0edd3fae50d7",
+   "reasons": [
+    "also has a block of another protocol (code), which a service port never receives",
+    "self-contained: it runs once against what the template names, not against the target",
+    "exploit class (tags none, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "gcloud-unrestricted-icmp-access": {
+   "path": "cloud/gcp/vpc/gcloud-unrestricted-icmp-access.yaml",
+   "severity": "high",
+   "sha256": "205e3007b08fa5f3fdbe6ee9adcd03162be31df8f327537184b83612a86bce37",
+   "reasons": [
+    "also has a block of another protocol (code), which a service port never receives",
+    "self-contained: it runs once against what the template names, not against the target",
+    "exploit class (tags none, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "gcloud-unrestricted-inbound-uncommon-ports": {
+   "path": "cloud/gcp/vpc/gcloud-unrestricted-inbound-uncommon-ports.yaml",
+   "severity": "high",
+   "sha256": "23be1cb3a76fb8233db1e07f13f060354582012426fd7232ffa61a7bc20290e7",
+   "reasons": [
+    "also has a block of another protocol (code), which a service port never receives",
+    "self-contained: it runs once against what the template names, not against the target",
+    "exploit class (tags none, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "gcloud-unrestricted-mysql-access": {
+   "path": "cloud/gcp/vpc/gcloud-unrestricted-mysql-access.yaml",
+   "severity": "high",
+   "sha256": "e7fb5e65ba83d38930dd59d8964cf9bd623103f7a169b28341d07cf8a72cb577",
+   "reasons": [
+    "also has a block of another protocol (code), which a service port never receives",
+    "self-contained: it runs once against what the template names, not against the target",
+    "exploit class (tags none, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "gcloud-unrestricted-oracle-db-access": {
+   "path": "cloud/gcp/vpc/gcloud-unrestricted-oracle-db-access.yaml",
+   "severity": "high",
+   "sha256": "7c442e645e26118067001818769599dd98fff7e3476aa39d9de701a3ec72c983",
+   "reasons": [
+    "also has a block of another protocol (code), which a service port never receives",
+    "self-contained: it runs once against what the template names, not against the target",
+    "exploit class (tags none, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "gcloud-unrestricted-outbound-access": {
+   "path": "cloud/gcp/vpc/gcloud-unrestricted-outbound-access.yaml",
+   "severity": "high",
+   "sha256": "4c76331440c2e231653b6bfb8b49c38e2bded28bb58367811c8f4aaaa865c27a",
+   "reasons": [
+    "also has a block of another protocol (code), which a service port never receives",
+    "self-contained: it runs once against what the template names, not against the target",
+    "exploit class (tags none, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "gcloud-unrestricted-postgresql-access": {
+   "path": "cloud/gcp/vpc/gcloud-unrestricted-postgresql-access.yaml",
+   "severity": "high",
+   "sha256": "bf38c893eac692bdb18852d5973d4e6bc418d638506aec97b45b77d9d615325b",
+   "reasons": [
+    "also has a block of another protocol (code), which a service port never receives",
+    "self-contained: it runs once against what the template names, not against the target",
+    "exploit class (tags none, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "gcloud-unrestricted-rdp-access": {
+   "path": "cloud/gcp/vpc/gcloud-unrestricted-rdp-access.yaml",
+   "severity": "critical",
+   "sha256": "3e46b54109a750a0347dc71d134019dd952e187c33c69e463dfb3c001d6176a4",
+   "reasons": [
+    "also has a block of another protocol (code), which a service port never receives",
+    "self-contained: it runs once against what the template names, not against the target",
+    "exploit class (tags none, severity critical) and not reviewed as read-only for this file content"
+   ]
+  },
+  "gcloud-unrestricted-rpc-access": {
+   "path": "cloud/gcp/vpc/gcloud-unrestricted-rpc-access.yaml",
+   "severity": "high",
+   "sha256": "25452720f040a5e313953ab9c4778523a5ff833ee34669814871b95194003574",
+   "reasons": [
+    "also has a block of another protocol (code), which a service port never receives",
+    "self-contained: it runs once against what the template names, not against the target",
+    "exploit class (tags none, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "gcloud-unrestricted-smtp-access": {
+   "path": "cloud/gcp/vpc/gcloud-unrestricted-smtp-access.yaml",
+   "severity": "high",
+   "sha256": "dbf5c12cf4b69588919e11cbebc1e410481ac7e49c7f3af0d828d3f23fc2644a",
+   "reasons": [
+    "also has a block of another protocol (code), which a service port never receives",
+    "self-contained: it runs once against what the template names, not against the target",
+    "exploit class (tags none, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "gcloud-unrestricted-sqlserver-access": {
+   "path": "cloud/gcp/vpc/gcloud-unrestricted-sqlserver-access.yaml",
+   "severity": "critical",
+   "sha256": "78aed5d297896b1fe853b1421e8175d6ecbf0cf9f52da0f3828f2cb275acb2df",
+   "reasons": [
+    "also has a block of another protocol (code), which a service port never receives",
+    "self-contained: it runs once against what the template names, not against the target",
+    "exploit class (tags none, severity critical) and not reviewed as read-only for this file content"
+   ]
+  },
+  "gcloud-unrestricted-ssh-access": {
+   "path": "cloud/gcp/vpc/gcloud-unrestricted-ssh-access.yaml",
+   "severity": "critical",
+   "sha256": "1be0a6f603526de21b4d7b4b60b8f699cb2b92515d4e0bb950ed4a3d22b74d53",
+   "reasons": [
+    "also has a block of another protocol (code), which a service port never receives",
+    "self-contained: it runs once against what the template names, not against the target",
+    "exploit class (tags none, severity critical) and not reviewed as read-only for this file content"
+   ]
+  },
+  "gcloud-vpc-firewall-port-ranges": {
+   "path": "cloud/gcp/vpc/gcloud-vpc-firewall-port-ranges.yaml",
+   "severity": "medium",
+   "sha256": "f1219e284c659616394088878aaa486fa24aa7b466d26d1daae4103e3ec54715",
+   "reasons": [
+    "also has a block of another protocol (code), which a service port never receives",
+    "self-contained: it runs once against what the template names, not against the target",
+    "exploit class (tags none, severity medium) and not reviewed as read-only for this file content"
+   ]
+  },
+  "gost-socks5-detect": {
+   "path": "javascript/detection/gost-socks5-detect.yaml",
+   "severity": "info",
+   "sha256": "fde598f94c0972f6692a8eb03d7b570384cde4fe21625e9ac08941b54134e033",
+   "reasons": [
+    "decode: plain /javascript[0]/code: auth"
+   ]
+  },
+  "gost-ssh-detect": {
+   "path": "javascript/detection/gost-ssh-detect.yaml",
+   "severity": "info",
+   "sha256": "918860f28949900549b4eaba7dc02fadc2bf75ea53224b1829cd46d277bdf1a3",
+   "reasons": [
+    "decode: plain /javascript[0]/code: auth"
+   ]
+  },
+  "ikev2-detect": {
+   "path": "javascript/detection/ikev2-detect.yaml",
+   "severity": "info",
+   "sha256": "68f5c245ae014eaa9d1e106de3a18d30499a3071c89a89e0d67d693927c8ee42",
+   "reasons": [
+    "sends UDP: a service port is a TCP port, so the datagrams would go to a port nobody named",
+    "decode: plain /javascript[0]/code: auth"
+   ]
+  },
+  "ikev2-transforms-enum": {
+   "path": "javascript/enumeration/ikev2-transforms-enum.yaml",
+   "severity": "info",
+   "sha256": "596e955141914c9561d78b9c5368950eb4cd0e2b19e1cdee08420924b6ef529b",
+   "reasons": [
+    "sends UDP: a service port is a TCP port, so the datagrams would go to a port nobody named",
+    "decode: plain /javascript[0]/code: cookie"
+   ]
+  },
+  "ikev2-vid-version": {
+   "path": "javascript/enumeration/ikev2-vid-version.yaml",
+   "severity": "info",
+   "sha256": "fc8fa702a947f61b5485baa6ee1dd3186becd2a14f75c488fd4b467b1cef1860",
+   "reasons": [
+    "sends UDP: a service port is a TCP port, so the datagrams would go to a port nobody named",
+    "decode: plain /javascript[0]/code: authentication"
+   ]
+  },
+  "k8s-allow-privilege-escalation-set": {
+   "path": "cloud/kubernetes/pods/k8s-allow-privilege-escalation-set.yaml",
+   "severity": "critical",
+   "sha256": "9e62c11b5b1b1193996846d84f0b2dbf036ec05048ffcc71861d97d6ff363df2",
+   "reasons": [
+    "also has a block of another protocol (code), which a service port never receives",
+    "self-contained: it runs once against what the template names, not against the target",
+    "exploit class (tags none, severity critical) and not reviewed as read-only for this file content"
+   ]
+  },
+  "k8s-clusterrole-nodes-proxy-rce": {
+   "path": "cloud/kubernetes/rbac/k8s-clusterrole-nodes-proxy-rce.yaml",
+   "severity": "high",
+   "sha256": "15e92e4fb9c963fe3e8655bfbaa08b6ef123b6b7c67e8f62b43a52007dcd5a27",
+   "reasons": [
+    "also has a block of another protocol (code), which a service port never receives",
+    "self-contained: it runs once against what the template names, not against the target",
+    "exploit class (tags none, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "k8s-containers-share-host-ipc": {
+   "path": "cloud/kubernetes/pods/k8s-containers-share-host-ipc.yaml",
+   "severity": "critical",
+   "sha256": "2058f1df4e95d198d4349dcd47e6e8438f43fc24d32754cb71a90aeb51e90af8",
+   "reasons": [
+    "also has a block of another protocol (code), which a service port never receives",
+    "self-contained: it runs once against what the template names, not against the target",
+    "exploit class (tags none, severity critical) and not reviewed as read-only for this file content"
+   ]
+  },
+  "k8s-cpu-limits-not-set": {
+   "path": "cloud/kubernetes/deployments/k8s-cpu-limits-not-set.yaml",
+   "severity": "medium",
+   "sha256": "8b07765dc32bf3beb9066efe6e4271ee46fd4ec4a752933405a62b7901e30041",
+   "reasons": [
+    "also has a block of another protocol (code), which a service port never receives",
+    "self-contained: it runs once against what the template names, not against the target",
+    "exploit class (tags none, severity medium) and not reviewed as read-only for this file content"
+   ]
+  },
+  "k8s-cpu-requests-not-set": {
+   "path": "cloud/kubernetes/deployments/k8s-cpu-requests-not-set.yaml",
+   "severity": "medium",
+   "sha256": "cc8d51cca7358f702dd379b4c94aed47c1b59b1ecc25ecf0cdcee573a934e17e",
+   "reasons": [
+    "also has a block of another protocol (code), which a service port never receives",
+    "self-contained: it runs once against what the template names, not against the target",
+    "exploit class (tags none, severity medium) and not reviewed as read-only for this file content"
+   ]
+  },
+  "k8s-default-namespace-used": {
+   "path": "cloud/kubernetes/deployments/k8s-default-namespace-used.yaml",
+   "severity": "high",
+   "sha256": "dc1a87686d8f0f597c3c09b397c0bd038022742a1fc5984fb5b299820cabf490",
+   "reasons": [
+    "also has a block of another protocol (code), which a service port never receives",
+    "self-contained: it runs once against what the template names, not against the target",
+    "exploit class (tags none, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "k8s-host-network-namespace-shared": {
+   "path": "cloud/kubernetes/pods/k8s-host-network-namespace-shared.yaml",
+   "severity": "high",
+   "sha256": "5e1791de0519fbe5099c20717b3859b9d1ae451a1106f7882d1c348ec3177d68",
+   "reasons": [
+    "also has a block of another protocol (code), which a service port never receives",
+    "self-contained: it runs once against what the template names, not against the target",
+    "exploit class (tags none, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "k8s-host-pid-namespace-sharing": {
+   "path": "cloud/kubernetes/pods/k8s-host-pid-namespace-sharing.yaml",
+   "severity": "critical",
+   "sha256": "e7c07926a456d15009dd1eb83518bd086490355e8eec7aae8aade1a6edd2f21f",
+   "reasons": [
+    "also has a block of another protocol (code), which a service port never receives",
+    "self-contained: it runs once against what the template names, not against the target",
+    "exploit class (tags none, severity critical) and not reviewed as read-only for this file content"
+   ]
+  },
+  "k8s-host-ports-check": {
+   "path": "cloud/kubernetes/deployments/k8s-host-ports-check.yaml",
+   "severity": "medium",
+   "sha256": "b7d99b41541653ce993dd3f42a4a97eb48cf5f61fad78c367eba6120eec41bb7",
+   "reasons": [
+    "also has a block of another protocol (code), which a service port never receives",
+    "self-contained: it runs once against what the template names, not against the target",
+    "exploit class (tags none, severity medium) and not reviewed as read-only for this file content"
+   ]
+  },
+  "k8s-image-pull-policy-always": {
+   "path": "cloud/kubernetes/deployments/k8s-image-pull-policy-always.yaml",
+   "severity": "low",
+   "sha256": "2e7bb2418a628c983a2254d916573edcc652281bf09ad55238b168eecec5d598",
+   "reasons": [
+    "also has a block of another protocol (code), which a service port never receives",
+    "self-contained: it runs once against what the template names, not against the target"
+   ]
+  },
+  "k8s-image-tag-not-fixed": {
+   "path": "cloud/kubernetes/deployments/k8s-image-tag-not-fixed.yaml",
+   "severity": "low",
+   "sha256": "c6ac928c453664858e1534de329bfec4c5abe1e44a978a906703d737360d2f9f",
+   "reasons": [
+    "also has a block of another protocol (code), which a service port never receives",
+    "self-contained: it runs once against what the template names, not against the target"
+   ]
+  },
+  "k8s-liveness-probe-not-configured": {
+   "path": "cloud/kubernetes/deployments/k8s-liveness-probe-not-configured.yaml",
+   "severity": "medium",
+   "sha256": "cea8dbe54e6a21159c5a4a8522e6bcd0bd3676d7ead34f2703b295a37f70a9eb",
+   "reasons": [
+    "also has a block of another protocol (code), which a service port never receives",
+    "self-contained: it runs once against what the template names, not against the target",
+    "exploit class (tags none, severity medium) and not reviewed as read-only for this file content"
+   ]
+  },
+  "k8s-memory-limits-not-set": {
+   "path": "cloud/kubernetes/deployments/k8s-memory-limits-not-set.yaml",
+   "severity": "medium",
+   "sha256": "a84f84808316cba2158f6e1709724cdfec905967e0a560a52f5e27dd1b3361c3",
+   "reasons": [
+    "also has a block of another protocol (code), which a service port never receives",
+    "self-contained: it runs once against what the template names, not against the target",
+    "exploit class (tags none, severity medium) and not reviewed as read-only for this file content"
+   ]
+  },
+  "k8s-memory-requests-not-set": {
+   "path": "cloud/kubernetes/deployments/k8s-memory-requests-not-set.yaml",
+   "severity": "medium",
+   "sha256": "3f50b12865890e4269d899355108e6d85cf657ffef697f2b4c7f2f140030cc6f",
+   "reasons": [
+    "also has a block of another protocol (code), which a service port never receives",
+    "self-contained: it runs once against what the template names, not against the target",
+    "exploit class (tags none, severity medium) and not reviewed as read-only for this file content"
+   ]
+  },
+  "k8s-netpol-egress-rules": {
+   "path": "cloud/kubernetes/network-policies/k8s-netpol-egress-rules.yaml",
+   "severity": "medium",
+   "sha256": "3538491c7ef29888e5c9e116f5c57ab2892cd1282b7e7e87995dbcecd02c358d",
+   "reasons": [
+    "also has a block of another protocol (code), which a service port never receives",
+    "self-contained: it runs once against what the template names, not against the target",
+    "exploit class (tags none, severity medium) and not reviewed as read-only for this file content"
+   ]
+  },
+  "k8s-netpol-namespace": {
+   "path": "cloud/kubernetes/network-policies/k8s-netpol-namespace.yaml",
+   "severity": "medium",
+   "sha256": "b0ce9756de6ffb73406959420867165354b610b615e6679457efe13d508a4b4b",
+   "reasons": [
+    "also has a block of another protocol (code), which a service port never receives",
+    "self-contained: it runs once against what the template names, not against the target",
+    "exploit class (tags none, severity medium) and not reviewed as read-only for this file content"
+   ]
+  },
+  "k8s-network-ingress-rules": {
+   "path": "cloud/kubernetes/network-policies/k8s-network-ingress-rules.yaml",
+   "severity": "medium",
+   "sha256": "e4995a4ff058d73ea74a629728cdf7d8eab4248f5d2a40079a4cc4952085c935",
+   "reasons": [
+    "also has a block of another protocol (code), which a service port never receives",
+    "self-contained: it runs once against what the template names, not against the target",
+    "exploit class (tags none, severity medium) and not reviewed as read-only for this file content"
+   ]
+  },
+  "k8s-privileged-containers": {
+   "path": "cloud/kubernetes/deployments/k8s-privileged-container.yaml",
+   "severity": "critical",
+   "sha256": "606b67f3ee8a4fc33aee6dbf2576cf0b2cbe55cbe6af8f355d5ee672801e851a",
+   "reasons": [
+    "also has a block of another protocol (code), which a service port never receives",
+    "self-contained: it runs once against what the template names, not against the target",
+    "exploit class (tags none, severity critical) and not reviewed as read-only for this file content"
+   ]
+  },
+  "k8s-readiness-probe-not-set": {
+   "path": "cloud/kubernetes/deployments/k8s-readiness-probe-not-set.yaml",
+   "severity": "medium",
+   "sha256": "2494e70479ffed97cb351dde08eb71fe64470d0ede71147276bb962d64d0281b",
+   "reasons": [
+    "also has a block of another protocol (code), which a service port never receives",
+    "self-contained: it runs once against what the template names, not against the target",
+    "exploit class (tags none, severity medium) and not reviewed as read-only for this file content"
+   ]
+  },
+  "k8s-readonly-fs": {
+   "path": "cloud/kubernetes/pods/k8s-readonly-fs.yaml",
+   "severity": "critical",
+   "sha256": "29a0c92dc5100e6c95707afe276ca15930902ab8a23ebc205e22f95a81ae8085",
+   "reasons": [
+    "also has a block of another protocol (code), which a service port never receives",
+    "self-contained: it runs once against what the template names, not against the target",
+    "exploit class (tags none, severity critical) and not reviewed as read-only for this file content"
+   ]
+  },
+  "k8s-readonly-rootfs": {
+   "path": "cloud/kubernetes/pods/k8s-readonly-rootfs.yaml",
+   "severity": "medium",
+   "sha256": "a9879960175688f7945083f31819d19d651a87a4d8bc9e2d15088c25f496e777",
+   "reasons": [
+    "also has a block of another protocol (code), which a service port never receives",
+    "self-contained: it runs once against what the template names, not against the target",
+    "exploit class (tags none, severity medium) and not reviewed as read-only for this file content"
+   ]
+  },
+  "k8s-role-pod-create": {
+   "path": "cloud/kubernetes/rbac/k8s-role-pod-create.yaml",
+   "severity": "medium",
+   "sha256": "52404d185d7a74adaeef21f1c0a228ea4a4ca3520a335c4a1da288a060d94d51",
+   "reasons": [
+    "also has a block of another protocol (code), which a service port never receives",
+    "self-contained: it runs once against what the template names, not against the target",
+    "exploit class (tags none, severity medium) and not reviewed as read-only for this file content"
+   ]
+  },
+  "k8s-root-container-admission": {
+   "path": "cloud/kubernetes/deployments/k8s-root-container-admission.yaml",
+   "severity": "critical",
+   "sha256": "0153a2169d071801832640ec7601126d12edb32dc1e3faf13acc8ded3d5f5162",
+   "reasons": [
+    "also has a block of another protocol (code), which a service port never receives",
+    "self-contained: it runs once against what the template names, not against the target",
+    "exploit class (tags none, severity critical) and not reviewed as read-only for this file content"
+   ]
+  },
+  "k8s-root-user-id": {
+   "path": "cloud/kubernetes/pods/k8s-root-user-id.yaml",
+   "severity": "low",
+   "sha256": "6b4f4cb8a06c0e599a6beadff6b2846c969c1ed821bf6d6f6ed57eb5cbbd25b0",
+   "reasons": [
+    "also has a block of another protocol (code), which a service port never receives",
+    "self-contained: it runs once against what the template names, not against the target",
+    "decode: plain /javascript[0]/code: user"
+   ]
+  },
+  "k8s-seccomp-profile-set": {
+   "path": "cloud/kubernetes/deployments/k8s-seccomp-profile-set.yaml",
+   "severity": "medium",
+   "sha256": "e8cad91caeceeba8f92fddb80f4a76d128c7349cf0d3fa20d56db9e6e4043d68",
+   "reasons": [
+    "also has a block of another protocol (code), which a service port never receives",
+    "self-contained: it runs once against what the template names, not against the target",
+    "exploit class (tags none, severity medium) and not reviewed as read-only for this file content"
+   ]
+  },
+  "lantronix-xport-unauth": {
+   "path": "network/misconfig/lantronix-xport-unauth.yaml",
+   "severity": "high",
+   "sha256": "8ddc4675e8f2dba9da82ce1db9b8e44f9a6e32cc03f6108e9e98fd4424d8bd4e",
+   "reasons": [
+    "carries the excluded tag default-login",
+    "exploit class (tags none, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "ldap-anonymous-login-detect": {
+   "path": "javascript/misconfiguration/ldap/ldap-anonymous-login-detect.yaml",
+   "severity": "medium",
+   "sha256": "c385e7fc492faee073c4247b329d4c6bfe03a8e0427f56ecf6bfa273055a09b2",
+   "reasons": [
+    "calls Authenticate, which is not on the read-only list of library calls",
+    "content rule: the template performs a login or an authentication step (a service run never sends credentials)",
+    "decode: plain /javascript[0]/code: authenticate; plain /javascript[0]/args/Realm: anonymous (a sent account name)",
+    "exploit class (tags none, severity medium) and not reviewed as read-only for this file content"
+   ]
+  },
+  "ldap-default-login": {
+   "path": "javascript/default-logins/ldap-default-login.yaml",
+   "severity": "info",
+   "sha256": "fc702b8c8b5bab3436cf676155bc4fd6a8f02689af60532cb95ddf83d73878e7",
+   "reasons": [
+    "carries the excluded tag default-login",
+    "calls Authenticate, which is not on the read-only list of library calls",
+    "content rule: the template carries payloads (guessed values, mostly accounts)",
+    "decode: plain /javascript[0]/code: authenticate; key /javascript[0]/args/User; key /javascript[0]/args/Pass; key /javascript[0]/payloads/usernames (+3 more)"
+   ]
+  },
+  "ldap-metadata": {
+   "path": "javascript/enumeration/ldap/ldap-metadata.yaml",
+   "severity": "info",
+   "sha256": "c5306fa52185b8aaeec6da5d9017d32317fceb6a8357f6b3c4f0b2fb7d9a2c43",
+   "reasons": [
+    "decode: plain /javascript[0]/args/Realm: anonymous (a sent account name)"
+   ]
+  },
+  "mDNS-enum": {
+   "path": "javascript/udp/misconfiguration/mdns-enum.yaml",
+   "severity": "low",
+   "sha256": "98b972fe5f56a64ed23fa2f0f586b07d35be7bd43be482cbf00d4475a595ecd7",
+   "reasons": [
+    "sends UDP: a service port is a TCP port, so the datagrams would go to a port nobody named"
+   ]
+  },
+  "mdns-ptzoptics-detect": {
+   "path": "javascript/udp/misconfiguration/mdns-ptzoptics-detect.yaml",
+   "severity": "info",
+   "sha256": "03da0bf477d02fc7fad9f9913d0508b6c6eb7828b6c288a79bfcd7955f6da699",
+   "reasons": [
+    "sends UDP: a service port is a TCP port, so the datagrams would go to a port nobody named"
+   ]
+  },
+  "minimize-added-capabilities": {
+   "path": "cloud/kubernetes/deployments/k8s-minimize-added-capabilities.yaml",
+   "severity": "high",
+   "sha256": "4d613f612ec103bffd906e36994eab6eb2a09cf90f84ecb09e4e3dc522e8674f",
+   "reasons": [
+    "also has a block of another protocol (code), which a service port never receives",
+    "self-contained: it runs once against what the template names, not against the target",
+    "exploit class (tags none, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "mongodb-detect": {
+   "path": "network/detection/mongodb-detect.yaml",
+   "severity": "info",
+   "sha256": "024f3898215880636311e15c6db5cee17c6d762d674232ac0362846fcf9dda91",
+   "reasons": [
+    "decode: hex /tcp[0]/inputs[0]/data: admin (an account name in a packet)"
+   ]
+  },
+  "mongodb-info-enum": {
+   "path": "network/enumeration/mongodb-info-enum.yaml",
+   "severity": "info",
+   "sha256": "0470f5797d3aeaed5f3ae374b02ec99301fddcc15a3878260361e9afdc299f6b",
+   "reasons": [
+    "decode: hex /tcp[0]/inputs[0]/data: admin (an account name in a packet)"
+   ]
+  },
+  "mongodb-unauth": {
+   "path": "network/misconfig/mongodb-unauth.yaml",
+   "severity": "high",
+   "sha256": "c3edbc6802d3631203bfc454a529e9f955c08daf35e2d1f48f587aef31251044",
+   "reasons": [
+    "decode: hex /tcp[0]/inputs[0]/data: admin (an account name in a packet)",
+    "exploit class (tags none, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "mssql-browser-detect": {
+   "path": "javascript/udp/detection/mssql-browser-detect.yaml",
+   "severity": "info",
+   "sha256": "9af1a9c080787f69de156f673995e7025c970aed5b90680bccaa15e67b661ecb",
+   "reasons": [
+    "sends UDP: a service port is a TCP port, so the datagrams would go to a port nobody named"
+   ]
+  },
+  "mssql-default-logins": {
+   "path": "javascript/default-logins/mssql-default-logins.yaml",
+   "severity": "high",
+   "sha256": "4350f07231d53d9e4f50292e6c73a8c09e850f8c39a9861034d239340c2f7413",
+   "reasons": [
+    "carries the excluded tag default-login",
+    "calls Connect, which is not on the read-only list of library calls",
+    "content rule: the template carries payloads (guessed values, mostly accounts)",
+    "decode: plain /javascript[0]/code: user; key /javascript[0]/args/User; key /javascript[0]/args/Pass; key /javascript[0]/payloads/usernames (+5 more)",
+    "exploit class (tags none, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "mysql-default-login": {
+   "path": "javascript/default-logins/mysql-default-login.yaml",
+   "severity": "high",
+   "sha256": "0c41f1eb9101597589f4dbba1e51504a34edc88549c72aa74987404cc89402f0",
+   "reasons": [
+    "carries the excluded tag default-login, fuzz",
+    "calls Connect, which is not on the read-only list of library calls",
+    "content rule: the template carries payloads (guessed values, mostly accounts)",
+    "decode: plain /javascript[0]/code: user; key /javascript[0]/args/User; key /javascript[0]/args/Pass; key /javascript[0]/payloads/usernames (+1 more)",
+    "exploit class (tags none, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "mysql-empty-password": {
+   "path": "javascript/misconfiguration/mysql/mysql-empty-password.yaml",
+   "severity": "high",
+   "sha256": "62ad557cfb5d667d8b0f4834882f2b8a89f02da74b34646eeffbe4ea9fe5e24a",
+   "reasons": [
+    "calls Connect, which is not on the read-only list of library calls",
+    "content rule: the template carries payloads (guessed values, mostly accounts)",
+    "decode: plain /javascript[0]/code: user; key /javascript[0]/args/User; plain /javascript[0]/args/User: username; key /javascript[0]/args/Pass (+3 more)",
+    "exploit class (tags none, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "mysql-show-databases": {
+   "path": "javascript/enumeration/mysql/mysql-show-databases.yaml",
+   "severity": "high",
+   "sha256": "7d94d2d8a024d596d55d2e797dd343bea6669f21fe4a990b69c6afc9d2acf36b",
+   "reasons": [
+    "calls ExecuteQuery, which is not on the read-only list of library calls",
+    "content rule: the template carries payloads (guessed values, mostly accounts)",
+    "decode: plain /javascript[0]/code: user; key /javascript[0]/args/User; key /javascript[0]/args/Pass; key /javascript[0]/payloads/usernames (+9 more)",
+    "exploit class (tags none, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "mysql-show-variables": {
+   "path": "javascript/enumeration/mysql/mysql-show-variables.yaml",
+   "severity": "high",
+   "sha256": "8cccce34da0039b4cdf92c1fc2e28ed02aed7f323814b0c6f633fed39c1a63e1",
+   "reasons": [
+    "calls ExecuteQuery, which is not on the read-only list of library calls",
+    "content rule: the template carries payloads (guessed values, mostly accounts)",
+    "decode: plain /javascript[0]/code: user; key /javascript[0]/args/User; key /javascript[0]/args/Pass; key /javascript[0]/payloads/usernames (+9 more)",
+    "exploit class (tags none, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "mysql-user-enum": {
+   "path": "javascript/enumeration/mysql/mysql-user-enum.yaml",
+   "severity": "high",
+   "sha256": "ab0be6acec61e816ba09ebf42c6b969538951a23bce4950bdf795bb0774f7c10",
+   "reasons": [
+    "calls ExecuteQuery, which is not on the read-only list of library calls",
+    "content rule: the template carries payloads (guessed values, mostly accounts)",
+    "decode: plain /javascript[0]/code: user; plain /javascript[0]/args/Query: user; key /javascript[0]/args/User; key /javascript[0]/args/Pass (+10 more)",
+    "exploit class (tags none, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "nats-server-enum": {
+   "path": "javascript/enumeration/nats-server-enum.yaml",
+   "severity": "info",
+   "sha256": "d72a38aefb1cea68a6a7201a987b4d7af123f2531d02f0bd42d0eaaabc1ba88d",
+   "reasons": [
+    "decode: plain /javascript[0]/code: auth"
+   ]
+  },
+  "netbios-udp-detect": {
+   "path": "javascript/udp/detection/netbios-udp-detect.yaml",
+   "severity": "info",
+   "sha256": "aa997038b6b6a7cd7940f94d0c35a05d56f74481f847d57ea4a54fdcf9005e0c",
+   "reasons": [
+    "sends UDP: a service port is a TCP port, so the datagrams would go to a port nobody named"
+   ]
+  },
+  "ntp-enum-variables-enabled": {
+   "path": "javascript/udp/misconfiguration/ntp-enum-variables-enabled.yaml",
+   "severity": "info",
+   "sha256": "7b72107821a1e468d39a04b8624fcaa0cdbaaf6cb54dabecdb0f200bfa667f63",
+   "reasons": [
+    "sends UDP: a service port is a TCP port, so the datagrams would go to a port nobody named"
+   ]
+  },
+  "ntp-version-detect": {
+   "path": "javascript/detection/ntp-version-detect.yaml",
+   "severity": "info",
+   "sha256": "78de4cbd5ba6a67a6acb59756509a4d9368f287cdaf2d49db09f65b230b4b30b",
+   "reasons": [
+    "sends UDP: a service port is a TCP port, so the datagrams would go to a port nobody named"
+   ]
+  },
+  "open-socks-proxy": {
+   "path": "network/misconfig/open-socks-proxy.yaml",
+   "severity": "medium",
+   "sha256": "6b5045132b4cc38ea350122fef35d2933eabf3a8a9be3640ec7f09991c2f3851",
+   "reasons": [
+    "read by a person and refused: asks the proxy to open a connection to 1.1.1.1 (a third party)"
+   ]
+  },
+  "openclaw-exposure": {
+   "path": "network/exposures/openclaw-exposure.yaml",
+   "severity": "info",
+   "sha256": "653f585076969dcf9dcb1297325126702fc96da3362d9c692913daf3a12f4ee7",
+   "reasons": [
+    "sends UDP: a service port is a TCP port, so the datagrams would go to a port nobody named"
+   ]
+  },
+  "perforce-info-disclosure": {
+   "path": "javascript/enumeration/perforce-info-disclosure.yaml",
+   "severity": "medium",
+   "sha256": "2dcfc563e4948cf1593e9eb6ea8c22365007d6c88c44ee7c4a8bd1eb12549935",
+   "reasons": [
+    "content rule: the template performs a login or an authentication step (a service run never sends credentials)",
+    "decode: hex /tcp[0]/inputs[0]/data: user; plain /javascript[0]/code: user",
+    "exploit class (tags cve, severity medium) and not reviewed as read-only for this file content"
+   ]
+  },
+  "perforce-passwordless-users": {
+   "path": "javascript/misconfiguration/perforce-passwordless-users.yaml",
+   "severity": "critical",
+   "sha256": "3fa697b5c4fc4ff86adf1709a3903b5cd14eb0fcbbef83519a81046cfee5cb8f",
+   "reasons": [
+    "content rule: the template performs a login or an authentication step (a service run never sends credentials)",
+    "decode: hex /tcp[0]/inputs[0]/data: user; plain /javascript[0]/code: user",
+    "exploit class (tags cve, severity critical) and not reviewed as read-only for this file content"
+   ]
+  },
+  "perforce-remote-depot-unauth": {
+   "path": "javascript/misconfiguration/perforce-remote-depot-unauth.yaml",
+   "severity": "high",
+   "sha256": "0d74213f39d233f3e37a01ac7aed05b2568c4bdf5573b606ea9070151bbc8c17",
+   "reasons": [
+    "content rule: the template performs a login or an authentication step (a service run never sends credentials)",
+    "decode: hex /tcp[0]/inputs[0]/data: user; plain /javascript[0]/code: user",
+    "exploit class (tags cve, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "perforce-user-enumeration": {
+   "path": "javascript/enumeration/perforce-user-enum.yaml",
+   "severity": "medium",
+   "sha256": "a7176f4903da75513d76ab68aba457c316ddc68190851176f7815b16c26761e1",
+   "reasons": [
+    "content rule: the template performs a login or an authentication step (a service run never sends credentials)",
+    "decode: hex /tcp[0]/inputs[0]/data: user; plain /javascript[0]/code: user",
+    "exploit class (tags cve, severity medium) and not reviewed as read-only for this file content"
+   ]
+  },
+  "pgsql-default-db": {
+   "path": "javascript/enumeration/pgsql/pgsql-default-db.yaml",
+   "severity": "high",
+   "sha256": "29493fcb8aa419b218d690c07eb2a01eef6e302eb062bad5419676c48ab42fd2",
+   "reasons": [
+    "uses the javascript library postgres",
+    "calls ConnectWithDB, which is not on the read-only list of library calls",
+    "content rule: the template carries payloads (guessed values, mostly accounts)",
+    "decode: plain /javascript[0]/code: user; key /javascript[0]/args/User; key /javascript[0]/args/Pass; plain /javascript[0]/args/Pass: password (+7 more)",
+    "exploit class (tags none, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "pgsql-detect": {
+   "path": "network/detection/pgsql-detect.yaml",
+   "severity": "info",
+   "sha256": "f9cf34f2d26e197d372d5cef23678a7e1f70c3f9723747d81aa8a9ccdd2a964d",
+   "reasons": [
+    "content rule: the template performs a login or an authentication step (a service run never sends credentials)",
+    "decode: hex /tcp[0]/inputs[0]/data: user; hex /tcp[0]/inputs[1]/data: an authentication packet"
+   ]
+  },
+  "pgsql-empty-password": {
+   "path": "javascript/misconfiguration/pgsql/pgsql-empty-password.yaml",
+   "severity": "critical",
+   "sha256": "1bbe3a9b6ca541152e789d1c79e4ef90a8ac3e5b86c28c1e875c2a329d733989",
+   "reasons": [
+    "uses the javascript library postgres",
+    "calls Connect, which is not on the read-only list of library calls",
+    "content rule: the template performs a login or an authentication step (a service run never sends credentials)",
+    "decode: plain /javascript[0]/code: user; key /javascript[0]/args/User; plain /javascript[0]/args/User: postgres (a sent account name); key /javascript[0]/args/Pass",
+    "exploit class (tags none, severity critical) and not reviewed as read-only for this file content"
+   ]
+  },
+  "pgsql-extensions-rce": {
+   "path": "javascript/misconfiguration/pgsql/pgsql-extensions-rce.yaml",
+   "severity": "high",
+   "sha256": "10541ba69d7dc09b3349d5d680777feb8b3c2c0d540eba7653765fb8706480b8",
+   "reasons": [
+    "uses the javascript library postgres",
+    "calls ExecuteQuery, which is not on the read-only list of library calls",
+    "content rule: the template carries payloads (guessed values, mostly accounts)",
+    "decode: plain /javascript[0]/code: passwd; key /javascript[0]/args/User; key /javascript[0]/args/Pass; plain /javascript[0]/args/Pass: password (+5 more)",
+    "exploit class (tags rce, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "pgsql-file-read": {
+   "path": "javascript/enumeration/pgsql/pgsql-file-read.yaml",
+   "severity": "high",
+   "sha256": "3082c207ccd15441a7d4efb2d7451448cd10f7e59efd817287dc03fc0943a11f",
+   "reasons": [
+    "uses the javascript library postgres",
+    "calls ExecuteQuery, which is not on the read-only list of library calls",
+    "content rule: the template carries payloads (guessed values, mostly accounts)",
+    "decode: plain /javascript[0]/code: user; key /javascript[0]/args/User; key /javascript[0]/args/Pass; plain /javascript[0]/args/Pass: password (+6 more)",
+    "exploit class (tags none, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "pgsql-list-database": {
+   "path": "javascript/enumeration/pgsql/pgsql-list-database.yaml",
+   "severity": "high",
+   "sha256": "6423f28f3cb45bafd50bb266e998dea682f0e14de46eacab461702f4e728f9d3",
+   "reasons": [
+    "uses the javascript library postgres",
+    "calls ExecuteQuery, which is not on the read-only list of library calls",
+    "content rule: the template carries payloads (guessed values, mostly accounts)",
+    "decode: plain /javascript[0]/code: user; key /javascript[0]/args/User; key /javascript[0]/args/Pass; plain /javascript[0]/args/Pass: password (+6 more)",
+    "exploit class (tags none, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "pgsql-list-password-hashes": {
+   "path": "javascript/enumeration/pgsql/pgsql-list-password-hashes.yaml",
+   "severity": "high",
+   "sha256": "a1b827a959ea223fcde30389e9ced921d404366a300d1f325d9255bac2cc85ac",
+   "reasons": [
+    "uses the javascript library postgres",
+    "calls ExecuteQuery, which is not on the read-only list of library calls",
+    "content rule: the template carries payloads (guessed values, mostly accounts)",
+    "decode: plain /javascript[0]/code: user; key /javascript[0]/args/User; key /javascript[0]/args/Pass; plain /javascript[0]/args/Pass: password (+6 more)",
+    "exploit class (tags none, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "pgsql-list-users": {
+   "path": "javascript/enumeration/pgsql/pgsql-list-users.yaml",
+   "severity": "high",
+   "sha256": "f0e337e22d4bd8ec802c8753572f1fe0b5680e6400c29df1c9eee8fd8e5878dc",
+   "reasons": [
+    "uses the javascript library postgres",
+    "calls ExecuteQuery, which is not on the read-only list of library calls",
+    "content rule: the template carries payloads (guessed values, mostly accounts)",
+    "decode: plain /javascript[0]/code: user; key /javascript[0]/args/User; key /javascript[0]/args/Pass; plain /javascript[0]/args/Pass: password (+6 more)",
+    "exploit class (tags none, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "pgsql-version-detect": {
+   "path": "javascript/enumeration/pgsql/pgsql-version-detect.yaml",
+   "severity": "high",
+   "sha256": "c23c76ec93f9ddaa09698fdf0c3bbf3327eadf110e544735d8c305d43b5f4227",
+   "reasons": [
+    "uses the javascript library postgres",
+    "calls ExecuteQuery, which is not on the read-only list of library calls",
+    "content rule: the template carries payloads (guessed values, mostly accounts)",
+    "decode: plain /javascript[0]/code: user; key /javascript[0]/args/User; key /javascript[0]/args/Pass; plain /javascript[0]/args/Pass: password (+6 more)",
+    "exploit class (tags none, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "postgres-default-logins": {
+   "path": "javascript/default-logins/postgres-default-logins.yaml",
+   "severity": "high",
+   "sha256": "02f82fc5e5e1513200b9a697ccbd94c0c059941aaa0f3531f58a37071ff4a3a9",
+   "reasons": [
+    "carries the excluded tag default-login",
+    "uses the javascript library postgres",
+    "calls Connect, PGClient, which is not on the read-only list of library calls",
+    "content rule: the template carries payloads (guessed values, mostly accounts)",
+    "decode: plain /javascript[0]/code: user; key /javascript[0]/args/User; key /javascript[0]/args/Pass; key /javascript[0]/payloads/usernames (+7 more)",
+    "exploit class (tags none, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "printers-info-leak": {
+   "path": "network/misconfig/printers-info-leak.yaml",
+   "severity": "info",
+   "sha256": "706b87b1d9662dbaa41638373cc6d375e90866392bc1bb5ef0a190b1dad6020c",
+   "reasons": [
+    "carries the excluded tag intrusive",
+    "exploit class (tags intrusive, severity info) and not reviewed as read-only for this file content"
+   ]
+  },
+  "psql-user-enum": {
+   "path": "network/enumeration/psql-user-enum.yaml",
+   "severity": "low",
+   "sha256": "ae3498d092382a645bd732d78526a128810f6442c0bdac21116e148976040f39",
+   "reasons": [
+    "content rule: the template carries payloads (guessed values, mostly accounts)",
+    "decode: plain /tcp[0]/inputs[0]/data: user; key /tcp[0]/payloads/users; plain /tcp[0]/payloads/users[0]: postgres (a sent account name)"
+   ]
+  },
+  "rabbitmq-amqp-default-login": {
+   "path": "javascript/default-logins/rabbitmq-amqp-default-login.yaml",
+   "severity": "high",
+   "sha256": "e09cfa39ef9aea5d971ce9c696fe534d981ddfcd366a83eab61d951a62a03d18",
+   "reasons": [
+    "carries the excluded tag default-login",
+    "content rule: the template carries payloads (guessed values, mostly accounts)",
+    "decode: plain /javascript[0]/code: username; key /javascript[0]/args/Username; plain /javascript[0]/args/Username: username; key /javascript[0]/args/Password (+13 more)",
+    "exploit class (tags none, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "rdp-detection": {
+   "path": "network/detection/rdp-detection.yaml",
+   "severity": "info",
+   "sha256": "1207f5fff4c51b0fa5395cb252a1c32cf51583efdbe3a7c53cf81204164a38be",
+   "reasons": [
+    "decode: hex /tcp[0]/inputs[0]/data: cookie"
+   ]
+  },
+  "redis-default-logins": {
+   "path": "javascript/default-logins/redis-default-logins.yaml",
+   "severity": "high",
+   "sha256": "d8dbb19bb03a74693e44035092ede37f6faff210128cd5f8ff479ccb2bd931d1",
+   "reasons": [
+    "carries the excluded tag default-login",
+    "calls GetServerInfoAuth, which is not on the read-only list of library calls",
+    "content rule: the template carries payloads (guessed values, mostly accounts)",
+    "decode: plain /javascript[0]/code: password; key /javascript[0]/args/Password; key /javascript[0]/payloads/passwords; plain /javascript[0]/payloads/passwords[1]: root (a sent account name) (+2 more)",
+    "exploit class (tags none, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "rpc-udp-detect": {
+   "path": "javascript/udp/detection/rpc-udp-detect.yaml",
+   "severity": "info",
+   "sha256": "980893b8e3e897c217f5c69e10fc2f044ee95d286701a4ec66ea7e39a3f69a88",
+   "reasons": [
+    "sends UDP: a service port is a TCP port, so the datagrams would go to a port nobody named"
+   ]
+  },
+  "rtsp-detect": {
+   "path": "network/detection/rtsp-detect.yaml",
+   "severity": "info",
+   "sha256": "7d4132bbd617a21efa639f85bf4fa871cd4297f572e3dbf59ac162ad42f83172",
+   "reasons": [
+    "decode: hex /tcp[0]/inputs[0]/data: root (an account name in a packet)"
+   ]
+  },
+  "samba-detect": {
+   "path": "javascript/detection/samba-detect.yaml",
+   "severity": "info",
+   "sha256": "0c08b8de5eb6caccb194ffc1d60812f0d5b8cf0c2e7c20e4d49239629aba7cc0",
+   "reasons": [
+    "decode: plain /javascript[0]/code: ntlm"
+   ]
+  },
+  "sap-router-info-leak": {
+   "path": "network/misconfig/sap-router-info-leak.yaml",
+   "severity": "critical",
+   "sha256": "7384a4e0463388a8678d25b982a5e7687effd83a2fcd962f1c408c4101ba74ca",
+   "reasons": [
+    "read by a person and refused: sends a SAProuter administration request; the request type was not confirmed read-only, left out"
+   ]
+  },
+  "smb-anonymous-access": {
+   "path": "javascript/misconfiguration/smb/smb-anonymous-access.yaml",
+   "severity": "high",
+   "sha256": "f49591527f365bee87520784f835c4ca4e946467a49dd9a08a330fe298a7f922",
+   "reasons": [
+    "calls ListShares, which is not on the read-only list of library calls",
+    "content rule: the template performs a login or an authentication step (a service run never sends credentials)",
+    "decode: plain /javascript[0]/code: user; key /javascript[0]/args/User; key /javascript[0]/args/Pass",
+    "exploit class (tags none, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "smb-default-login": {
+   "path": "javascript/default-logins/smb-default-login.yaml",
+   "severity": "high",
+   "sha256": "249c4ececc5a577bafd15a918807c099a5c08b39548f8e228716552e3b82e199",
+   "reasons": [
+    "carries the excluded tag bruteforce",
+    "calls ListShares, which is not on the read-only list of library calls",
+    "content rule: the template carries payloads (guessed values, mostly accounts)",
+    "decode: plain /javascript[0]/code: user; key /javascript[0]/args/User; key /javascript[0]/args/Pass; key /javascript[0]/payloads/usernames (+7 more)",
+    "exploit class (tags none, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "smb-shares": {
+   "path": "javascript/misconfiguration/smb/smb-shares.yaml",
+   "severity": "low",
+   "sha256": "f311f42b27b3a942ed5b3080c049dc11f6d6e3e051af48c7af7cbbe152e55221",
+   "reasons": [
+    "calls ListShares, which is not on the read-only list of library calls",
+    "content rule: the template carries payloads (guessed values, mostly accounts)",
+    "decode: plain /javascript[0]/code: user; key /javascript[0]/args/User; plain /javascript[0]/args/User: username; key /javascript[0]/args/Pass (+10 more)"
+   ]
+  },
+  "smtp-user-enum": {
+   "path": "network/enumeration/smtp/smtp-user-enum.yaml",
+   "severity": "medium",
+   "sha256": "92bfbb56650692cd037a658a9bff5f8212b3799cde5efdff0fc840ccbf5f8c84",
+   "reasons": [
+    "content rule: the template carries payloads (guessed values, mostly accounts)",
+    "decode: key /tcp[0]/payloads/useraccounts; plain /tcp[0]/payloads/useraccounts[1]: admin (a sent account name); plain /tcp[0]/payloads/useraccounts[2]: root (a sent account name)",
+    "exploit class (tags none, severity medium) and not reviewed as read-only for this file content"
+   ]
+  },
+  "snmpv1-community-detect-string": {
+   "path": "javascript/udp/misconfiguration/snmpv1-community-detect-string.yaml",
+   "severity": "high",
+   "sha256": "866a4ff3d1df08d07e5dee86939e72b104c17787f57a817a646250d4fd22c7fb",
+   "reasons": [
+    "sends UDP: a service port is a TCP port, so the datagrams would go to a port nobody named",
+    "content rule: the template carries payloads (guessed values, mostly accounts)",
+    "decode: plain /javascript[0]/code: community; key /javascript[0]/args/Community; plain /javascript[0]/args/Community: community; key /javascript[0]/payloads/community_string",
+    "exploit class (tags none, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "snmpv3-detect": {
+   "path": "javascript/udp/detection/snmpv3-detect.yaml",
+   "severity": "info",
+   "sha256": "713fd3185665f251f7156ce76fb768fa888ae0239590c012b40bc1bbf9a7633e",
+   "reasons": [
+    "sends UDP: a service port is a TCP port, so the datagrams would go to a port nobody named"
+   ]
+  },
+  "ssh-default-logins": {
+   "path": "javascript/default-logins/ssh-default-logins.yaml",
+   "severity": "critical",
+   "sha256": "9a22c350e2c8be5655f201f2004bcbd761c1508fb2728842046e506244bf49a4",
+   "reasons": [
+    "carries the excluded tag default-login, fuzz",
+    "calls Connect, which is not on the read-only list of library calls",
+    "content rule: the template carries payloads (guessed values, mostly accounts)",
+    "decode: plain /javascript[0]/pre-condition: password; plain /javascript[0]/code: username; key /javascript[0]/args/Username; key /javascript[0]/args/Password (+2 more)",
+    "exploit class (tags none, severity critical) and not reviewed as read-only for this file content"
+   ]
+  },
+  "tftp-detect": {
+   "path": "javascript/udp/detection/tftp-detect.yaml",
+   "severity": "info",
+   "sha256": "835665c75d8dc9325b199f081eee0ed442b949a739b949adbc56bcf71d60ad8b",
+   "reasons": [
+    "sends UDP: a service port is a TCP port, so the datagrams would go to a port nobody named"
+   ]
+  },
+  "tidb-unauth": {
+   "path": "network/misconfig/tidb-unauth.yaml",
+   "severity": "high",
+   "sha256": "545bb4984015e5b0625f4df7a36b44019ce4df43f4c45223b1bd7155e10565ca",
+   "reasons": [
+    "decode: hex /tcp[0]/inputs[1]/data: password",
+    "exploit class (tags none, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "unauth-mqtt-broker": {
+   "path": "javascript/misconfiguration/mqtt-uauth-broker.yaml",
+   "severity": "high",
+   "sha256": "fd94658dd0bcd3854a30b478a2af7fe4f808990d64c4339ebc10d7eabc8d9761",
+   "reasons": [
+    "read by a person and refused: sends an MQTT CONNECT and SUBSCRIBE (an unauthenticated session), left out"
+   ]
+  },
+  "unauth-psql": {
+   "path": "network/misconfig/unauth-psql.yaml",
+   "severity": "high",
+   "sha256": "5ff2acb6bde173bc678dec0fa5aab996771f530efd42f8e2d12e2fc446659d02",
+   "reasons": [
+    "content rule: the template performs a login or an authentication step (a service run never sends credentials)",
+    "decode: hex /tcp[0]/inputs[0]/data: user; hex /tcp[0]/inputs[1]/data: userbyid (an account name in a packet)",
+    "exploit class (tags none, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "unauth-vnc-server-detect": {
+   "path": "javascript/misconfiguration/unauth-vnc-server-detect.yaml",
+   "severity": "critical",
+   "sha256": "bc28471a28816d4a017d0b833978a5bda479dfc7d619558b7f1f576f86a33865",
+   "reasons": [
+    "uses the javascript library vnc",
+    "calls Connect, VNCClient, which is not on the read-only list of library calls",
+    "content rule: the template performs a login or an authentication step (a service run never sends credentials)",
+    "exploit class (tags none, severity critical) and not reviewed as read-only for this file content"
+   ]
+  },
+  "vnc-default-login": {
+   "path": "javascript/default-logins/vnc-default-login.yaml",
+   "severity": "high",
+   "sha256": "06abdc7f60d8a91b22278cb8a22f516a008285aba48875f96f9ecdb085d1b9e4",
+   "reasons": [
+    "carries the excluded tag default-login",
+    "uses the javascript library vnc",
+    "calls Connect, VNCClient, which is not on the read-only list of library calls",
+    "content rule: the template carries payloads (guessed values, mostly accounts)",
+    "decode: plain /javascript[0]/code: password; key /javascript[0]/args/Password; key /javascript[0]/payloads/passwords; plain /javascript[0]/payloads/passwords[2]: password (+1 more)",
+    "exploit class (tags none, severity high) and not reviewed as read-only for this file content"
+   ]
+  },
+  "x11-unauth-access": {
+   "path": "javascript/misconfiguration/x11/x11-unauth-access.yaml",
+   "severity": "high",
+   "sha256": "7919db8a9e22f2792b7d19655d80a2972c7adbd79b6996f0ea21edebefa38f8c",
+   "reasons": [
+    "read by a person and refused: sends the X11 connection setup with empty authorization (an unauthenticated access attempt), left out"
+   ]
+  },
+  "zeroconf-detect": {
+   "path": "javascript/udp/detection/zeroconf-detect.yaml",
+   "severity": "info",
+   "sha256": "f3c0166a06ac2ee2e0b72a59420b7350f9a6aa389f8f879e54051a97df4a4a62",
+   "reasons": [
+    "sends UDP: a service port is a TCP port, so the datagrams would go to a port nobody named"
+   ]
+  }
+ }
+}

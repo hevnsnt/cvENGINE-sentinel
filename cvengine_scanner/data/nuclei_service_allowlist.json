@@ -1,0 +1,2521 @@
+{
+ "nuclei_templates": "v10.5.1",
+ "generated_by": "scripts/generate_service_allowlist.py",
+ "reviewed_exceptions": [
+  "perforce-detection",
+  "smb-signing"
+ ],
+ "templates": {
+  "3com-ftp-detect": {
+   "sha256": "50a7354b54d7394257abd6a98b9c132da39812e4534adbe648a8596d3a340c37",
+   "path": "network/detection/ftp/3com-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "7777botnet-detect": {
+   "sha256": "71b392f073180863bca5acc0e41954ccc512f93c88375082bac8fda49b501825",
+   "path": "network/c2/7777botnet.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "CVE-2001-1473": {
+   "sha256": "6c3ada6f5610a2021c3eb314d968071b5193b7c14256603f686dba4b2b8da42f",
+   "path": "network/cves/2001/CVE-2001-1473.yaml",
+   "severity": "high",
+   "classes": [
+    "ssh"
+   ]
+  },
+  "CVE-2004-0437": {
+   "sha256": "15bec471be57ef759a267ea35587d5939e9082bc731cf4d4875c948c18d72d88",
+   "path": "network/cves/2004/CVE-2004-0437.yaml",
+   "severity": "medium",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "CVE-2004-0656": {
+   "sha256": "091e53b28aba918d2db4fa5a5a0940f0911d8d92302bab23fd4039e2776e8be7",
+   "path": "network/cves/2004/CVE-2004-0656.yaml",
+   "severity": "medium",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "CVE-2004-1602": {
+   "sha256": "aa8777a6c2a66cacd59b0b853e349c12ca14618525ebc3e98d347dd840f4f355",
+   "path": "network/cves/2004/CVE-2004-1602.yaml",
+   "severity": "medium",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "CVE-2004-1641": {
+   "sha256": "ce1acbbe0c124a5f695fdba41d56de9dd0418ad3bb754a492e1048f47454d6db",
+   "path": "network/cves/2004/CVE-2004-1641.yaml",
+   "severity": "medium",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "CVE-2005-0850": {
+   "sha256": "49d1a1940584cd6bbc30ccac425d7ce703dc9ecce94a6e5029dff40b6b2bf0a6",
+   "path": "network/cves/2005/CVE-2005-0850.yaml",
+   "severity": "medium",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "CVE-2005-0851": {
+   "sha256": "61249f64452e9d758bd9220ea66493489a05a0efadee794699aa0a439f049d5d",
+   "path": "network/cves/2005/CVE-2005-0851.yaml",
+   "severity": "medium",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "CVE-2006-2173": {
+   "sha256": "52aeba8f92d6cf6d5ddc7c9f0477bec86407fdebf7b8043dea7e8cceb0ff6c70",
+   "path": "network/cves/2006/CVE-2006-2173.yaml",
+   "severity": "medium",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "CVE-2006-6565": {
+   "sha256": "3217cc60b03204ac71b23fcad08116d9b010ec5d9f6477bcaa3347bbdc62d68a",
+   "path": "network/cves/2006/CVE-2006-6565.yaml",
+   "severity": "medium",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "CVE-2008-0702": {
+   "sha256": "d867f7925c4fd76a1b3dddaed033c77ccd828ec2b82f8410b80f57e06bb577b3",
+   "path": "network/cves/2008/CVE-2008-0702.yaml",
+   "severity": "critical",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "CVE-2008-5281": {
+   "sha256": "285896846526490eff9812b67d7cb0df003b517c7438ef26c136902157397325",
+   "path": "network/cves/2008/CVE-2008-5281.yaml",
+   "severity": "critical",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "CVE-2009-0884": {
+   "sha256": "1693ceda39a7aff7f6f14f43353bb6e03e835a855b19df06c6bb424db78933ae",
+   "path": "network/cves/2009/CVE-2009-0884.yaml",
+   "severity": "medium",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "CVE-2010-3867": {
+   "sha256": "1b19789cb982fe9c82441202567ae3a23ef9bea2310f3cfbdcf41cc48e6768f1",
+   "path": "network/cves/2010/CVE-2010-3867.yaml",
+   "severity": "high",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "CVE-2011-0762": {
+   "sha256": "108d027ea016710d1f5b679c6bd83f8c1b1e07c376955b16c27da9968ae56bfa",
+   "path": "network/cves/2011/CVE-2011-0762.yaml",
+   "severity": "medium",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "CVE-2011-3171": {
+   "sha256": "003bdea5d456c2e142d748947274638c8bfa13854caeb15307286dc919f782f6",
+   "path": "network/cves/2011/CVE-2011-3171.yaml",
+   "severity": "low",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "CVE-2014-1841": {
+   "sha256": "7e3fb9170c20dadd754cdd7b93420fda3c987e9df177801e16376724f82f2e46",
+   "path": "network/cves/2014/CVE-2014-1841.yaml",
+   "severity": "medium",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "CVE-2014-1842": {
+   "sha256": "d53c7dc9fce2b4712e46acf8ab788abc4dbd2d106b72d28428829489b5ce5836",
+   "path": "network/cves/2014/CVE-2014-1842.yaml",
+   "severity": "medium",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "CVE-2014-1843": {
+   "sha256": "793324019a21c2032ec1d738d7ae74e6b4733cafcdb15c810baa8fb7b59a5180",
+   "path": "network/cves/2014/CVE-2014-1843.yaml",
+   "severity": "medium",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "CVE-2015-1419": {
+   "sha256": "88f427f5e3689811eb2a0f40472cba6ef290a32b1f46dcc5b29035b54b94ae67",
+   "path": "network/cves/2015/CVE-2015-1419.yaml",
+   "severity": "medium",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "CVE-2019-18217": {
+   "sha256": "73182fded0bf22b31d6ee50f9fcb5bc94e17765334e9c5cab19e6e43dc07c355",
+   "path": "network/cves/2019/CVE-2019-18217.yaml",
+   "severity": "high",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "CVE-2019-20176": {
+   "sha256": "d4358d9008c3827c3c0cf36691abd087972032bdad1e81c26e9bc7db6fe2ab45",
+   "path": "network/cves/2019/CVE-2019-20176.yaml",
+   "severity": "high",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "CVE-2020-35359": {
+   "sha256": "43b1e4a3ca3db365c11dc60db6b49604ab41a79aa09d645ff11d2015b0a98dc5",
+   "path": "network/cves/2020/CVE-2020-35359.yaml",
+   "severity": "high",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "CVE-2020-9274": {
+   "sha256": "01e8fba232e3aec1ede01bed42276426828d5573946355ec14008883bc60f5ed",
+   "path": "network/cves/2020/CVE-2020-9274.yaml",
+   "severity": "high",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "CVE-2020-9365": {
+   "sha256": "133107cc614d8c47226eeeaea0b967bc6329ba7b558fa3c7db91605b428990ed",
+   "path": "network/cves/2020/CVE-2020-9365.yaml",
+   "severity": "medium",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "CVE-2021-30047": {
+   "sha256": "524e87930f764b249b4df2c8bd54f53a6a949c067092b99511f8c5da0aabb702",
+   "path": "network/cves/2021/CVE-2021-30047.yaml",
+   "severity": "high",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "CVE-2021-35211": {
+   "sha256": "2c50d12eb83745d386367d3fdccf56f829af444200711727790928c9d70b68e4",
+   "path": "javascript/cves/2021/CVE-2021-35211.yaml",
+   "severity": "critical",
+   "classes": [
+    "ssh"
+   ]
+  },
+  "CVE-2021-40524": {
+   "sha256": "b4567cd377ba9fb3fda45cac670871ca43476c32e54cd9c88d0b03e7f41d5ad3",
+   "path": "network/cves/2021/CVE-2021-40524.yaml",
+   "severity": "high",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "CVE-2023-22629": {
+   "sha256": "918e189b095b930af632d0b9541b79b2054f5bfe6ebdf0e5ed32210a6a35fba2",
+   "path": "network/cves/2023/CVE-2023-22629.yaml",
+   "severity": "high",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "CVE-2023-48795": {
+   "sha256": "51b029e971a39153585ff21c058256910ac0ee8fd129924de5d8d540dad733c2",
+   "path": "javascript/cves/2023/CVE-2023-48795.yaml",
+   "severity": "medium",
+   "classes": [
+    "ssh"
+   ]
+  },
+  "CVE-2023-51713": {
+   "sha256": "4b381d3ec198afafa255b7c4e66a7dff2a48b9ccfab161dd7761253254d8b9ae",
+   "path": "network/cves/2023/CVE-2023-51713.yaml",
+   "severity": "high",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "CVE-2024-48208": {
+   "sha256": "4df3c60c75fbb2ddf0967a2be0785f74d5b6fe2143a33daf452b03b8281a68a2",
+   "path": "network/cves/2024/CVE-2024-48208.yaml",
+   "severity": "high",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "CVE-2024-48651": {
+   "sha256": "18dbd05cb7f0ce74e69c0f48c5b87de6d0541d5eabd96a49103acec912c7a9f9",
+   "path": "network/cves/2024/CVE-2024-48651.yaml",
+   "severity": "high",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "CVE-2026-4480": {
+   "sha256": "82d981ce4304861b22e55af8e23761834f19e195a9bc9e83a0b2191811ed9648",
+   "path": "javascript/cves/2026/CVE-2026-4480.yaml",
+   "severity": "critical",
+   "classes": [
+    "smb"
+   ]
+  },
+  "activemq-openwire-transport-detect": {
+   "sha256": "9d286ae384ce08d34b5f8ad34f44034cfae37cd57599f67a3d70f65b504b4d1c",
+   "path": "network/detection/activemq-openwire-transport-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "adi-galaxy-ftp-detect": {
+   "sha256": "6be5c54d9c6c4b5e340b11dd94956d85e6d1c0cab42a6abe960909f226cf0811",
+   "path": "network/detection/ftp/adi-galaxy-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "adsb-ultrafeeder-detect": {
+   "sha256": "6b7b8b1ec0c48687fad643e44ff0bb2f9a51efe8fb76c4fb79ffb88f21614761",
+   "path": "network/detection/adsb-ultrafeeder-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "afp-server-detect": {
+   "sha256": "16849b486e3ba999d5c72773290d1dc902df372280e134422c1b0e2b8992ee8c",
+   "path": "network/detection/afp-server-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "aix-websm-detect": {
+   "sha256": "252e6977b36d0140cbdcec3336ec738d6371cd2737521ba1d99818b72fe0867d",
+   "path": "network/detection/aix-websm-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "ajp-protocol-detect": {
+   "sha256": "0fa09d06668b5495d817b18f4793871e2ad7811a3c3304f1e7aaabec530f4e6f",
+   "path": "javascript/detection/ajp-protocol-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "allen-bradley-compactlogix-detect": {
+   "sha256": "df5dc0032d30829b678e96f254f96f60cb06e3c10ef09abe52829ef4e2f42ef7",
+   "path": "network/detection/ics/allen-bradley/allen-bradley-compactlogix-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "allen-bradley-guardplc-detect": {
+   "sha256": "8edf865a394ea5f2c3d509088edf9b16156fdec4cdefb03f045ade5b8406a5c5",
+   "path": "network/detection/ics/allen-bradley/allen-bradley-guardplc-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "allen-bradley-micro800-detect": {
+   "sha256": "0a7bd7ec2f6e80665baa109353addedcfb768da231c4cb8922a1ff1bc2db7532",
+   "path": "network/detection/ics/allen-bradley/allen-bradley-micro800-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "allen-bradley-micrologix-detect": {
+   "sha256": "7414a809f054479b9a11a23640658c304531049be7eeb6f83e1bbc453e238a89",
+   "path": "network/detection/ics/allen-bradley/allen-bradley-micrologix-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "allen-bradley-plc5-detect": {
+   "sha256": "4f45d443b604b8d2008e36401e517f2c11e2dce7622f9e2a146f7395fe304cae",
+   "path": "network/detection/ics/allen-bradley/allen-bradley-plc5-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "allen-bradley-slc-500-detect": {
+   "sha256": "f5285cd22e0e2812770f79c0ad69ac83df2889c569524d2853e79350040b15ab",
+   "path": "network/detection/ics/allen-bradley/allen-bradley-slc-500-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "apache-activemq-detect": {
+   "sha256": "66d7fff0f303653cf7bbe392bb4410575d99d1a59f9832132e688b7bfbf36d04",
+   "path": "network/detection/apache-activemq-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "apache-kvrocks-exposed": {
+   "sha256": "1f537468a1954c53665b9d13e1c56453fd2ac2efa5c78185720fcb8956ea3ac5",
+   "path": "javascript/misconfiguration/apache-kvrocks-exposed.yaml",
+   "severity": "high",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "argosoft-ftp-detect": {
+   "sha256": "1e8d5f4d69ada3184b995d0363c109a0152f9c8ba1c21dec46d7aacd5f39e77f",
+   "path": "network/detection/ftp/argosoft-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "asyncrat-c2": {
+   "sha256": "710751028236f38f1d0f297a1b103ef36cbc4cd93ff70bb4effc1641e2e9b027",
+   "path": "ssl/c2/asyncrat-c2.yaml",
+   "severity": "info",
+   "classes": [
+    "tls",
+    "unknown"
+   ]
+  },
+  "avalaunch-ftp-detect": {
+   "sha256": "85b1383a15e7e4855e72707a919df0c1de0591bfeac3583d3340dd300c5b6983",
+   "path": "network/detection/ftp/avalaunch-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "aws-sftp-detect": {
+   "sha256": "e43cb8d00105cd05b9629565c91a5a125625361ffc9dd108d8a1c9896a915761",
+   "path": "network/detection/aws-sftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ssh"
+   ]
+  },
+  "axigen-mail-server-detect": {
+   "sha256": "a5aa0257a53b8744122aa4096595b7bd09ac8ad050ac0944e5db5ed864888d78",
+   "path": "network/detection/axigen-mail-server-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "smtp"
+   ]
+  },
+  "baby-ftp-detect": {
+   "sha256": "3709d323184b391f2a1125e461f9fbb1c4300777711b293849c2d6c4b9b2c828",
+   "path": "network/detection/ftp/baby-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "beanstalk-service": {
+   "sha256": "bf07c6cd9d3a1d44079e93b8741b1b443c58f9c36b7000fb1816bfcc497711d9",
+   "path": "network/enumeration/beanstalk-service.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "betaftpd-detect": {
+   "sha256": "f3cee097ce5c7718a77ef49c3ca0c093e06610e1dcd3ef2d1ae07c56a16b5cd2",
+   "path": "network/detection/ftp/betaftpd-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "bgp-detect": {
+   "sha256": "3a3d3eef471f951c480b349ade87acd168f6bbf6cdbee69273ee871aab2938ed",
+   "path": "network/detection/bgp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "bitrat-c2": {
+   "sha256": "8de448b457aa7423aa33eaf071a36fbd341bfaca3dfc8f20e050839fac7ae70c",
+   "path": "ssl/c2/bitrat-c2.yaml",
+   "severity": "info",
+   "classes": [
+    "tls",
+    "unknown"
+   ]
+  },
+  "bitvise-detect": {
+   "sha256": "b03b0072d4dfdb876be3d6435ecb83793935f95e6be9e17edcc94f3fa42783c6",
+   "path": "network/detection/bitvise-ssh-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ssh"
+   ]
+  },
+  "blackjumbodog-ftp-detect": {
+   "sha256": "dea561d81c1b1c4a232c881d2abf20b42e476952360b6c544ddabb2bba036553",
+   "path": "network/detection/ftp/blackjumbodog-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "blackmoon-chaos-ftp-detect": {
+   "sha256": "2a115ea93be86a35b419b27f70ebcdd34eb707220b6516a34eaedfd784d8d201",
+   "path": "network/detection/ftp/blackmoon-chaos-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "blackmoon-free-ftp-detect": {
+   "sha256": "b6a1e8e25e1cff913ab4ca95a81d02e80ed6d7f8e8d1e79d862383afdeb40fbe",
+   "path": "network/detection/ftp/blackmoon-free-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "bluecoat-telnet-proxy-detect": {
+   "sha256": "fb8466cd4dea6507c5f38ae92da4062e58857e13847695a2f72ec17b49638541",
+   "path": "network/detection/bluecoat-telnet-proxy-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "telnet"
+   ]
+  },
+  "bsdi-ftp-detect": {
+   "sha256": "dc3d9acb10a62c12fd53111b82334dce041ab45ea6e0dcafb25ce81a43f30b0c",
+   "path": "network/detection/ftp/bsdi-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "cerberus-ftp-detect": {
+   "sha256": "ff49f3b78ce3a2f4679a43a9cf5ead8c13a39bf28f6d5fc638741807abf73dd5",
+   "path": "network/detection/ftp/cerberus-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "checkmk-info-disclosure": {
+   "sha256": "6a63f920c9c824be856c4fe91e55c04b442495da62cd4c349fe1e2ad3c4e87a3",
+   "path": "network/exposures/checkmk-info-disclosure.yaml",
+   "severity": "medium",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "checkpoint-firewall-enum": {
+   "sha256": "c42b347d7afa2b21e4081a992505389213d14cda6331c3c845ddce3b6d6d19c8",
+   "path": "javascript/enumeration/checkpoint-firewall-enum.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "checkpoint-ftp-detect": {
+   "sha256": "783cca79d0974a531b79c0873b365bd23be234969b0409ca05fd40d4eaa0ad7e",
+   "path": "network/detection/ftp/checkpoint-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "cisco-finger-detect": {
+   "sha256": "c815336ad03a6cc6b3c23eecfc2646d9e97bf00ccb45ea5b79e23c4a2e69a70b",
+   "path": "network/detection/cisco-finger-detect.yaml",
+   "severity": "low",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "cisco-smi-exposure": {
+   "sha256": "084b7dc6b092151213af1cccd656b422087088cea7159cf216e5f9e016838763",
+   "path": "network/exposures/cisco-smi-exposure.yaml",
+   "severity": "medium",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "clamav-detect": {
+   "sha256": "6d925427bd5da9ce78d134a06e3f1db2340740bccb73067a904ee81c2e0bae6b",
+   "path": "network/detection/clamav-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "cleo-vlproxy-ftp-detect": {
+   "sha256": "100912a6d8c07550be3ee75a2cf6e50f60d1c089f443fea71c107022951102cc",
+   "path": "network/detection/ftp/cleo-vlproxy-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "cobalt-strike-c2": {
+   "sha256": "33cdedf6a116efcdcd453d86255b7ca56a2833dd5ee3e0ece979148f3f03c536",
+   "path": "ssl/c2/cobalt-strike-c2.yaml",
+   "severity": "info",
+   "classes": [
+    "tls",
+    "unknown"
+   ]
+  },
+  "cobalt-strike-c2-jarm": {
+   "sha256": "b2048cb2a7e4a404e696e3795d9ac043baa1e01416d17e04f8b2237d9801757c",
+   "path": "network/jarm/c2/cobalt-strike-c2-jarm.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "code-crafters-ftp-detect": {
+   "sha256": "facf8ab4fcc31994855cda5af04661afdac494d8c9b27ec605970cef6b625ec0",
+   "path": "network/detection/ftp/code-crafters-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "communigate-ftp-detect": {
+   "sha256": "e8e121108e8842eea1fcf7b4e9ac1d9e8de74d169fc456abda3a2cb8ff19e736",
+   "path": "network/detection/ftp/communigate-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "conpot-siemens-honeypot-detect": {
+   "sha256": "e554ba27a11c131950a8ad67fdd6c2f93550100f917506eaa428b9584ac5708f",
+   "path": "network/honeypot/conpot-siemens-honeypot-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "covenant-c2-jarm": {
+   "sha256": "7f5c5a55a657e3888a7af69def54946594ea01ccf7bc742e05e2c114efed8d1a",
+   "path": "network/jarm/c2/covenant-c2-jarm.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "covenant-c2-ssl": {
+   "sha256": "e1a184d30c38ff7c0d97fd73bfbe462c09e063381f1e6deeef3c5bf291937964",
+   "path": "ssl/c2/covenant-c2-ssl.yaml",
+   "severity": "info",
+   "classes": [
+    "tls",
+    "unknown"
+   ]
+  },
+  "cowrie-ssh-honeypot-detect": {
+   "sha256": "ac09adabdf08970092653d45d68800ffabb3b2a3334bc6143769161ad9eb7589",
+   "path": "network/honeypot/cowrie-ssh-honeypot-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ssh"
+   ]
+  },
+  "cpppo-ethernetip-cip-honeypot": {
+   "sha256": "0a781e6686f340a1b375418ccf6032b7a210baad51ccbf5caedfae6e62604cc0",
+   "path": "network/honeypot/cpppo-ethernetip-cip-honeypot.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "cql-native-transport": {
+   "sha256": "f35f5acaa35581c29d6397f674ad24ab76dd01f1a6b71d18a0f12ecd6d650734",
+   "path": "network/detection/cql-native-transport.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "dameng-detect": {
+   "sha256": "f6c26789109dddc9fe2d2207e4125b2155f5d6480c685568e28c1eb344edc993",
+   "path": "javascript/detection/dameng-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "darkcomet-trojan": {
+   "sha256": "81cb48d1dd7ab92dcd622b28c3e74a81a4597d935f3e3edfd79780044623d396",
+   "path": "network/c2/darkcomet-trojan.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "darktrack-rat-trojan": {
+   "sha256": "b709b465786d2cfaa337c4e77ff120cfd25ecf138df5df2b865ac4d7c3ff9343",
+   "path": "network/c2/darktrack-rat-trojan.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "dcrat-server-c2": {
+   "sha256": "4033c0dc8f44ac181eb8fe4bbbb023f847e756cc6e8bb7f73dfcac8df155975a",
+   "path": "ssl/c2/dcrat-server-c2.yaml",
+   "severity": "info",
+   "classes": [
+    "tls",
+    "unknown"
+   ]
+  },
+  "deimos-c2-jarm": {
+   "sha256": "ea02d9699001ee9b587bf83ec567f1a9b991d6c14e189464d7ea852925658cae",
+   "path": "network/jarm/c2/deimos-c2-jarm.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "delegate-ftp-detect": {
+   "sha256": "7529f72a7ee3d9cd18daaf458d7df05f891c9b9acfba78d0a43eda3f678cfa61",
+   "path": "network/detection/ftp/delegate-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "deprecated-tls": {
+   "sha256": "eddb5bd44d68955aab0ef060083271db8ea0fd495bdf50859d5d1d54ea421531",
+   "path": "ssl/deprecated-tls.yaml",
+   "severity": "info",
+   "classes": [
+    "tls",
+    "unknown"
+   ]
+  },
+  "detect-addpac-voip-gateway": {
+   "sha256": "39c5309eb4097e20ffc3cd47b6bd92b1907f09ba10ba6b31adea61f6b4fb0252",
+   "path": "network/detection/detect-addpac-voip-gateway.yaml",
+   "severity": "info",
+   "classes": [
+    "telnet"
+   ]
+  },
+  "detect-jabber-xmpp": {
+   "sha256": "2a7a2143a06994cc6d0c46a84c940f9ba8f63623381fa681befe674c7c40e2a2",
+   "path": "network/detection/detect-jabber-xmpp.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "dionaea-mysql-honeypot-detect": {
+   "sha256": "bde07e7c3043931f1294a5f46f68257fa935c76d180618d05fd47b1ce12344d0",
+   "path": "network/honeypot/dionaea-mysql-honeypot-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "mysql"
+   ]
+  },
+  "dionaea-smb-honeypot-detect": {
+   "sha256": "6f8340ac7e29f848d7dc8312f6d247f8464cfd5651742b0a47770e5f7ed3b605",
+   "path": "network/honeypot/dionaea-smb-honeypot-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "smb"
+   ]
+  },
+  "direct-connect-detect": {
+   "sha256": "9894721be540c9b7ce62a139099e3266b637228e115d99d03de6b935646492d6",
+   "path": "network/detection/direct-connect-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "diskstation-ftp-detect": {
+   "sha256": "764884f5c32387d4f937dd588589625fd81278c588d8f0a4fb4a0aa2294adb3a",
+   "path": "network/detection/ftp/diskstation-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "dotnet-remoting-service-detect": {
+   "sha256": "452c800fb6570e6853ab5d2d319a4f2b7c65d568272a40cd24e5ee00e48a9cbc",
+   "path": "network/detection/dotnet-remoting-service-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "dumb-ftp-detect": {
+   "sha256": "df59a3b03818339df76218a6fe3b7e45a5811680d800a3b1e8e38d16a16748c2",
+   "path": "network/detection/ftp/dumb-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "easycoder-ftp-detect": {
+   "sha256": "e679f4e88cb13b9f9de89da9a1b2c59f5219a83e4397e840099e96448c8e73f7",
+   "path": "network/detection/ftp/easycoder-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "emudhra-compromised-ca": {
+   "sha256": "03c79481a82a251468ea8f46154420563f5c77e6378f6b2e564bf278a534b5ba",
+   "path": "ssl/emudhra-compromised-ca.yaml",
+   "severity": "critical",
+   "classes": [
+    "tls",
+    "unknown"
+   ]
+  },
+  "eol-openssh-debian": {
+   "sha256": "60b08de2482ac318128ed6aaa5504dfff616690f2798b35a19e1d0d3dad42cbe",
+   "path": "javascript/misconfiguration/ssh/eol-openssh-debian.yaml",
+   "severity": "medium",
+   "classes": [
+    "ssh"
+   ]
+  },
+  "erlang-daemon": {
+   "sha256": "b52873a84850388a24f5763f698302d717d64de08f819f8fac55eb69403699ce",
+   "path": "network/misconfig/erlang-daemon.yaml",
+   "severity": "low",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "erlang-otp-ssh-detect": {
+   "sha256": "ddfe20d8cfe1a92ead83ac76987018f3fc2b4d6adc6ae7b8b45328ac5d694f33",
+   "path": "network/detection/erlang-otp-ssh-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ssh"
+   ]
+  },
+  "esmtp-detect": {
+   "sha256": "9d5cf33e1f52a2c73d13e8c9e2ef556d9feb2d98266e5808e2b1534c098af200",
+   "path": "network/detection/esmtp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "smtp"
+   ]
+  },
+  "evilginx2-jarm": {
+   "sha256": "8cb5d0bfc976afc8957b0d1435405ef20eccd26dc5cb6dc691c45fdfda153e25",
+   "path": "network/jarm/c2/evilginx2-jarm.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "exim-detect": {
+   "sha256": "3dfe1f2d25910432ba1800ab9dd8c12f18b13b433c9f3358060618fab6c2a636",
+   "path": "network/detection/exim-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "smtp"
+   ]
+  },
+  "expired-ssl": {
+   "sha256": "23e2fa79491ae665e809b9af4b6636f7b4c21ad7d05c5d54801ecd0c29a16088",
+   "path": "ssl/expired-ssl.yaml",
+   "severity": "low",
+   "classes": [
+    "tls",
+    "unknown"
+   ]
+  },
+  "expn-mail-detect": {
+   "sha256": "87e6fc3108e57cb25cd99b90500e50a65086fdb720bd8261bbec368dec65cf41",
+   "path": "network/detection/expn-mail-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "smtp"
+   ]
+  },
+  "exposed-dockerd": {
+   "sha256": "41556299c099d7e925f0cb5e26e26f7e6a1781091b4d798c0e5389c4cd8c6ff1",
+   "path": "network/exposures/exposed-dockerd.yaml",
+   "severity": "critical",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "exposed-redis": {
+   "sha256": "7ad8fe0c466ae8313944773bd73f1882db6b0762a48abc77e06c3644d966c827",
+   "path": "network/exposures/exposed-redis.yaml",
+   "severity": "high",
+   "classes": [
+    "redis"
+   ]
+  },
+  "famatech-radmin-detect": {
+   "sha256": "25fe3216010de5a2114fa7b7871a61844fae0859b03cfbb418fb90a35e697595",
+   "path": "network/detection/famatech-radmin-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "filezilla-ftp-detect": {
+   "sha256": "517dbd0e8ce22daa7a3354a170bf3319b31044732f19b67070f22c7b131e861d",
+   "path": "network/detection/ftp/filezilla-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "finger-detect": {
+   "sha256": "ca744883b6159629c1d2fdc0967eb7611d9b68019b7fdc61a237cf1a1255f072",
+   "path": "network/detection/finger-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "firstclass-ftp-detect": {
+   "sha256": "5ce324990b97ff84f8871f084f1c0ae508509377816d55d3ecc2c0701ddc3f9c",
+   "path": "network/detection/ftp/firstclass-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "fortianalyzer-certificate": {
+   "sha256": "7c5f9dfefcbb413c646c46e79b0baebc96969f63efa6ede6291c47c5b0962441",
+   "path": "ssl/fortinet/fortianalyzer-certificate.yaml",
+   "severity": "info",
+   "classes": [
+    "tls",
+    "unknown"
+   ]
+  },
+  "fortiauthenticator-certificate": {
+   "sha256": "6a7807e38435484b88321205ccaf88f5abbfc34ce16c1a191f63cec276acebd1",
+   "path": "ssl/fortinet/fortiauthenticator-certificate.yaml",
+   "severity": "info",
+   "classes": [
+    "tls",
+    "unknown"
+   ]
+  },
+  "fortiddos-certificate": {
+   "sha256": "c4f2770a263337581dc0452cfee816b6c197d35553fb3da3dc89f3dbe83cb975",
+   "path": "ssl/fortinet/fortiddos-certificate.yaml",
+   "severity": "info",
+   "classes": [
+    "tls",
+    "unknown"
+   ]
+  },
+  "fortigate-certificate": {
+   "sha256": "d190c5d6ffd3fe2ecf166725e9aa7dc8f9e230444039d8d5158fa6279158fa24",
+   "path": "ssl/fortinet/fortigate-certificate.yaml",
+   "severity": "info",
+   "classes": [
+    "tls",
+    "unknown"
+   ]
+  },
+  "fortimanager-certificate": {
+   "sha256": "e1de1c1369101d7149a09023afd8d95c15805503b4087997c04f3dbff0f3803d",
+   "path": "ssl/fortinet/fortimanager-certificate.yaml",
+   "severity": "info",
+   "classes": [
+    "tls",
+    "unknown"
+   ],
+   "fixed_ports": [
+    541
+   ]
+  },
+  "fortinet-fgfm-detect": {
+   "sha256": "9bc0c2c99459a3cda59fe519151c78291d090a24ee333e63f210848703432e6f",
+   "path": "network/detection/fortinet-fgfm-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "fortiswitch-certificate": {
+   "sha256": "f2ef5241e357cc3a1f462d41032cb6af56a9e528545a268d5909230a5042bbcf",
+   "path": "ssl/fortinet/fortiswitch-certificate.yaml",
+   "severity": "info",
+   "classes": [
+    "tls",
+    "unknown"
+   ]
+  },
+  "fortiweb-certificate": {
+   "sha256": "c58c5d521b5ee5d8e64c628ce8d820ab4cc99f2ccdec81b284028a0e1ed68e46",
+   "path": "ssl/fortinet/fortiweb-certificate.yaml",
+   "severity": "info",
+   "classes": [
+    "tls",
+    "unknown"
+   ]
+  },
+  "fortiwifi-certificate": {
+   "sha256": "9ac0e8910f925f8ad13bb7221235609fdfafddd734e5616abf3473c6aae87cf3",
+   "path": "ssl/fortinet/fortiwifi-certificate.yaml",
+   "severity": "info",
+   "classes": [
+    "tls",
+    "unknown"
+   ]
+  },
+  "freebox-ftp-detect": {
+   "sha256": "16484ccb7b41be303093c40241de2791dcdcc2a2d7fc67e1a151af282a60131d",
+   "path": "network/detection/ftp/freebox-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "ftp-detect": {
+   "sha256": "5ef2acb8c5d39798e13d86586352d867f14e06faef6352b42be6432d61cc0132",
+   "path": "network/detection/ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "ganglia-xml-grid-monitor": {
+   "sha256": "2392b97e025f95a82174c94759337f0e12089f08748a5e24d62f65abf1040476",
+   "path": "network/misconfig/ganglia-xml-grid-monitor.yaml",
+   "severity": "low",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "gaspot-honeypot-detect": {
+   "sha256": "78f6ca5d20737a49f42b4431ee9dd54124e5474443d95a702cf66eb98007479f",
+   "path": "network/honeypot/gaspot-honeypot-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "gene6-ftp-detect": {
+   "sha256": "690b181627a1724447bf4102d58729b92a2d2aa6fb0f93ba52610eeb1c04255b",
+   "path": "network/detection/ftp/gene6-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "generic-c2-jarm": {
+   "sha256": "c3ef520ca35ef6de326ce62d3da2ae096ee4538d2d99650f940b9bcd2628a6cc",
+   "path": "network/jarm/c2/generic-c2-jarm.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "globalscape-ftp-detect": {
+   "sha256": "926b4ac794ec63ed1710ee14178c26efa058b66bdb7c7cdf31efb9012b93a25a",
+   "path": "network/detection/ftp/globalscape-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "globalsite-selector-ftp-detect": {
+   "sha256": "9c72139cd73088ea55dab63d26544e451482f7a6616bd54e290bddab1c3c515d",
+   "path": "network/detection/ftp/globalsite-selector-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "gnu-inetutils-ftpd-detect": {
+   "sha256": "3c41b586538c562d152edf11b7f9d4638c9c15a00f92e7be6b81696559f3e1a4",
+   "path": "network/detection/gnu-inetutils-ftpd-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "golden-ftp-detect": {
+   "sha256": "2f5dfbb8b934876ec5b18bd455b141c11c5cf781572412ffdd6e7109a9a6d794",
+   "path": "network/detection/ftp/golden-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "gopher-detect": {
+   "sha256": "2bb933af1d650a97db7d1ee6546d762dbc9eee4380ca64800001244de0041b18",
+   "path": "network/detection/gopher-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "gozi-malware-c2": {
+   "sha256": "8f0eb929612ed305a2604432016ab06e548fca06dd8c43a747385f7553117fca",
+   "path": "ssl/c2/gozi-malware-c2.yaml",
+   "severity": "info",
+   "classes": [
+    "tls",
+    "unknown"
+   ]
+  },
+  "grat-c2-jarm": {
+   "sha256": "398d00a513ce02022d94b20da085b65feca6e9162c45da1c7e835d29591b2b23",
+   "path": "network/jarm/c2/grat2-c2-jarm.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "havoc-c2": {
+   "sha256": "a594eb0c1e2950cb3caaa22d5b349f1d5eee786b38e58c58061b61f698b8ad13",
+   "path": "ssl/c2/havoc-c2.yaml",
+   "severity": "info",
+   "classes": [
+    "tls",
+    "unknown"
+   ]
+  },
+  "havoc-c2-jarm": {
+   "sha256": "f737fd95858014dc8e23b0c2d68af614484dbe52a0f87697486e5ed93f597679",
+   "path": "network/jarm/c2/havoc-c2-jarm.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "hp-ftp-detect": {
+   "sha256": "832acd9da7d6084d2466c61dfe0d0cbd58effd083167643eb64f34d032751b13",
+   "path": "network/detection/ftp/hp-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "huawei-ssh-detect": {
+   "sha256": "5beda17284109480187a78624d424d81be17a17c347d38d16dd62a6faced1f1d",
+   "path": "network/detection/huawei-ssh-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ssh"
+   ]
+  },
+  "hummingbird-ftp-detect": {
+   "sha256": "e9b4cc78f1dcd0e5843aa42e1b3543bb0d01903c179fdc025c50d2d22dcc983a",
+   "path": "network/detection/ftp/hummingbird-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "ibm-db2-database-server": {
+   "sha256": "ad6f15b0c28cdfe99ce4cdb64181255c1fe10ade39fd7caccad244675cf723df",
+   "path": "network/detection/ibm-db2-database-server.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "ibm-ftp-detect": {
+   "sha256": "1de58d6e83e78bb9f2d0616bcbef45e557fbdd1feefb8b0530bff9971d03eda9",
+   "path": "network/detection/ftp/ibm-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "icedid": {
+   "sha256": "a84d01a41691e011f2cab832c7e457c464b12c03aa62c4340e0eb950f9a05a9a",
+   "path": "ssl/c2/icedid.yaml",
+   "severity": "info",
+   "classes": [
+    "tls",
+    "unknown"
+   ]
+  },
+  "imap-detect": {
+   "sha256": "5dddebf39191aa0fd45e9a0ea76913e7eaf7148e9427a7a9fd7887126d10a7d2",
+   "path": "network/detection/imap-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "imap"
+   ]
+  },
+  "insecure-cipher-suite-detect": {
+   "sha256": "9be7e9eaecf50fbd412e7f41e3455e8f7f612111ac26e897993ea66d0c3fdc02",
+   "path": "ssl/insecure-cipher-suite-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "tls",
+    "unknown"
+   ]
+  },
+  "iplanet-imap-detect": {
+   "sha256": "5e9c7e450e3bab17e732a38890cf571295ce8fa16a78d8df3f4d4a763eae7f82",
+   "path": "network/detection/iplanet-imap-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "imap"
+   ]
+  },
+  "jana-ftp-detect": {
+   "sha256": "6d38caef323837f1b58f7fbdc8a6bb689a366b454adef43e4cbc66f5745edfdf",
+   "path": "network/detection/ftp/jana-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "java-ftp-proxy-detect": {
+   "sha256": "9780a00b71b1715c2f814d5e18a7361a1b8c96bd071909a28d4066d594694549",
+   "path": "network/detection/ftp/java-ftp-proxy-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "java-rmi-detect": {
+   "sha256": "7ce72e4d1307d77ca05e58a7a44f71a3a7ea01adef41bb6e90ff86b02e78c402",
+   "path": "network/detection/java-rmi-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "jd-ftp-detect": {
+   "sha256": "5846ac63a587e63aa8978bb5d57b4455c9190f846841565e679e1cb4cc77fe1b",
+   "path": "network/detection/ftp/jd-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "jdwp-detect": {
+   "sha256": "1ae4c9a0eb4abf0af7e6c27cae39b60f8ef9a52a2cb3fed6cc7dbee213396d47",
+   "path": "network/detection/jdwp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "kafka-topics-list": {
+   "sha256": "55fe34059a57227d25ac7048d4945e9b68e93448381fb1ae5407cca734955f4b",
+   "path": "network/enumeration/kafka-topics-list.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "kubernetes-fake-certificate": {
+   "sha256": "48f8d65cda1485f2bca2d5cdc02f5fdd4c0331dcf96d694c76e8390bdc4e3cfa",
+   "path": "ssl/kubernetes-fake-certificate.yaml",
+   "severity": "low",
+   "classes": [
+    "tls",
+    "unknown"
+   ]
+  },
+  "lanier-ftp-detect": {
+   "sha256": "7fe40134d54423c151ee31cc3e7a28dd1063e02345aa7098e7c93072ee1f0c7e",
+   "path": "network/detection/ftp/lanier-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "mac-c2-jarm": {
+   "sha256": "dc7d139431e7a335219384b8df7ee9c826d7809ada7edd2f7774a9d0f743e714",
+   "path": "network/jarm/c2/mac-c2-jarm.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "macosx-ftp-detect": {
+   "sha256": "a343b138d8890571f1def403583363270768d63649e4b0b8b2d37401df0472fb",
+   "path": "network/detection/ftp/macosx-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "macshell-c2-jarm": {
+   "sha256": "941ae7c3cde7372fc255385a428e225433b974a7e9f698cd4ebedefc76358708",
+   "path": "network/jarm/c2/macshell-c2-jarm.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "mailoney-honeypot-detect": {
+   "sha256": "5f92fdd0b723c240adabfea737941a44b20c01ee43785217c99dd063856be4c6",
+   "path": "network/honeypot/mailoney-honeypot-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "smtp"
+   ]
+  },
+  "maverick-ssh-detect": {
+   "sha256": "407db27eff87cdb17ce948c5ac3660f63bb08a32d36ebd07d63d4e246c291eb7",
+   "path": "network/detection/maverick-ssh-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ssh"
+   ]
+  },
+  "medusa-ftp-detect": {
+   "sha256": "4e0e90a10a18af075b997ad741c88ec9609dbd7c8eeeb0b91a90417069426b21",
+   "path": "network/detection/ftp/medusa-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "memcached-stats": {
+   "sha256": "42e9c6989507464e078e6081476463f6892a868479c2184c2a72ac6f707f5534",
+   "path": "network/misconfig/memcached-stats.yaml",
+   "severity": "low",
+   "classes": [
+    "memcached"
+   ]
+  },
+  "merlin-c2-jarm": {
+   "sha256": "450daf4776a899588f9697ca7b40f7cddac0d813b7c762a474ffa81cbd5e1036",
+   "path": "network/jarm/c2/merlin-c2-jarm.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "metasploit-c2": {
+   "sha256": "5d48568f805e2d3978c2f16725f3bd49c89ab62b95463695e1662443d90d01b3",
+   "path": "ssl/c2/metasploit-c2.yaml",
+   "severity": "info",
+   "classes": [
+    "tls",
+    "unknown"
+   ]
+  },
+  "metasploit-c2-jarm": {
+   "sha256": "b4fe2b47ec15c3cca2a90720561de3326d89429bf0e8b7d0eacab268ff1c60c5",
+   "path": "network/jarm/c2/metasploit-c2-jarm.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "microsoft-ftp-detect": {
+   "sha256": "4fa2b86724029c34d05ae58b314bef10cac56e127b2be7f20f55ab600b91d6b8",
+   "path": "network/detection/ftp/microsoft-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "microsoft-ftp-service": {
+   "sha256": "743935355bc4b92a4c5fb8278c51eb7f69c26e347f3280c59994dcac259316eb",
+   "path": "network/detection/microsoft-ftp-service.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "mikrotik-ftp-detect": {
+   "sha256": "19ace3dbeb6cc9fe4c33a049f8b17c6d7c9e00a8df89f89e5c4b78164ff9729a",
+   "path": "network/detection/ftp/mikrotik-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "mikrotik-ftp-server-detect": {
+   "sha256": "9028362b0a2208710060c09bb894bcf4009cd28926afba910d38c0552aee3322",
+   "path": "network/detection/mikrotik-ftp-server-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "mikrotik-routeros-api": {
+   "sha256": "9c11bb11e6671030d79b3a691150be71b667e4a47ddfa0f04a540950ab42a509",
+   "path": "network/detection/mikrotik-routeros-api.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "mikrotik-routeros-winbox": {
+   "sha256": "f9c25751b01647fc11a6495affd9bacb2136557721ac33b1b7081d5837a8236f",
+   "path": "network/detection/mikrotik-routeros-winbox.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "mikrotik-ssh-detect": {
+   "sha256": "582f872c27d6b43b40ba55450579405d7ca8f621d80996b9840cfab35b95bdd1",
+   "path": "network/detection/mikrotik-ssh-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ssh"
+   ]
+  },
+  "minecraft-enum": {
+   "sha256": "95fd0eb333d51cef00f8fb07e40773fd69334e2499154ecbb7396674415a41bb",
+   "path": "javascript/enumeration/minecraft-enum.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "mismatched-ssl-certificate": {
+   "sha256": "8946b8e66ea6c2d5f13810f15c321e35a6a1e212cbd07daa8c3882a41f808fa9",
+   "path": "ssl/mismatched-ssl-certificate.yaml",
+   "severity": "info",
+   "classes": [
+    "tls",
+    "unknown"
+   ]
+  },
+  "modbus-detect": {
+   "sha256": "c6a8d14e651943b1d60cc752cd92fdfea8cb6553eb2bec8959efe2ee4b5c319a",
+   "path": "network/detection/modbus-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "modicon-info": {
+   "sha256": "393f1388e954aee7a9ed8a18a7811c7bfe56f5cdd7560873edd3cba449ce9bc8",
+   "path": "network/enumeration/modicon-info.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "moveit-sftp-detect": {
+   "sha256": "6853a332ee19048c24a23f939314e2dcaa9dccaa2e04c40b60fe94ffa8406881",
+   "path": "network/detection/moveit-sftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ssh"
+   ]
+  },
+  "msmq-detect": {
+   "sha256": "e197ad6d81d20ca5db937be0bd6abe26a5406c9dba8c62ce49cbc3307a912c57",
+   "path": "network/detection/msmq-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "mssql-detect": {
+   "sha256": "0d9f618862c9f438e4df638d6ab61d068cf0bb1bd202d574a95bc9b5813cb914",
+   "path": "javascript/detection/mssql-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "mssql"
+   ]
+  },
+  "mysql-detect": {
+   "sha256": "5f43e85cbb12d64bc548f37159324b7b556f68c02dbe9b77f4aa5e8fb9cfd9af",
+   "path": "network/detection/mysql-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "mysql"
+   ]
+  },
+  "mysql-info": {
+   "sha256": "4fbbd43da3bce5f4b5d03616841b98fb5134d4e0aded12a39e0244c0302019b5",
+   "path": "javascript/enumeration/mysql/mysql-info.yaml",
+   "severity": "info",
+   "classes": [
+    "mysql"
+   ]
+  },
+  "mysql-native-password": {
+   "sha256": "0fe3308ac47d861ee840d9def618d1fc2845b78729a77ede822333baff26f9f4",
+   "path": "network/misconfig/mysql-native-password.yaml",
+   "severity": "info",
+   "classes": [
+    "mysql"
+   ]
+  },
+  "mythic-c2-jarm": {
+   "sha256": "67fb3bbcf90d9dcb0b16395da71cc9c60873a4f41be5651ce15da28127145f57",
+   "path": "network/jarm/c2/mythic-c2-jarm.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "mythic-c2-ssl": {
+   "sha256": "880751fe26e259d147c85eab3cd9b2f2ff6193d523f04dd8e59b70f1778d37d4",
+   "path": "ssl/c2/mythic-c2-ssl.yaml",
+   "severity": "info",
+   "classes": [
+    "tls",
+    "unknown"
+   ]
+  },
+  "ncftpd-detect": {
+   "sha256": "ebb7ef68d540113879d50ab1c92b09d7854e97b5a7baedc5117855b326152525",
+   "path": "network/detection/ftp/ncftpd-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "netbsd-ftpd-detect": {
+   "sha256": "1fab97d51656ae50a25d2666af11789170c7f39fc24c29ca89e6d301df0763d4",
+   "path": "network/detection/ftp/netbsd-ftpd-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "netdisk-ftp-detect": {
+   "sha256": "0fc6b11868191c2eb1f89ad182c5403bf586430f6ef024630c9e6093e301c712",
+   "path": "network/detection/ftp/netdisk-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "netstat-service-expose": {
+   "sha256": "909bba209c0d73425eb0a51fe3354aaa572a6e28569f694acd5fbcd13b5594b8",
+   "path": "javascript/misconfiguration/netstat-service-expose.yaml",
+   "severity": "low",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "networkcamera-ftp-detect": {
+   "sha256": "543df17acc6bd1f051840f1454561012a627e83416d62943ffd8e53d625f7e7a",
+   "path": "network/detection/ftp/networkcamera-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "nfs-v3-exposed": {
+   "sha256": "9a16e65bb7929c65a9a504414a8883166428d24f596122e5f0aa71d885862639",
+   "path": "network/detection/nfs-v3-exposed.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "niagara-fox-info-enum": {
+   "sha256": "4ce168b3d61939cc86a0449885c3b8d7ba9ab83567c5e8e89ab8a8e2cf47bdcb",
+   "path": "network/enumeration/niagara-fox-info-enum.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "nmc-ftp-detect": {
+   "sha256": "4ed64c839be2b26109f434a208a2dab0a3b91d03eef5a3fdff66981c43eda961",
+   "path": "network/detection/ftp/nmc-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "ntlm-info": {
+   "sha256": "34c4ce2f0b6138e3fbd15941cf325af295cbe49f476caace5b81b74afdd9063c",
+   "path": "javascript/enumeration/smb/ntlm-info.yaml",
+   "severity": "info",
+   "classes": [
+    "smb"
+   ]
+  },
+  "nucleus-ftp-detect": {
+   "sha256": "e6cc983939ba26808ffb1f46b0c7338ec94a43175f1c002faeb796404434fab8",
+   "path": "network/detection/ftp/nucleus-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "obsolete-ssh-version": {
+   "sha256": "8a84534fa679ce679f15552319c26cee5b8850898645d0b6442545040f2bf1df",
+   "path": "javascript/enumeration/ssh/obsolete-ssh-version.yaml",
+   "severity": "info",
+   "classes": [
+    "ssh"
+   ]
+  },
+  "onimai-rat-c2": {
+   "sha256": "f25231738d910e5d2b449f8b3785ecdee038adc9956d0667211bc7c8424f060a",
+   "path": "ssl/c2/onimai-rat-c2.yaml",
+   "severity": "info",
+   "classes": [
+    "tls",
+    "unknown"
+   ]
+  },
+  "opendreambox-ftp-detect": {
+   "sha256": "aceb5c66428644adb0845a2a64d52772eb3b05e7d65756186e43506866269014",
+   "path": "network/detection/ftp/opendreambox-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "openssh-detect": {
+   "sha256": "de3e1b9849f60a231c68163b22001c9db504c7e6a0ab8c61b3bd370cf2856e5d",
+   "path": "network/detection/openssh-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ssh"
+   ]
+  },
+  "oracle-detect": {
+   "sha256": "5be313ce63083c2d44eb3b15fabbf72d96223f186435d8af762cc7553dec170d",
+   "path": "javascript/detection/oracle-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "oracle-ifs-ftp-detect": {
+   "sha256": "60e2d21fdffc0b4709342209048a6c46f73313148a14d99f5f60fe924a679051",
+   "path": "network/detection/ftp/oracle-ifs-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "oracle-tns-listener": {
+   "sha256": "f5e067074effb122e88fc68fe44d8dcc64e01efc3796bf135ef5b17cdd5b4074",
+   "path": "javascript/detection/oracle-tns-listener.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "oracle-xmldb-ftp-detect": {
+   "sha256": "9041883ce076930f3b0569373e78217b7f1fbfc17733a10cb5a9a0b2d910e632",
+   "path": "network/detection/ftp/oracle-xmldb-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "orcus-rat-c2": {
+   "sha256": "eed0640fff8a7c68f99121d621f066fa0ce47f42e2e9f32749d080f0879fb6d5",
+   "path": "ssl/c2/orcus-rat-c2.yaml",
+   "severity": "info",
+   "classes": [
+    "tls",
+    "unknown"
+   ]
+  },
+  "orcus-rat-trojan": {
+   "sha256": "7732363001bd2e618debffc0e8a10481fbfa9b6a5f3fb52685642396c386eeda",
+   "path": "network/c2/orcus-rat-trojan.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "pablo-ftp-detect": {
+   "sha256": "a218bf4b3d9f0b31440a4c2cb1d836f0ecd26939a442d4fd75c0f1eb41f93086",
+   "path": "network/detection/ftp/pablo-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "packetshaper-ftp-detect": {
+   "sha256": "2249bff3bfead51d0ac105eac2a7e233d9e72523eedbde387081f2b9475a16d2",
+   "path": "network/detection/ftp/packetshaper-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "perforce-detection": {
+   "sha256": "61605ffe578db5d90bf08d4d836a6f5d0b53d18f581255e41e2bf2b116745b4d",
+   "path": "network/detection/perforce-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ],
+   "fixed_ports": [
+    1666
+   ],
+   "restored": true
+  },
+  "personal-ftp-detect": {
+   "sha256": "b4e4b393b74b284df3f00ca4b3912db394ddee8d7c8b3228842edfa1a847287c",
+   "path": "network/detection/ftp/personal-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "pigeonhole-sieve-detect": {
+   "sha256": "7153f71985cc807bdbe211cc6056f9ec859050eaebcdf8043f94d1644b77d4b3",
+   "path": "javascript/detection/pigeonhole-sieve-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "pop3-capabilities-enum": {
+   "sha256": "1ca51d4f1c4abef5730f647d0f8f0605676daf1d2286f1fd136032c158f31c6d",
+   "path": "javascript/enumeration/pop3/pop3-capabilities-enum.yaml",
+   "severity": "info",
+   "classes": [
+    "pop3"
+   ]
+  },
+  "pop3-detect": {
+   "sha256": "403f23f954bea21e4f5ef35dbf86a8e606d107fd38f70f5978a355c319a626c5",
+   "path": "network/detection/pop3-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "pop3"
+   ]
+  },
+  "posh-c2": {
+   "sha256": "ed328d2ab450ece86aa1e95eee9c739e2336192bab67b4dea9b1eff8988390f5",
+   "path": "ssl/c2/posh-c2.yaml",
+   "severity": "info",
+   "classes": [
+    "tls",
+    "unknown"
+   ]
+  },
+  "posh-c2-jarm": {
+   "sha256": "a044d3754316e3aca7790a78c1b7b9febbd8810f8948bc7727e6230861abf635",
+   "path": "network/jarm/c2/posh-c2-jarm.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "prnet-ftp-detect": {
+   "sha256": "a3dea8ccf5eda417236b0cf0ee860a377a08c044f28b4c52a891f9ad9e707f4e",
+   "path": "network/detection/ftp/prnet-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "proftpd-server-detect": {
+   "sha256": "98b50eb9fd7299e28d263adda8b0ad9ef907f2b094af146f8ca4cbb1d6f63f2d",
+   "path": "network/detection/proftpd-server-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "psosystem-ftp-detect": {
+   "sha256": "f61cffc0a192c234e04e6991c2f311fa2c0904d94c0fd2d55c092491fdc05271",
+   "path": "network/detection/ftp/psosystem-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "pure-ftpd-detect": {
+   "sha256": "004565120ffbe7317e1848e1524bd482007622f6b525b7aa32a6ae058e200457",
+   "path": "network/detection/ftp/pure-ftpd-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "quasar-rat-c2": {
+   "sha256": "646420da109d22dc37ac956c435ce37478520cb3606d794e203c4d2a2204bebd",
+   "path": "ssl/c2/quasar-rat-c2.yaml",
+   "severity": "info",
+   "classes": [
+    "tls",
+    "unknown"
+   ]
+  },
+  "rabbitmq-detect": {
+   "sha256": "eb81b6915088bab0a12ee068928e9cdf70b7b0c2f3434e226e7fe952e4429fd3",
+   "path": "network/detection/rabbitmq-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "rdp-detect": {
+   "sha256": "0642111d4237a50b4a87730980f5dd3e5ea223e15fc0a049c7124ab1869d0040",
+   "path": "javascript/detection/rdp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "rdp"
+   ]
+  },
+  "red-lion-enip-detect": {
+   "sha256": "c61a8931c537d4a9db24020063da2575a47569616e688501e63458c010d22f7d",
+   "path": "network/detection/ics/red-lion-enip-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "redis-detect": {
+   "sha256": "c96d0c06c624e41a4c2709e23894093b9dd3df04d4e52c10fb28a06e90df1e53",
+   "path": "network/detection/redis-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "redis"
+   ]
+  },
+  "redis-honeypot-detect": {
+   "sha256": "fb094d279627f5cfbf3b8e82002d228a0a3ad67637c0a1873b26d8b20125f38a",
+   "path": "network/honeypot/redis-honeypot-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "redis"
+   ]
+  },
+  "redis-info": {
+   "sha256": "683be10a59e7bd17eb1dd12ecb4bfdb416d30325d67a37810a4e5c9d1138c74d",
+   "path": "javascript/enumeration/redis/redis-info.yaml",
+   "severity": "info",
+   "classes": [
+    "redis"
+   ]
+  },
+  "revoked-ssl-certificate": {
+   "sha256": "f89300c73d2cdc7d0d5aa087589367ed3e5f3ac5edd00fc682cf5c1a79604e8c",
+   "path": "ssl/revoked-ssl-certificate.yaml",
+   "severity": "low",
+   "classes": [
+    "tls",
+    "unknown"
+   ]
+  },
+  "riak-detect": {
+   "sha256": "ae2f7af9b3221d1efff0785f1e216821cf9dee403896321cae54187a4cc63fb8",
+   "path": "network/detection/riak-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "riedel-ftp-detect": {
+   "sha256": "cea5967ff9ccebd88f78a236950d0c4d2d4a57993f54f1bc0fabcd5efbce98e4",
+   "path": "network/detection/ftp/riedel-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "rlogin-detect": {
+   "sha256": "d601fc9c546429fbcd1d56c2b2b31bc63ab9b148ec8c82afd7878ea1de4b04e4",
+   "path": "javascript/detection/rlogin-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "rpcbind-portmapper-detect": {
+   "sha256": "a4237c5747901b78c2a0742a436d2029a81eed8bb1a9ab140e39689789ed13fb",
+   "path": "network/detection/rpcbind-portmapper-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "rsync-list-modules": {
+   "sha256": "fed7078b126f7fc04b52f1b75b5f2a90518eed58cdeb9db39c3ee24d80c4f84a",
+   "path": "javascript/enumeration/rsync/rsync-list-modules.yaml",
+   "severity": "low",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "rsync-version": {
+   "sha256": "5685c8044914cbacc913c414fad877d4b14c80ca624e218aae3a8ca67f4a442f",
+   "path": "javascript/enumeration/rsync/rsync-version.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "rsyncd-service-detect": {
+   "sha256": "fa23568876afa5e354fa834ae2fc82ac251b78a0eaf6444aa41cc3dfdfb8a33f",
+   "path": "network/detection/rsyncd-service-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "rtl-tcp-server-detect": {
+   "sha256": "1ba22f9f4a63163850e0d8cf7c5a0396eadd829a1508caef779750715e46cd70",
+   "path": "network/detection/rtl-tcp-server-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "sambar-ftp-detect": {
+   "sha256": "722c01657d758d161a85888504aae99b08339de8b65e9b6f278cd9456791b7c0",
+   "path": "network/detection/ftp/sambar-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "sap-dispatcher-detect": {
+   "sha256": "d54ae8161250c90a5483df56f4cc9f199cd17e63253e61a78909f0f3012a9c83",
+   "path": "network/detection/sap-dispatcher-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "sap-router": {
+   "sha256": "972d2c80f4dd51bd7afb6dfbc301bdefb18a62bdca6030c7ee97fa807e1e8a18",
+   "path": "network/detection/sap-router.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "sap-router-detect": {
+   "sha256": "ad093bdc496d75fc7a2a45bdbec5ee35409bfab46c4bc5c4d90d69e1d49832ad",
+   "path": "network/detection/sap-router-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "schneider-modicon-340-detect": {
+   "sha256": "a5f3e58841a077c3dc23eb5974438c0d1eaed914d351861c261dbc733f08fab7",
+   "path": "network/detection/ics/schneider-modicon/schneider-modicon-340-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "schneider-modicon-580-detect": {
+   "sha256": "5488a749a7c228de30971dc95621367f7aa22d38483e8b7d2c2b750538060057",
+   "path": "network/detection/ics/schneider-modicon/schneider-modicon-580-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "securegateway-ftp-detect": {
+   "sha256": "017351c6b14c3634a466b2a11c42b0b644c9f65cc82bf3d648e2c75f3561cf02",
+   "path": "network/detection/ftp/securegateway-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "self-signed-ssl": {
+   "sha256": "bfdadaaa257aba1ba29c095d0d44237a44a2d5ceb4f58cf0993ec1a484af6fc1",
+   "path": "ssl/self-signed-ssl.yaml",
+   "severity": "low",
+   "classes": [
+    "tls",
+    "unknown"
+   ]
+  },
+  "serv-u-ftp-detect": {
+   "sha256": "43f08a11a9ddfc0c0bcb70ebf4ac55594df77c567c124c4dc64e42da341a0ba7",
+   "path": "network/detection/ftp/serv-u-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "shad0w-c2-jarm": {
+   "sha256": "6da3e3b5d2d0d07dfd396e87682779263b116dfaaceb2c813752b901501a881e",
+   "path": "network/jarm/c2/shad0w-c2-jarm.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "shadowpad-c2": {
+   "sha256": "5227b27c6d6a83b2828fc08e57e64191d8a478ba1f73515cdc84e880e73aa8e9",
+   "path": "ssl/c2/shadowpad-c2.yaml",
+   "severity": "info",
+   "classes": [
+    "tls",
+    "unknown"
+   ]
+  },
+  "sidewinder-ftp-detect": {
+   "sha256": "81b421aa6f384c4100f58bbab7703379476a393dcbe0b71f49e90acb1e9a82e7",
+   "path": "network/detection/ftp/sidewinder-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "siemens-s7-detect": {
+   "sha256": "a00f5ce24f1300d366e63f48874aca5cbc52d5532115128df2d2eb5b7066536c",
+   "path": "network/detection/ics/siemens/siemens-s7-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "silenttrinity-c2-jarm": {
+   "sha256": "9d88f6258cf13292389e7bf24b819c9ea29836b09aa83a6adafb8d9e509de864",
+   "path": "network/jarm/c2/silenttrinity-c2-jarm.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "sliver-c2": {
+   "sha256": "192a9bce2ebc7f2dc1a5da772a09587c41672e0175fab8b7aa97884bf784cb89",
+   "path": "ssl/c2/sliver-c2.yaml",
+   "severity": "info",
+   "classes": [
+    "tls",
+    "unknown"
+   ]
+  },
+  "sliver-c2-jarm": {
+   "sha256": "38cfefd1c56f51eba37f43f15b11050d85187ee1cbd764d80934e4c828ff110c",
+   "path": "network/jarm/c2/sliver-c2-jarm.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "smb-enum": {
+   "sha256": "27301843307faa7d5b4d3a769f1dc43ee6ccf99e72e94d9995bbf21f1c23d4ca",
+   "path": "javascript/enumeration/smb/smb-enum.yaml",
+   "severity": "info",
+   "classes": [
+    "smb"
+   ]
+  },
+  "smb-enum-domains": {
+   "sha256": "e69c1d040a7faaa6dd39a8f0ef6b116794519e71c76767850e3712c8d7414dd2",
+   "path": "javascript/enumeration/smb/smb-enum-domains.yaml",
+   "severity": "info",
+   "classes": [
+    "smb"
+   ]
+  },
+  "smb-os-detect": {
+   "sha256": "6255b7a53b49eccd10d5768d5e51f576c7c766aac3be237eda7a3194c3e597b4",
+   "path": "javascript/enumeration/smb/smb-os-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "smb"
+   ]
+  },
+  "smb-signing": {
+   "sha256": "10d91b6408e6c311b72f31aad3bbde03f2ea1cc37d74a4fd994db225973f25ad",
+   "path": "javascript/misconfiguration/smb/smb-signing.yaml",
+   "severity": "medium",
+   "classes": [
+    "smb"
+   ],
+   "restored": true
+  },
+  "smb-v1-supported": {
+   "sha256": "10400aa4ebcb91d3eab80b7726f7727f3cb07692c8977ccd252ee73feb59aa19",
+   "path": "javascript/enumeration/smb/smb-v1-supported.yaml",
+   "severity": "info",
+   "classes": [
+    "smb"
+   ]
+  },
+  "smb-version-detect": {
+   "sha256": "7a56ff90f1c7c253427c5a920f8b5a4cde1d87784c7f1446827f6d8df411d344",
+   "path": "javascript/enumeration/smb/smb-version-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "smb"
+   ]
+  },
+  "smb2-capabilities": {
+   "sha256": "5132a1f42cf132d1e0b3cb2cc3d3367cccc9fbe7748ab330111e6bd4499d332b",
+   "path": "javascript/enumeration/smb/smb2-capabilities.yaml",
+   "severity": "info",
+   "classes": [
+    "smb"
+   ]
+  },
+  "smb2-server-time": {
+   "sha256": "b0f671a990b9dced8feddfb42b01932a6633e457818dd78a5d9f1af4d817efff",
+   "path": "javascript/enumeration/smb/smb2-server-time.yaml",
+   "severity": "info",
+   "classes": [
+    "smb"
+   ]
+  },
+  "smtp-commands-enum": {
+   "sha256": "74efbc62bdb60bfda9df154ddba02ea8fb3815f7becee25adcfc0a8b44646429",
+   "path": "network/enumeration/smtp/smtp-commands-enum.yaml",
+   "severity": "info",
+   "classes": [
+    "smtp"
+   ]
+  },
+  "smtp-detect": {
+   "sha256": "73ce13aca65846473526faeef361d56404aedbfe59637672d6b712d31dff39ca",
+   "path": "network/detection/smtp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "smtp"
+   ]
+  },
+  "snap7-honeypot-default-config": {
+   "sha256": "cae97699687f5bfbffe9e64c9c6c1b4f23f4e56d15bbdffeb5a88be944e9878f",
+   "path": "network/honeypot/snap7-honeypot-default-config.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "ssh-auth-methods": {
+   "sha256": "84995dd72f6bda48cf2fc35861bc4eec229513743c036a9a0199afe0270fdcdb",
+   "path": "javascript/detection/ssh-auth-methods.yaml",
+   "severity": "info",
+   "classes": [
+    "ssh"
+   ]
+  },
+  "ssh-cbc-mode-ciphers": {
+   "sha256": "4910a69a4c868b1c7ca5e3f55baf44baf43b71514b46fd421118d1451c2357fb",
+   "path": "javascript/misconfiguration/ssh/ssh-cbc-mode-ciphers.yaml",
+   "severity": "low",
+   "classes": [
+    "ssh"
+   ]
+  },
+  "ssh-diffie-hellman-logjam": {
+   "sha256": "4707a53b1a852a185089b4d7f6b12aba57e363eb5ebc2a04c4393a26db0858d1",
+   "path": "javascript/enumeration/ssh/ssh-diffie-hellman-logjam.yaml",
+   "severity": "low",
+   "classes": [
+    "ssh"
+   ]
+  },
+  "ssh-password-auth": {
+   "sha256": "c2458f7004c37cd05b0417235dab983d6d891aaa477f80d4fa2cbc96c72e4d34",
+   "path": "javascript/enumeration/ssh/ssh-password-auth.yaml",
+   "severity": "info",
+   "classes": [
+    "ssh"
+   ]
+  },
+  "ssh-server-enumeration": {
+   "sha256": "5bae326c8f1e7a15236e35d3613b3ff71dcf2d827159763cac1e7f4b956fe312",
+   "path": "javascript/enumeration/ssh/ssh-server-enumeration.yaml",
+   "severity": "info",
+   "classes": [
+    "ssh"
+   ]
+  },
+  "ssh-sha1-hmac-algo": {
+   "sha256": "5d96d71352b29e8625b3d5829e2f0bcfdbed6d0e213bf1f6e658d26171d13cca",
+   "path": "javascript/enumeration/ssh/ssh-sha1-hmac-algo.yaml",
+   "severity": "info",
+   "classes": [
+    "ssh"
+   ]
+  },
+  "ssh-weak-algo-supported": {
+   "sha256": "4d5c9ef325dcb0bad86bd6996bcc648f19902cd73786b6efd24d9b036ee5c2f2",
+   "path": "javascript/misconfiguration/ssh/ssh-weak-algo-supported.yaml",
+   "severity": "medium",
+   "classes": [
+    "ssh"
+   ]
+  },
+  "ssh-weak-mac-algo": {
+   "sha256": "173e12a5d316836b01ba376956c8415e6a7b14cc934e4023f1a5b44aee5c996f",
+   "path": "javascript/misconfiguration/ssh/ssh-weak-mac-algo.yaml",
+   "severity": "low",
+   "classes": [
+    "ssh"
+   ]
+  },
+  "ssh-weak-public-key": {
+   "sha256": "6461101a8c5e9ac2ac4546e4a2b1de20a7dec0a9a7b6b8aaa0a11c64fea6b2c5",
+   "path": "javascript/misconfiguration/ssh/ssh-weak-public-key.yaml",
+   "severity": "low",
+   "classes": [
+    "ssh"
+   ]
+  },
+  "ssh-weakkey-exchange-algo": {
+   "sha256": "f8d0709071fcb4ca68f01a20912d85bd8ee9a832974b40bc10a4bb0486550e69",
+   "path": "javascript/misconfiguration/ssh/ssh-weakkey-exchange-algo.yaml",
+   "severity": "low",
+   "classes": [
+    "ssh"
+   ]
+  },
+  "sshd-dropbear-detect": {
+   "sha256": "d690759be00d5c2a335d437acfb5c4c35891647099539de83a458451aa261433",
+   "path": "network/detection/sshd-dropbear-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ssh"
+   ]
+  },
+  "ssl-dns-names": {
+   "sha256": "c8abd6991f3c294503ce6b4d593e48d431ae6d3e75eced30a9365b06deeaf3fa",
+   "path": "ssl/ssl-dns-names.yaml",
+   "severity": "info",
+   "classes": [
+    "tls",
+    "unknown"
+   ]
+  },
+  "ssl-issuer": {
+   "sha256": "8f23f60ac081e460503b0a6e15d5da30c39bc8bcdf85fce674326385a755fc71",
+   "path": "ssl/detect-ssl-issuer.yaml",
+   "severity": "info",
+   "classes": [
+    "tls",
+    "unknown"
+   ]
+  },
+  "starttls-mail-detect": {
+   "sha256": "7ad3d6b2d46c9be8305d19b0f33cc5eddb523619dad81a3d4e7ccf56fbe7a891",
+   "path": "network/detection/starttls-mail-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "smtp"
+   ]
+  },
+  "sunos56-ftp-detect": {
+   "sha256": "b468ce172f18f4dd175cf6b5add0d8ae624e75aa23f1b4484be709f67b7cd67c",
+   "path": "network/detection/ftp/sunos56-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "sunos58-ftp-detect": {
+   "sha256": "ec24955e8a63b9ef446361f15a254e6c70a00a349ef669998423fd0cccb02273",
+   "path": "network/detection/ftp/sunos58-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "teamspeak3-detect": {
+   "sha256": "d3e9b7e85169efac1826acae7c0d3ae3b05826c342ef11f8495963b97ee26d52",
+   "path": "network/detection/teamspeak3-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "telnet-detect": {
+   "sha256": "b9c689c2ac418a59422d09a5f953fc419d9440035fd4bb414dc840e631e48fa8",
+   "path": "network/detection/telnet-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "telnet"
+   ]
+  },
+  "tidb-native-password": {
+   "sha256": "127cff2bb76632ff9b9904fedcd214e7dfb2a42c267044c6c0a3cbfa445a1700",
+   "path": "network/misconfig/tidb-native-password.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "titan-ftp-detect": {
+   "sha256": "abd686604a69810b5b028db06821d8e3b86dca7ad4c1297f3d717dec17a4014f",
+   "path": "network/detection/ftp/titan-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "tls-version": {
+   "sha256": "3a6f237e5df5389726233a1aed71f00252f3f3f5afd486469ce8776b2421b61f",
+   "path": "ssl/tls-version.yaml",
+   "severity": "info",
+   "classes": [
+    "tls",
+    "unknown"
+   ]
+  },
+  "tnftpd-detect": {
+   "sha256": "127c0c4ae6bb169fb0470e4f9b9f79b30ca39e3d935727abc7a451518bcbe8ca",
+   "path": "network/detection/ftp/tnftpd-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "tornado-vxworks-ftp-detect": {
+   "sha256": "4560057379c6154e97a52d3fae07a0448f4965310c9a9a90540a358363610090",
+   "path": "network/detection/ftp/tornado-vxworks-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "totemomail-smtp-detect": {
+   "sha256": "63e1cf51abfd4fa03bf5fe4a7b91fd547b3c906e54ab8a5a5a2af3239e7f582b",
+   "path": "network/detection/totemomail-smtp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "smtp"
+   ]
+  },
+  "tp-print-ftp-detect": {
+   "sha256": "d2d99bf74fd74f87a8ed6119a9ec32defb692ff116cc3637b084380383405959",
+   "path": "network/detection/ftp/tp-print-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "treck-ftp-detect": {
+   "sha256": "59d1eabe68d3448962b8058498adee983cdc1dc4324d744eae656b2aae835327",
+   "path": "network/detection/ftp/treck-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "typsoft-ftp-detect": {
+   "sha256": "05182a8ae034d87c355092846ab8fd138354131578f04a592d2bf6927ad87ef3",
+   "path": "network/detection/ftp/typsoft-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "unauth-java-message-broker-detect": {
+   "sha256": "588777d0123265932a9c5b69718d846d9935a1ca90634bc3a6d729c3eb003252",
+   "path": "network/detection/unauth-java-message-broker-detect.yaml",
+   "severity": "low",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "untrusted-root-certificate": {
+   "sha256": "d9d1c176cca2e23233d17fabd56b693630d0c35ad713891d599c2636f095275e",
+   "path": "ssl/untrusted-root-certificate.yaml",
+   "severity": "low",
+   "classes": [
+    "tls",
+    "unknown"
+   ]
+  },
+  "venomrat": {
+   "sha256": "892a51489352dee2662615665af2aba8fbb22165c0de1f3fec24188e0a1d2d8f",
+   "path": "ssl/c2/venomrat.yaml",
+   "severity": "info",
+   "classes": [
+    "tls",
+    "unknown"
+   ]
+  },
+  "vmware-authentication-daemon": {
+   "sha256": "6fa33cc3458cc8209812e55e055c4c2be8883481a5b1a67f661666117b69478a",
+   "path": "network/detection/vmware-authentication-daemon-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "vnc-service-detect": {
+   "sha256": "8a1acf8e97276b2d7f0e8ce1dcff21e4036e69867cc46947b9c4460709ebb108",
+   "path": "network/detection/vnc-service-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "vnc"
+   ]
+  },
+  "vsftpd-detect": {
+   "sha256": "e1e31d98fb79326e815de266fd825cba5e97ec0cc68e6860f73093093de797d0",
+   "path": "network/detection/ftp/vsftpd-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "vtun-server": {
+   "sha256": "c4ab8d1e5f89cb0fd61d2a9741de804ea33db03cb7fc4b84072e97b3ac5fb935",
+   "path": "network/detection/vtun-server.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "weak-cipher-suites": {
+   "sha256": "956fa0117f123ba9125caec8ff0ad32a1fb76cf879c1bb7d5303570558da66ee",
+   "path": "ssl/weak-cipher-suites.yaml",
+   "severity": "low",
+   "classes": [
+    "tls",
+    "unknown"
+   ]
+  },
+  "weblogic-iiop-detect": {
+   "sha256": "1ad7af9ab5998a93cb0480edb9b89dde8ac1fd6865d3870e48bc485567b200e4",
+   "path": "network/detection/weblogic-iiop-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "weblogic-t3-detect": {
+   "sha256": "f019c72f65614433ede3073b58b8d41e067e00e064dad175d267f0fc334984d7",
+   "path": "network/detection/weblogic-t3-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "wildcard-tls": {
+   "sha256": "ab50ab7e2b5c6a83e1f549406cea0b666cd24f63e4f245b33c2f497a5043322c",
+   "path": "ssl/wildcard-tls.yaml",
+   "severity": "info",
+   "classes": [
+    "tls",
+    "unknown"
+   ]
+  },
+  "windriver-ftp-detect": {
+   "sha256": "296c8ec05ef94c900b1474cd8dfecac4fdc1280101fa49a4bfc15464276f4f11",
+   "path": "network/detection/ftp/windriver-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "wing-ftp-detect": {
+   "sha256": "6f638032e388c4f8f95daa7118896fc29df3d0f4ccfdbfb82da35ad0bdb8d80e",
+   "path": "network/detection/wing-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "ws_ftp-ssh-detect": {
+   "sha256": "149fa228ad5af7fbe888da7b1afe98757ec20eb98579914755a3c38c38b19c5c",
+   "path": "network/detection/ws_ftp-ssh-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ssh"
+   ]
+  },
+  "x2-wsftp-detect": {
+   "sha256": "0be2cd3659c28fb5c7f6eeaaadb416376327840972b6dee58888ba2d5788aeb4",
+   "path": "network/detection/ftp/x2-wsftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "xerver-ftp-detect": {
+   "sha256": "3c3bed98cbe32871a9edb8fc4fc92c36a755cd68a00bbcb894e29a271edaf56a",
+   "path": "network/detection/ftp/xerver-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "xlight-ftp-detect": {
+   "sha256": "f057d30797e542358cba17082052170995992fb97202d9de22021ec0f773cf31",
+   "path": "network/detection/ftp/xlight-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "xlight-ftp-service-detect": {
+   "sha256": "47235fd7648d3ebf91c1e8622ef392a9cced1f0ee14f1852b9b78c0b0c375051",
+   "path": "network/detection/xlight-ftp-service-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "xtremerat-trojan": {
+   "sha256": "a6884fad7a0f195e63f064ea43ef1e713754d3556446a1637d00566034efaa72",
+   "path": "network/c2/xtremerat-trojan.yaml",
+   "severity": "info",
+   "classes": [
+    "unknown"
+   ]
+  },
+  "zftp-detect": {
+   "sha256": "d81cd52b33922ef08c73e318d271c7c268216da3ad67eb15482ad073b30f3443",
+   "path": "network/detection/ftp/zftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  },
+  "zywall-ftp-detect": {
+   "sha256": "bb6b14fe8f460466e7dceb9f1b32dcde61b1a438a874dad1f6f5d90281f3d6cd",
+   "path": "network/detection/ftp/zywall-ftp-detect.yaml",
+   "severity": "info",
+   "classes": [
+    "ftp"
+   ]
+  }
+ }
+}

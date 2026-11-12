@@ -1,0 +1,2 @@
+cvengine_scanner/fixtures/nuclei_templates/** -text
+cvengine_scanner/fixtures/nuclei_service_refused/** -text
