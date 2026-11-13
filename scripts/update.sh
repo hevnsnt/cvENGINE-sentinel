@@ -4,7 +4,7 @@
 #
 #   scripts/update.sh            update when this Sentinel's self-update setting says so: Automatic always, Manual only when an administrator
 #                                pressed Update now, Off never (the setting is chosen in cvENGINE, or CVENGINE_SENTINEL_UPDATE here, which is a ceiling: a local off or manual caps what cvENGINE can ask for).
-#                                It moves to the commit cvENGINE named in the heartbeat (the target) and to no other: with no target it refuses
+#                                It moves to the commit cvENGINE named in the heartbeat (the target) and to no other: with no target it waits (reported once a day, not as a failure)
 #   scripts/update.sh --now      update whatever the setting says (a person typing it here; still drains running tasks first). With no target from
 #                                cvENGINE it moves to the head of origin/<branch> and prints that this is trusted only as far as the repository is
 #   scripts/update.sh --to SHA   a person naming the commit (implies --now). It must be on origin/<branch>
@@ -165,7 +165,16 @@ elif [ "$NOW" = 1 ]; then
   REQUESTED=$AVAILABLE_FULL
   WHY="cvENGINE named no target, so this is the head of origin/$BRANCH, which you asked for with --now; it is trusted only as far as the repository is (commits are not signature-checked)"
 else
-  cannot "cvENGINE has not named a commit for this Sentinel to update to, and an Automatic or requested update moves only to the commit cvENGINE names, never to whatever is on origin/$BRANCH (a person can run scripts/update.sh --now)"
+  # Nothing is wrong on this machine: an Automatic or requested update moves only to the commit cvENGINE names, and cvENGINE has named none (for now). That is waiting,
+  # not a failure, and it is told to cvENGINE once a day (a marker file), not by every hourly run.
+  RESULT=waiting
+  DETAIL="waiting: the server named no target for this Sentinel, so it stays on $CURRENT (an update moves only to the commit cvENGINE names, never to whatever is on origin/$BRANCH; a person can run scripts/update.sh --now)"
+  say "$DETAIL"
+  if [ -z "$(find .update-no-target -mmin -1440 2>/dev/null)" ]; then
+    ctl report waiting --phase available --detail "$DETAIL" --from "$CURRENT" --to "$TARGET" 2>/dev/null || true
+    : > .update-no-target 2>/dev/null || true
+  fi
+  exit 0
 fi
 TARGET=$(printf '%s' "$REQUESTED" | cut -c1-12)
 RUNNING_FULL=$(git rev-parse --verify --quiet "${DEPLOYED:-HEAD}^{commit}" 2>/dev/null || git rev-parse HEAD)

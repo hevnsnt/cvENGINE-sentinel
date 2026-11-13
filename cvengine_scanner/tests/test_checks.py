@@ -217,6 +217,35 @@ class ThirdPassTests(unittest.TestCase):
         self.assertIn('body', check_allowlist.raw_problem('GET /x HTTP/1.1\nHost: {{Hostname}}\n\na: b\n'))
 
 
+class CredentialRuleTimeTests(unittest.TestCase):
+    """The password-field patterns read text a template author wrote (up to 200,000 characters of body): none of them may take longer than a moment on text built to
+    make a pattern backtrack or rescan (CodeQL py/redos asked for this; a repeated ``password={{`` used to take 45 seconds)."""
+    SIZE = 190_000
+    SHAPES = {'open braces': '{{', 'password and open braces': 'password={{', 'escaped password and open braces': '\\"password\\":\\"{{', 'xml tag and open braces': '<password>{{',
+              'open placeholder with a word': '{{a ', 'password names': 'password=', 'bare equals': 'a=', 'multipart names': 'name="password"\r\n',
+              'multipart headers': 'name="password"\r\nContent-A: b\r\n', 'percent escapes': '%41', 'escaped quotes': '\\"', 'quotes': '"', 'pw and braces': 'pw={{',
+              'escaped quote password and braces': 'password:\\"{{'}
+
+    def test_no_shape_takes_more_than_a_moment(self):
+        import time
+        for name, unit in self.SHAPES.items():
+            text = (unit * (self.SIZE // len(unit) + 1))[:self.SIZE]
+            for label, call in (('rule', lambda: checks._password_field_problem(text, set())), ('fixed text', lambda: checks._fixed_text(text, set())),
+                                ('prefilter', lambda: checks.might_send_credential(text.encode()))):
+                with self.subTest(shape=name, part=label):
+                    started = time.monotonic()
+                    call()
+                    self.assertLess(time.monotonic() - started, 3.0)
+
+    def test_a_template_with_such_a_body_is_judged_in_a_moment_too(self):
+        import time
+        body = 'password={{' * 17_000
+        text = 'id: c\ninfo:\n  name: c\n  severity: info\nhttp:\n  - method: POST\n    path: [\'{{BaseURL}}/x\']\n    body: \'' + body + '\'\n'
+        started = time.monotonic()
+        checks.credential_problem(text)
+        self.assertLess(time.monotonic() - started, 3.0)
+
+
 class BoundsTests(unittest.TestCase):
     def test_empty_oversized_or_binary_text_is_refused(self):
         good = next(c for c in CORPUS if c['name'] == 'plain_get')['template']
