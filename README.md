@@ -564,13 +564,14 @@ Command line equivalents (the interface is cvENGINE, these are the same actions)
 ### What Automatic trusts
 
 An Automatic Sentinel (and a Manual one when an administrator presses **Update now**) moves to **the commit cvENGINE named** in its heartbeat
-(`target`), and to no other. It never builds "whatever is at the head of `main` today". `scripts/update.sh` refuses, reports the update as failed to
+(`target`), and to no other. It never builds "whatever is at the head of `main` today". When cvENGINE has named no target (Automatic and requested
+updates both need one), `scripts/update.sh` changes nothing, reports **waiting: the server named no target** (once a day, not by every hourly run, and
+never as a failure; `.update-no-target` is the marker) and exits 0: nothing is wrong on this machine. It refuses, reports the update as failed to
 cvENGINE, exits non-zero and leaves the running Sentinel unchanged when:
 
-- cvENGINE named no target (Automatic and requested updates both need one);
 - the target is not in the history fetched from `origin` (a bad or unknown commit id);
 - the target is not reachable from `origin/main` (a commit pushed to another branch is not an update);
-- the target is not a descendant of the commit this Sentinel runs (no downgrade, no sideways move).
+- the target is not a descendant of the commit this Sentinel runs (no downgrade, no sideways move). A target that is simply *older* than what runs (a server that pins an older build) is no failure either: nothing moves and it is reported as waiting, once a day.
 
 After the checkout, `HEAD` must equal the target before anything is built or restarted. The same rules apply to `scripts/pull-on-exit.sh`.
 
@@ -757,7 +758,7 @@ The `sentinel-state` volume (`/var/lib/cvengine-sentinel` in the container) hold
 ### Files the checkout keeps out of git
 
 `.gitignore` ignores `.env` and every `.env*` file except `.env.example` (so `.env.bak.*` backups too),
-`.deployed-commit`, `.deployed-commit.tmp`, `.update.lock`, `docker-compose.override.yml` and Python caches.
+`.deployed-commit`, `.deployed-commit.tmp`, `.update-no-target`, `.update.lock`, `docker-compose.override.yml` and Python caches.
 `.dockerignore` keeps `.env*`, tests, docs and git history out of the image build; only git's `HEAD` and refs go in,
 so the image can stamp its commit.
 

@@ -515,9 +515,10 @@ class HeartbeatTests(unittest.TestCase):
         d = daemon.Daemon('https://cve.example.test', 'tok', client=fc, heartbeat_seconds=0.02)
         thread = threading.Thread(target=d._heartbeat_loop, daemon=True)
         thread.start()
-        time.sleep(0.09)
+        # wait for the two beats with a deadline, not a fixed sleep: a busy runner can be slow, and the test is about the loop, not about the clock
+        wait_for(lambda: len([1 for _m, p, _b in list(fc.calls) if p == 'sentinel/heartbeat']) >= 2, timeout=10)
         d.stop_event.set()
-        thread.join(timeout=1)
+        thread.join(timeout=5)
         beats = [p for m, p, _b in fc.calls if p == 'sentinel/heartbeat']
         self.assertGreaterEqual(len(beats), 2)
 
@@ -527,10 +528,11 @@ class HeartbeatTests(unittest.TestCase):
         d = daemon.Daemon('https://cve.example.test', 'tok', client=fc, heartbeat_seconds=0.02)
         thread = threading.Thread(target=d._heartbeat_loop, daemon=True)
         thread.start()
-        time.sleep(0.06)
+        wait_for(lambda: len([1 for _m, p, _b in list(fc.calls) if p == 'sentinel/heartbeat']) >= 2, timeout=10)  # it tried twice, so a failure did not end the loop
         d.stop_event.set()
-        thread.join(timeout=1)
+        thread.join(timeout=5)
         self.assertFalse(thread.is_alive())
+        self.assertGreaterEqual(len([1 for _m, p, _b in fc.calls if p == 'sentinel/heartbeat']), 2)
 
 
 class ShutdownTests(unittest.TestCase):

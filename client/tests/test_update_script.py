@@ -329,19 +329,43 @@ class UpdateScriptTests(unittest.TestCase):
         self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
         self.assertEqual(run(['git', 'rev-parse', 'HEAD'], self.work).stdout.strip(), self.origin_main())
 
-    def test_automatic_without_a_target_is_refused(self):
+    def assert_waiting_for_a_target(self, out, before):
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertEqual(self.head(), before)  # the checkout is untouched
+        for call in ('compose pull', 'compose build', 'client.control drain', 'compose up'):
+            self.assertNotIn(call, self.calls())
+        info = control.updater_info()
+        self.assertEqual(info['last_result'], 'waiting')  # not "failed": nothing is wrong on this machine
+        self.assertIn('waiting: the server named no target', info['detail'])
+        self.assertIn('--now', info['detail'])
+
+    def test_automatic_without_a_target_waits_and_is_not_a_failure(self):
+        # FB-7: with no target named (the server's "Keep Sentinels on the newest version" off, or no verdict from GitHub) the hourly run used to report "failed" every hour
         self.publish()
         before = self.head()
         self.status('automatic', target=None)
-        out = self.update()
-        self.assert_refused(out, 'has not named a commit', before)
-        self.assertIn('--now', control.updater_info()['detail'])
+        self.assert_waiting_for_a_target(self.update(), before)
+        self.assertEqual((control.read_update()['status'], control.read_update()['phase']), ('waiting', 'available'))
+        self.assertIn('waiting: the server named no target', control.read_update()['detail'])
 
-    def test_a_requested_manual_update_without_a_target_is_refused_too(self):
+    def test_the_wait_for_a_target_is_reported_to_cvengine_once_a_day(self):
+        self.publish()
+        before = self.head()
+        self.status('automatic', target=None)
+        self.assert_waiting_for_a_target(self.update(), before)
+        os.unlink(control._path('update.json'))
+        self.assert_waiting_for_a_target(self.update(), before)  # the next hourly run: still recorded as the updater's own result, not reported again
+        self.assertEqual(control.read_update(), {})
+        old = time.time() - 25 * 3600
+        os.utime(os.path.join(self.work, '.update-no-target'), (old, old))
+        self.assert_waiting_for_a_target(self.update(), before)
+        self.assertEqual(control.read_update()['status'], 'waiting')  # a day later it is said once more
+
+    def test_a_requested_manual_update_without_a_target_waits_too(self):
         self.publish()
         before = self.head()
         self.status('manual', requested=True, target=None)
-        self.assert_refused(self.update(), 'has not named a commit', before)
+        self.assert_waiting_for_a_target(self.update(), before)
 
     def test_a_target_that_is_not_a_commit_id_is_refused(self):
         self.publish()
@@ -387,16 +411,19 @@ class UpdateScriptTests(unittest.TestCase):
         self.assertEqual(self.marker(), deployed)
         self.assertEqual(self.calls().count('compose up -d'), 1)  # only the first update ever restarted anything
 
-    def test_a_downgrade_is_refused(self):
+    def test_a_downgrade_is_never_made_and_is_waiting_not_a_failure(self):
+        # FB-7: the server may pin an older commit than the Sentinel runs (a Sentinel that went ahead of its server): nothing moves, and the hourly run is not a failure
         first, second = self.publish_two()
         self.status('automatic', target=second)
         self.assertEqual(self.update().returncode, 0)
         self.publish()  # main moves on, so the deployed commit is no longer main's head and the early "up to date" exit does not apply
         self.status('automatic', target=first)
         out = self.update()
-        self.assertNotEqual(out.returncode, 0, out.stdout + out.stderr)
-        self.assertIn('not a descendant', control.updater_info()['detail'])
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertEqual(control.updater_info()['last_result'], 'waiting')
+        self.assertIn('older than the one this Sentinel runs', control.updater_info()['detail'])
         self.assertEqual(self.head(), second[:12])
+        self.assertEqual(self.calls().count('compose up -d'), 1)  # only the first update ever restarted anything
 
     def test_a_person_can_roll_back_only_with_the_explicit_flag(self):
         first, second = self.publish_two()

@@ -30,7 +30,7 @@ except ImportError:  # run as a script by compute(): the library is next to the 
 logger = logging.getLogger(__name__)
 
 MAX_INSTALLED_BYTES = 32 * 1024 * 1024  # the ceiling for a template read from this Sentinel's own disk; the rule's 200,000 is for text handed to it
-RULE_REV = 4  # bump when ``checks.credential_problem`` changes what it refuses: every list is then made again
+RULE_REV = 5  # bump when ``checks.credential_problem`` changes what it refuses: every list is then made again
 CACHE_NAME = '.cvengine-credential-templates.json'
 
 

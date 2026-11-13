@@ -1,6 +1,7 @@
 # Keep secrets, tests and history out of the build context. .env and its .env.bak.* backups hold the provisioning blob.
 .env*
 .deployed-commit*
+.update-no-target
 .update.lock
 docker-compose.override.yml
 client/tests
