@@ -179,6 +179,74 @@ def _parse(text):
     return doc, ''
 
 
+# A literal credential a template sends (TL-2, item 3): a header whose name says it authenticates (Authorization, Cookie, X-Api-Key, a token...) with a value
+# the template itself fixes, or a URL with a user name in it. A value made only of placeholders ({{token}}: what a signed-in run or an extractor supplies) is
+# not literal. Mirrored by cveFeed.validation.credential_problem on the server; both are tested against ``fixtures/checks/corpus.json``.
+_CRED_HEADER = re.compile(r'(?i)^(?:proxy-)?authorization$|^cookie2?$|auth|token|secret|passw|api[-_]?key|session|credential|jwt|csrf|xsrf|signature|bearer')
+_AUTH_SCHEME = re.compile(r'(?i)\b(?:bearer|basic|digest|negotiate|ntlm|token|apikey)\b')
+_USERINFO = re.compile(r'(?i)[a-z][a-z0-9+.-]*://[^/\s?#]*@')
+_PLACEHOLDER = re.compile(r'\{\{\s*([^}]*?)\s*\}\}')
+
+
+def _fixed_text(value, literal_names):
+    """What is left of ``value`` once every placeholder that is not a fixed value is taken out. A placeholder that holds a quoted literal
+    (``{{base64('admin:admin')}}``) or names a variable the template gives a fixed value counts as text."""
+    def one(match):
+        name = match.group(1)
+        return 'x' if ("'" in name or '"' in name or name in literal_names) else ''
+    return _PLACEHOLDER.sub(one, str(value))
+
+
+def _literal_credential_header(name, value, literal_names):
+    if not _CRED_HEADER.search(str(name).strip()):
+        return False
+    text = _fixed_text(value, literal_names)
+    if str(name).strip().lower().startswith('cookie'):
+        return any(re.search(r'[A-Za-z0-9]', part.partition('=')[2] if '=' in part else part) for part in text.split(';'))
+    return bool(re.search(r'[A-Za-z0-9]', _AUTH_SCHEME.sub('', text)))
+
+
+def credential_problem(text):
+    """Why a template sends a credential of its own, or ``''``: a header that authenticates (Authorization, Cookie, an API key, a token...) with a fixed value
+    in the ``headers`` of a block or in a raw request, or a URL with a user name in it (``http://admin:admin@{{Hostname}}``). A value made only of placeholders is
+    not fixed. Pure; ``readonly_problem`` includes it, and the server lets an App Admin lift it for installed templates only (never for an AI-written one)."""
+    doc, problem = _parse(text)
+    if problem:
+        return problem
+    variables = doc.get('variables') if isinstance(doc.get('variables'), dict) else {}
+    literal_names = {str(k) for k, v in variables.items() if re.search(r'[A-Za-z0-9]', _PLACEHOLDER.sub('', str(v)))}
+    refuse = 'template not validated: it sends a credential of its own'
+
+    def walk(node, key=''):
+        if isinstance(node, dict):
+            if str(key).lower() == 'headers':
+                for name, value in node.items():
+                    if _literal_credential_header(name, value, literal_names):
+                        return f'{refuse} (the {str(name)[:40]} header has a fixed value)'
+            for k, value in node.items():
+                found = walk(value, k)
+                if found:
+                    return found
+        elif isinstance(node, list):
+            for value in node:
+                found = walk(value, key)
+                if found:
+                    return found
+        elif isinstance(node, str):
+            if str(key).lower() in ('path', 'raw', 'host', 'address', 'url') and _USERINFO.search(node):
+                return f'{refuse} (a URL with a user name in it)'
+            if str(key).lower() == 'raw':
+                lines = node.strip().splitlines()
+                for line in lines[1:]:
+                    if not line.strip():
+                        break
+                    name, sep, value = line.partition(':')
+                    if sep and _literal_credential_header(name, value, literal_names):
+                        return f'{refuse} (the {name.strip()[:40]} header has a fixed value)'
+        return ''
+    return walk({k: v for k, v in doc.items() if k not in ('info', 'variables')})
+
+
 def readonly_problem(text):
     """Why a template may not run on a Sentinel other than the built-in scanner, or ``''`` when its text is read-only (the server's
     ``cveFeed.validation.readonly_problem``, rule for rule)."""
@@ -221,7 +289,7 @@ def readonly_problem(text):
                 verb = first.split(' ', 1)[0].upper()
                 if verb not in READONLY_METHODS:
                     return f'template not validated: raw request method {verb or "?"} is not read-only'
-    return ''
+    return credential_problem(text)
 
 
 def scope_problem(text):
