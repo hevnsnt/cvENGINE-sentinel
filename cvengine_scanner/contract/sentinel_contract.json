@@ -3224,7 +3224,7 @@
                   "boolean",
                   "null"
                 ],
-                "description": "true: the one credential-less attempt was let through; null: this Sentinel has no client for the database"
+                "description": "true: the one credential-less attempt was let through; false: the server answered and refused it; null: unknown (this Sentinel has no client for the database, or the attempt got no answer: refused connection, timeout, reset), which the server keeps due"
               },
               "evidence": {
                 "type": "string",
@@ -5049,6 +5049,10 @@
               "maxLength": 20
             }
           },
+          "allow_credential_checks": {
+            "type": "boolean",
+            "description": "optional, additive: true only when a person turned on \"Allow checks that send credentials\" at the server. Without it (absent or false) the web pass leaves out the default-login and bruteforce templates and never takes either as a tag; a Sentinel that does not know the field never runs them. It never reaches the service ports, which send no credentials."
+          },
           "budget": {
             "type": "object",
             "description": "optional: what one host:port may receive from this task. pause_ms: the least pause between two template runs on a non-web host:port (nuclei paces only its http and dns requests, so a Sentinel runs one template at a time on a service and waits this long between runs); seconds: the most time one non-web host:port is kept busy; web_rate: the most requests a second one web host receives (nuclei's per-host rate limit). A Sentinel holds each value to its own bound (cvengine_scanner.flags.NUCLEI_SERVICE_BUDGET): a task can make a run gentler (a longer pause, fewer seconds, a lower rate), never harsher.",
@@ -5157,6 +5161,10 @@
               "maxLength": 20
             }
           },
+          "allow_credential_checks": {
+            "type": "boolean",
+            "description": "optional, additive: true only when a person turned on \"Allow checks that send credentials\" at the server. Without it (absent or false) the web pass leaves out the default-login and bruteforce templates and never takes either as a tag; a Sentinel that does not know the field never runs them. It never reaches the service ports, which send no credentials."
+          },
           "budget": {
             "type": "object",
             "description": "optional: what one host:port may receive from this task. pause_ms: the least pause between two template runs on a non-web host:port (nuclei paces only its http and dns requests, so a Sentinel runs one template at a time on a service and waits this long between runs); seconds: the most time one non-web host:port is kept busy; web_rate: the most requests a second one web host receives (nuclei's per-host rate limit). A Sentinel holds each value to its own bound (cvengine_scanner.flags.NUCLEI_SERVICE_BUDGET): a task can make a run gentler (a longer pause, fewer seconds, a lower rate), never harsher.",
@@ -5264,6 +5272,10 @@
               "type": "string",
               "maxLength": 20
             }
+          },
+          "allow_credential_checks": {
+            "type": "boolean",
+            "description": "optional, additive: true only when a person turned on \"Allow checks that send credentials\" at the server. Without it (absent or false) the web pass leaves out the default-login and bruteforce templates and never takes either as a tag; a Sentinel that does not know the field never runs them. It never reaches the service ports, which send no credentials."
           },
           "budget": {
             "type": "object",

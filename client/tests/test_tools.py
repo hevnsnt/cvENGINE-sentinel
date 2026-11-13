@@ -265,9 +265,33 @@ class RunnerArgvTests(unittest.TestCase):
             with self.subTest(tags=tags), mock.patch('client.tools._run', return_value='') as fake_run:
                 tools.run_nuclei(['www.example.test'], tags=tags)
                 argv = fake_run.call_args[0][0]
-                self.assertEqual(argv[argv.index('-etags') + 1], 'dos')
+                self.assertEqual(argv[argv.index('-etags') + 1], 'dos,default-login,bruteforce')  # no check that sends credentials unless a person turned it on (TL-2)
                 self.assertNotIn('-omit-raw', argv)  # the request and response are the finding's evidence (review M2)
                 self.assertEqual('-tags' in argv, bool(tags))
+
+    def test_the_web_pass_sends_no_credentials_unless_the_task_allows_it(self):
+        def etags(**kwargs):
+            with mock.patch('client.tools._run', return_value='') as fake_run:
+                tools.run_nuclei(['www.example.test'], **kwargs)
+            argv = fake_run.call_args[0][0]
+            return set(argv[argv.index('-etags') + 1].split(',')), argv
+        for value in (None, False, 'true', 1):
+            with self.subTest(allow=value):
+                self.assertTrue({'dos', 'default-login', 'bruteforce'} <= etags(allow_credential_checks=value)[0])
+        self.assertEqual(etags(allow_credential_checks=True)[0], {'dos'})  # a person turned it on: dos still never runs
+
+    def test_a_credential_tag_is_not_passed_to_the_web_pass_while_the_setting_is_off(self):
+        with mock.patch('client.tools._run', return_value='') as fake_run:
+            tools.run_nuclei(['www.example.test'], tags=['default-login', 'cve'])
+        argv = fake_run.call_args[0][0]
+        self.assertEqual(argv[argv.index('-tags') + 1], 'cve')
+        with mock.patch('client.tools._run') as fake_run, self.assertRaises(tools.TargetError):  # only a credential tag: nothing usable, never every template
+            tools.run_nuclei(['www.example.test'], tags=['default-login', 'bruteforce'])
+        fake_run.assert_not_called()
+        with mock.patch('client.tools._run', return_value='') as fake_run:
+            tools.run_nuclei(['www.example.test'], tags=['default-login'], allow_credential_checks=True)
+        argv = fake_run.call_args[0][0]
+        self.assertEqual(argv[argv.index('-tags') + 1], 'default-login')
 
     def test_a_tag_filter_with_nothing_usable_fails_closed(self):
         for tags in (['not valid; rm -rf /'], ['CVE'], ['cve\n'], 'cve', [42]):
@@ -2079,16 +2103,22 @@ class NucleiAllowlistRunTests(NucleiTestCase):
         self.assertEqual([r['given']['bytes'] for r in self.nuclei.service_runs], [verified])
 
     def test_a_port_whose_class_has_no_allowlisted_template_is_reported_not_checked_with_the_plain_reason(self):
-        """postgres, mongodb (before mongodb-unauth) and ldap had no template: the port is named in ``not_checked``, even next to a port that ran."""
+        """postgres has no template (ldap and mongodb have one since TL-5): the port is named in ``not_checked``, even next to a port that ran."""
         _add_real(self, 'openssh-detect')
-        ports = {'www.example.test:22': 'ssh', 'www.example.test:5432': 'postgres', 'www.example.test:389': 'ldap'}
+        ports = {'www.example.test:22': 'ssh', 'www.example.test:5432': 'postgres'}
         result = self.run_nuclei(list(ports), services=ports)
         self.assertEqual(self.ran('www.example.test:22'), ['openssh-detect'])
         self.assertEqual(self.ran('www.example.test:5432'), [])
         rows = {row['target']: row['reason'] for row in result['not_checked']}
-        self.assertEqual(rows, {'www.example.test:5432': 'no check exists for this service', 'www.example.test:389': 'no check exists for this service'})
-        self.assertIn('www.example.test:5432', result['unreachable'])  # the server keeps the port due, with its back-off
+        self.assertEqual(rows, {'www.example.test:5432': 'no check exists for this service'})
+        self.assertNotIn('www.example.test:5432', result['unreachable'])  # a port nobody could check is not an unreachable one: the server must not fail it every day (TL-4)
         self.assertNotIn('www.example.test:22', rows)
+
+    def test_a_chunk_of_ports_with_no_check_is_not_an_empty_answer_and_not_unreachable(self):
+        ports = {'www.example.test:5432': 'postgres'}
+        result = self.run_nuclei(list(ports), services=ports)
+        self.assertEqual(result['unreachable'], [])
+        self.assertEqual(result['not_checked'], [{'target': 'www.example.test:5432', 'reason': 'no check exists for this service'}])
 
     def test_a_missing_list_reports_every_service_port_not_checked_never_an_empty_answer(self):
         _add_real(self, 'openssh-detect')
@@ -2096,7 +2126,8 @@ class NucleiAllowlistRunTests(NucleiTestCase):
             result = self.run_nuclei(['www.example.test:22'], services={'www.example.test:22': 'ssh'})
         self.assertEqual(self.nuclei.service_runs, [])
         self.assertEqual([row['target'] for row in result['not_checked']], ['www.example.test:22'])
-        self.assertEqual(result['not_checked'][0]['reason'], 'no check exists for this service')
+        self.assertIn('missing', result['not_checked'][0]['reason'])  # a list that did not load is a fault, not "no check exists": the port stays unreachable and due
+        self.assertEqual(result['unreachable'], ['www.example.test:22'])
         self.assertFalse(result.get('no_templates'))
 
     def test_a_filter_that_matches_nothing_on_a_class_that_has_templates_is_still_an_answer(self):

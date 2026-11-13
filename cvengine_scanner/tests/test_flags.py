@@ -11,18 +11,25 @@ class NucleiFlagTests(unittest.TestCase):
         for argv in (flags.NUCLEI_FLAGS, flags.NUCLEI_BASE_FLAGS, flags.nuclei_flags(), flags.nuclei_flags(['rce'], 'light'),
                      flags.nuclei_flags(tech=True), flags.nuclei_flags(['wordpress'], secret_file='/tmp/x/secrets.json')):
             with self.subTest(argv=argv):
-                self.assertEqual(argv[argv.index('-etags') + 1], 'dos')
+                self.assertEqual(argv[argv.index('-etags') + 1], 'dos,default-login,bruteforce')  # credential checks are off unless a person turns them on (TL-2)
 
     def test_the_sentinel_run_keeps_the_raw_request_and_response(self):
         # what a Sentinel ran before the builders moved here, less -omit-raw: a finding keeps its request and response (clipped, credentials redacted by
         # parse_nuclei_jsonl) as the evidence a person can repeat (review M2). Every other flag is as it was.
         self.assertEqual(flags.NUCLEI_FLAGS, ['-jsonl', '-silent', '-duc', '-ni', '-nc', '-rl', '150', '-c', '40', '-timeout', '10', '-retries', '1',
-                                              '-etags', 'dos'])
+                                              '-etags', 'dos,default-login,bruteforce'])
         self.assertNotIn('-omit-raw', flags.NUCLEI_FLAGS)
 
     def test_the_server_run_is_unchanged(self):
         self.assertEqual(flags.NUCLEI_BASE_FLAGS, ['-severity', 'info,low,medium,high,critical', '-jsonl', '-silent', '-duc', '-ni', '-nc', '-rl', '150',
-                                                   '-c', '40', '-timeout', '10', '-retries', '1', '-etags', 'dos'])
+                                                   '-c', '40', '-timeout', '10', '-retries', '1', '-etags', 'dos,default-login,bruteforce'])
+
+    def test_credential_checks_come_back_only_when_asked_for(self):
+        for build in (flags.nuclei_flags, flags.nuclei_web_flags):
+            on, off = build(allow_credential_checks=True), build()
+            self.assertEqual(on[on.index('-etags') + 1], 'dos')
+            self.assertEqual(off[off.index('-etags') + 1], 'dos,default-login,bruteforce')
+        self.assertEqual(flags.nuclei_flags(['rce'], 'light', allow_credential_checks=True).count('-etags'), 1)
 
     def test_the_light_profile_lowers_rate_and_concurrency(self):
         normal, light = flags.nuclei_flags(), flags.nuclei_flags(profile='light')

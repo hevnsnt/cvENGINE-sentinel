@@ -15,6 +15,11 @@ REFUSED = FIXTURES / 'nuclei_service_refused'
 NAMED = ('backdoored-zte', 'tidb-unauth', 'clickhouse-unauth', 'CVE-2022-24706', 'CVE-2026-83548', 'CVE-2026-55040', 'CVE-2024-54772')
 
 
+# TL-5: read at v10.5.2 and put back: each sends no credential and changes nothing on the target (the reasons are in the review file)
+READ_ONLY_BACK = ('mongodb-detect', 'mongodb-info-enum', 'ldap-metadata', 'rdp-detection', 'samba-detect', 'rtsp-detect', 'nats-server-enum', 'gost-ssh-detect',
+                  'gost-socks5-detect', 'apache-rocketmq-broker-unauth')
+
+
 def _templates():
     return al.load_allowlist()['templates']
 
@@ -52,9 +57,22 @@ class ShippedListTests(unittest.TestCase):
                 self.assertNotIn(tid, _templates())
                 self.assertIn(tid, left)
 
+    def test_the_read_only_templates_put_back_are_on_the_list_and_ldap_and_mongodb_are_covered(self):
+        for tid in READ_ONLY_BACK:
+            with self.subTest(template=tid):
+                self.assertIn(tid, _templates())
+        self.assertTrue(al.covers('ldap'))
+        self.assertTrue(al.covers('mongodb'))
+        self.assertTrue(al.covers('rdp'))
+        review = json.loads(al.REVIEW_FILE.read_text(encoding='utf-8'))
+        self.assertEqual(review['read_only']['apache-rocketmq-broker-unauth'], _templates()['apache-rocketmq-broker-unauth']['sha256'])  # severity high: read as read-only
+        for tid in ('CVE-2025-14847', 'CVE-2020-0796', 'clickhouse-unauth', 'tidb-unauth', 'CVE-2024-54772', 'adbhoney-honeypot-shell-detect', 'pgsql-detect'):
+            with self.subTest(refused=tid):  # MongoBleed (the owner has not approved it), SMBGhost, the empty-password logins, WinBox, shell commands, a login: still out
+                self.assertNotIn(tid, _templates())
+
     def test_the_restored_templates_were_read_and_are_recorded(self):
         data = al.load_allowlist()
-        self.assertEqual(sorted(data['reviewed_exceptions']), ['mongodb-unauth', 'perforce-detection', 'smb-signing'])
+        self.assertEqual(sorted(data['reviewed_exceptions']), sorted(['mongodb-unauth', 'perforce-detection', 'smb-signing', *READ_ONLY_BACK]))
         review = json.loads(al.REVIEW_FILE.read_text(encoding='utf-8'))
         for tid in data['reviewed_exceptions']:
             self.assertEqual(review['restored'][tid]['sha256'], data['templates'][tid]['sha256'])

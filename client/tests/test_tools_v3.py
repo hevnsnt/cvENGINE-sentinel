@@ -8,6 +8,8 @@ import threading
 import unittest
 from unittest import mock
 
+import requests
+
 from client import config, dbprobe, rdp, scope, tools
 from cvengine_scanner import contract
 
@@ -145,9 +147,52 @@ class DbProbeTests(unittest.TestCase):
                 with self.subTest(code=code):
                     self.assertEqual(dbprobe.check_postgres('127.0.0.1', self.serve(code)), (False, ''))
 
-    def test_a_checker_crash_is_not_open_and_evidence_is_clipped(self):
+    def test_a_port_that_did_not_answer_is_unknown_never_auth_required(self):
+        """TL-14: a refused connection or a timeout is None (unknown: the server keeps the service due), False only when the server answered and said no."""
+        closed = socket.socket()
+        closed.bind(('127.0.0.1', 0))
+        dead_port = closed.getsockname()[1]
+        closed.close()  # nothing listens here now: connection refused
+        for name in ('postgres', 'memcached', 'elastic', 'couchdb', 'redis'):
+            with self.subTest(db=name):
+                self.assertEqual(dbprobe.CHECKS[name]('127.0.0.1', dead_port), (None, ''))
+        import pymongo.errors
+        import pymysql.err
+        import redis.exceptions
+        with mock.patch('redis.Redis') as fake:
+            fake.return_value.ping.side_effect = redis.exceptions.TimeoutError('slow')
+            self.assertEqual(dbprobe.check_redis('127.0.0.1', 6379), (None, ''))
+            fake.return_value.ping.side_effect = redis.exceptions.AuthenticationError('Authentication required.')
+            self.assertEqual(dbprobe.check_redis('127.0.0.1', 6379), (False, ''))
+            fake.return_value.ping.side_effect = redis.exceptions.ResponseError('DENIED Redis is running in protected mode')
+            self.assertEqual(dbprobe.check_redis('127.0.0.1', 6379), (False, ''))
+        for error, expected in ((pymysql.err.OperationalError(1045, 'Access denied'), False), (pymysql.err.OperationalError(2003, "Can't connect"), None),
+                                (pymysql.err.OperationalError(2013, 'Lost connection'), None)):
+            with self.subTest(error=error), mock.patch('pymysql.connect', side_effect=error):
+                self.assertEqual(dbprobe.check_mysql('127.0.0.1', 3306), (expected, ''))
+        for error, expected in ((pymongo.errors.OperationFailure('not authorized', 13), False), (pymongo.errors.ServerSelectionTimeoutError('x'), None),
+                                (pymongo.errors.AutoReconnect('x'), None)):
+            with self.subTest(error=error), mock.patch('pymongo.MongoClient') as fake:
+                fake.return_value.admin.command.side_effect = error
+                self.assertEqual(dbprobe.check_mongodb('127.0.0.1', 27017), (expected, ''))
+
+    def test_a_server_that_answers_with_an_error_or_a_closed_http_door_is_a_no(self):
+        with mock.patch('socket.getaddrinfo', _real_getaddrinfo):
+            handler = type('Handler', (socketserver.BaseRequestHandler,), {'handle': lambda self: (self.request.recv(1024), self.request.sendall(b'E\x00\x00\x00\x05\x00'))})
+            server = socketserver.TCPServer(('127.0.0.1', 0), handler)
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            self.addCleanup(server.server_close)
+            self.addCleanup(server.shutdown)
+            self.assertEqual(dbprobe.check_postgres('127.0.0.1', server.server_address[1]), (False, ''))
+        with mock.patch.object(dbprobe, '_bounded_json', side_effect=dbprobe._Refused('401')):
+            self.assertEqual(dbprobe.check_elasticsearch('127.0.0.1', 9200), (False, ''))
+            self.assertEqual(dbprobe.check_couchdb('127.0.0.1', 5984), (False, ''))
+        with mock.patch.object(dbprobe, '_bounded_json', side_effect=requests.ConnectionError('refused')):
+            self.assertEqual(dbprobe.check_elasticsearch('127.0.0.1', 9200), (None, ''))
+
+    def test_a_checker_crash_is_unknown_and_evidence_is_clipped(self):
         with mock.patch.dict(dbprobe.CHECKS, {'redis': mock.Mock(side_effect=RuntimeError('x'))}):
-            self.assertEqual(dbprobe.probe('93.184.215.14', 6379, 'redis'), {'open': False, 'evidence': ''})
+            self.assertEqual(dbprobe.probe('93.184.215.14', 6379, 'redis'), {'open': None, 'evidence': ''})
         with mock.patch.dict(dbprobe.CHECKS, {'redis': mock.Mock(return_value=(True, 'PONG\x07' + 'v' * 400))}):
             out = dbprobe.probe('93.184.215.14', 6379, 'redis')
         self.assertEqual(len(out['evidence']), dbprobe.EVIDENCE_LEN)

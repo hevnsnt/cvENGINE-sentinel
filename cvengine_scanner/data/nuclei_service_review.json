@@ -44,7 +44,8 @@
   "exposed-redis": "INFO and QUIT: read only",
   "smb-signing": "ListSMBv2Metadata is an SMB2 negotiate; the User and Pass arguments are dropped (see restored)",
   "ssh-weak-algo-supported": "ConnectSSHInfoMode: reads the key exchange lists, no authentication",
-  "mongodb-unauth": "read in full (fifth pass): one tcp input, one OP_MSG frame (opcode 2013, flags 0, section kind 0) holding {getLog: \"startupWarnings\", $db: \"admin\"}; no authenticate, saslStart, user or password; nothing else is sent; the matcher looks for totalLinesWritten in the reply"
+  "mongodb-unauth": "read in full (fifth pass): one tcp input, one OP_MSG frame (opcode 2013, flags 0, section kind 0) holding {getLog: \"startupWarnings\", $db: \"admin\"}; no authenticate, saslStart, user or password; nothing else is sent; the matcher looks for totalLinesWritten in the reply",
+  "apache-rocketmq-broker-unauth": "Route query for one topic (request code 105), read-only: no key, signature or login, nothing written or created. A broker that answers it with no signature has no access control (high)."
  },
  "read_only": {
   "CVE-2001-1473": "e7fc9699b6588f4474e07572408a0e31f36ab72f9e40debbb4e43842d56c2dd1",
@@ -89,7 +90,8 @@
   "exposed-redis": "7ad8fe0c466ae8313944773bd73f1882db6b0762a48abc77e06c3644d966c827",
   "smb-signing": "10d91b6408e6c311b72f31aad3bbde03f2ea1cc37d74a4fd994db225973f25ad",
   "ssh-weak-algo-supported": "4d5c9ef325dcb0bad86bd6996bcc648f19902cd73786b6efd24d9b036ee5c2f2",
-  "mongodb-unauth": "c3edbc6802d3631203bfc454a529e9f955c08daf35e2d1f48f587aef31251044"
+  "mongodb-unauth": "c3edbc6802d3631203bfc454a529e9f955c08daf35e2d1f48f587aef31251044",
+  "apache-rocketmq-broker-unauth": "6e4e85285f55efee03bf7fc5da84a8f0a2ef5648e09fe15f22c270b5c8e5acca"
  },
  "refused": {
   "CVE-2004-2687": "executes a command (sh -c id) through distccd",
@@ -146,6 +148,46 @@
   "mongodb-unauth": {
    "sha256": "c3edbc6802d3631203bfc454a529e9f955c08daf35e2d1f48f587aef31251044",
    "reason": "The decode flags the word admin. Read in full: the hex is one OP_MSG (length 69, request id 1, opcode 2013, flags 0, kind 0) with the document {getLog: \"startupWarnings\", $db: \"admin\"}; admin is the database name, not an account. getLog startupWarnings is a read of the server log buffer, sent with no login, and no other command, no saslStart, no authenticate, no user name or password is sent. The template has a single input and a single matcher (totalLinesWritten)."
+  },
+  "mongodb-detect": {
+   "sha256": "024f3898215880636311e15c6db5cee17c6d762d674232ac0362846fcf9dda91",
+   "reason": "The decode flags the word admin. The hex is one OP_QUERY (opcode 2004) to the collection admin.$cmd with the document {ismaster: 1}; admin is the database name, not an account. isMaster is the handshake every driver starts with, answered with no login; no saslStart, no authenticate, no user name or password. Read at v10.5.2."
+  },
+  "mongodb-info-enum": {
+   "sha256": "0470f5797d3aeaed5f3ae374b02ec99301fddcc15a3878260361e9afdc299f6b",
+   "reason": "The decode flags the word admin. The hex is one OP_QUERY (opcode 2004) to the collection admin.$cmd with the document {buildinfo: 1}; admin is the database name, not an account. buildinfo reads the server's version and build, sent with no login, and nothing else is sent. Read at v10.5.2."
+  },
+  "ldap-metadata": {
+   "sha256": "c5306fa52185b8aaeec6da5d9017d32317fceb6a8357f6b3c4f0b2fb7d9a2c43",
+   "reason": "The decode flags the word anonymous, which is the Realm argument of ldap.Client (the realm, a name for the authentication domain, not an account). The only call after the constructor is CollectMetadata, a read of the rootDSE (the directory's own description of itself), which needs no bind; no Authenticate, no user name and no password is passed. It reaches an optional StartTLS upgrade only. Read at v10.5.2."
+  },
+  "rdp-detection": {
+   "sha256": "1207f5fff4c51b0fa5395cb252a1c32cf51583efdbe3a7c53cf81204164a38be",
+   "reason": "The decode flags the word cookie. The hex is one X.224 connection request in a TPKT frame whose routing cookie is mstshash=test (a load-balancer routing token, not a login) and an RDP negotiation request (8 bytes: the security protocols the client offers). It is the first packet of every RDP connection, sent before any authentication, and the matchers read the server's confirm. Read at v10.5.2."
+  },
+  "samba-detect": {
+   "sha256": "0c08b8de5eb6caccb194ffc1d60812f0d5b8cf0c2e7c20e4d49239629aba7cc0",
+   "reason": "The decode flags the word ntlm, which is a property it reads from the reply (response.NTLM), not something it sends. The only library call is ConnectSMBInfoMode, an SMB negotiate (no session setup, no NTLMSSP message, no user name), after isPortOpen. Read at v10.5.2."
+  },
+  "rtsp-detect": {
+   "sha256": "7d4132bbd617a21efa639f85bf4fa871cd4297f572e3dbf59ac162ad42f83172",
+   "reason": "The decode flags the word root. The hex is one OPTIONS request in SIP/2.0 text (OPTIONS sip:nm SIP/2.0 with Via, From, To, Call-ID, CSeq, Max-Forwards, Contact, Accept); root is the value of the From tag, a SIP dialog tag, not an account. OPTIONS asks which methods the server supports and changes nothing. Read at v10.5.2."
+  },
+  "nats-server-enum": {
+   "sha256": "d72a38aefb1cea68a6a7201a987b4d7af123f2531d02f0bd42d0eaaabc1ba88d",
+   "reason": "The decode flags the word auth, which is the auth_required field it reads back from the server's INFO line. It sends one newline over a plain socket (net.Open and Send) and reads what the server volunteers: NATS sends INFO on connect, and the newline draws the error reply. No CONNECT message, so no credential. Read at v10.5.2."
+  },
+  "gost-ssh-detect": {
+   "sha256": "918860f28949900549b4eaba7dc02fadc2bf75ea53224b1829cd46d277bdf1a3",
+   "reason": "The decode flags the word auth in a comment and in the script's own checks of the reply. The tcp step sends the client banner SSH-2.0-Nuclei and reads the server's. The javascript step calls ConnectSSHInfoMode, the same call every allowlisted SSH template uses: a handshake and the SSH 'none' method, which carries no password, key or secret, and no session or channel is opened. Read at v10.5.2."
+  },
+  "gost-socks5-detect": {
+   "sha256": "fde598f94c0972f6692a8eb03d7b570384cde4fe21625e9ac08941b54134e033",
+   "reason": "The decode flags the word auth in a comment and in the script's check of the reply. It sends the three bytes of a SOCKS5 greeting (version 5, one method, method 0x80) and reads the two-byte answer; no username and password sub-negotiation (method 2) is offered, no CONNECT request follows, and the connection is closed. Read at v10.5.2."
+  },
+  "apache-rocketmq-broker-unauth": {
+   "sha256": "6e4e85285f55efee03bf7fc5da84a8f0a2ef5648e09fe15f22c270b5c8e5acca",
+   "reason": "The decode flags the word test. The hex is one length-prefixed JSON request, {code: 105, language: JAVA, opaque: 1, serializeTypeCurrentRPC: JSON, version: 441, extFields: {topic: TEST}}: code 105 is GET_ROUTEINFO_BY_TOPIC, a read of the route of a topic, and TEST is the name of that topic, not an account. It sends no access key, no signature field and no login, writes nothing and creates nothing; a broker that answers it without demanding a signature is the finding. Read at v10.5.2."
   }
  },
  "frames_read": {
@@ -179,7 +221,10 @@
   "schneider-modicon-580-detect": "5488a749a7c228de30971dc95621367f7aa22d38483e8b7d2c2b750538060057",
   "siemens-s7-detect": "a00f5ce24f1300d366e63f48874aca5cbc52d5532115128df2d2eb5b7066536c",
   "snap7-honeypot-default-config": "cae97699687f5bfbffe9e64c9c6c1b4f23f4e56d15bbdffeb5a88be944e9878f",
-  "weblogic-iiop-detect": "1ad7af9ab5998a93cb0480edb9b89dde8ac1fd6865d3870e48bc485567b200e4"
+  "weblogic-iiop-detect": "1ad7af9ab5998a93cb0480edb9b89dde8ac1fd6865d3870e48bc485567b200e4",
+  "mongodb-detect": "024f3898215880636311e15c6db5cee17c6d762d674232ac0362846fcf9dda91",
+  "mongodb-info-enum": "0470f5797d3aeaed5f3ae374b02ec99301fddcc15a3878260361e9afdc299f6b",
+  "rdp-detection": "1207f5fff4c51b0fa5395cb252a1c32cf51583efdbe3a7c53cf81204164a38be"
  },
  "frames_read_notes": {
   "afp-server-detect": "AFP DSI GetStatus request (command 3): asks the server for its status block",
@@ -212,6 +257,9 @@
   "schneider-modicon-580-detect": "Modbus 0x2b/0x0e read device identification and UMAS 0x5a sub-function 0x02 (read id): reads",
   "siemens-s7-detect": "S7 COTP connect, S7 setup communication, SZL read (userdata function 4, group 4 sub 1): reads the module identification, writes nothing",
   "snap7-honeypot-default-config": "S7 COTP connect, setup communication and SZL reads: reads, writes nothing",
-  "weblogic-iiop-detect": "GIOP 1.2 LocateRequest for NameService: asks whether an object is here, calls nothing"
+  "weblogic-iiop-detect": "GIOP 1.2 LocateRequest for NameService: asks whether an object is here, calls nothing",
+  "mongodb-detect": "MongoDB OP_QUERY to admin.$cmd with {ismaster: 1}: the handshake every driver starts with (read, no login)",
+  "mongodb-info-enum": "MongoDB OP_QUERY to admin.$cmd with {buildinfo: 1}: the server's version and build (read, no login)",
+  "rdp-detection": "X.224 connection request (TPKT) with the routing cookie mstshash=test and an RDP negotiation request: the first packet of any RDP connection, before authentication"
  }
 }

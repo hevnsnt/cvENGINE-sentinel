@@ -707,7 +707,8 @@ def _allowed_on_port(path, port):
     return not fixed or port in fixed
 
 
-NO_CHECK_REASON = 'no check exists for this service'  # the server shows it as it is
+NO_CHECK_REASON = 'no check exists for this service'  # the server shows it as it is, and reads it as "nothing to check", not as a failure (it records it as covered for now)
+NO_LIST_REASON = 'the service-port allowlist is missing or empty'  # a fault of this Sentinel: nothing was checked, and the port stays unreachable and due
 
 
 def _run_service_port(target, klass, tags, budget, deadline, extra, templates, register, secret_file, listing_failed=None, spent=0.0):
@@ -720,7 +721,11 @@ def _run_service_port(target, klass, tags, budget, deadline, extra, templates, r
     selection = flags.nuclei_service_selection(klass, tags)
     out = {'findings': [], 'unreachable': False, 'incomplete': False, 'no_templates': False, 'reason': None}
     if not nuclei_allowlist.covers(klass):  # the list has no template for this service at all (or no list): nothing was checked, and the answer says so
-        out['no_templates'], out['reason'] = True, NO_CHECK_REASON
+        out['no_templates'] = True
+        if nuclei_allowlist.load_allowlist()['templates']:  # a list that loaded and names nothing of this class: there is no check for this service (postgres, ldap...), an answer
+            out['reason'] = NO_CHECK_REASON
+        else:  # no list at all: a fault, not an answer: the port is unreachable and due
+            out['unreachable'], out['reason'] = True, NO_LIST_REASON
         logger.warning('nuclei: the service-port allowlist has no template for the class %s: %s is not checked', klass, target)
         return out
     if selection is None:
@@ -847,7 +852,7 @@ def _reports_cuts(run):
 
 
 @_reports_cuts
-def run_nuclei(targets, tags=None, severities=None, timeout=3600, register=None, templates=None, secret_file=None, services=None, budget=None):
+def run_nuclei(targets, tags=None, severities=None, timeout=3600, register=None, templates=None, secret_file=None, services=None, budget=None, allow_credential_checks=False):
     """Host names are passed to nuclei as names, because each finding reports the host it was given. They were judged by scope (and by
     every address they resolved to) just before; nuclei resolves them again, so a name whose DNS answer changes in between is the one gap.
     ``templates`` is a directory of approved templates (the server's verified bundle, ``client.templates``): nuclei then runs exactly that set and
@@ -859,7 +864,11 @@ def run_nuclei(targets, tags=None, severities=None, timeout=3600, register=None,
     templates and with a per-host rate; the web pass is stopped when only ``flags.NUCLEI_SERVICE_TIME_SHARE`` of the task's time is left, which the non-web
     ports then share. Each non-web host:port runs its own templates one at a time, paced (``_run_service_port``), under the bound ``budget`` puts on one
     service (``flags.nuclei_service_budget``: a task can make it gentler, never harsher). A port or run that fails, or runs out of time, does not fail the
-    task or lose the findings already found: the result's ``not_checked`` names each port not fully checked and why."""
+    task or lose the findings already found: the result's ``not_checked`` names each port not fully checked and why.
+
+    ``allow_credential_checks`` is the task's own field, true only when a person turned credential checks on at the server: only then may the web pass
+    run default-login and brute-force templates (a credential tag of the task's filter is otherwise left out). It never reaches the service ports."""
+    allow_credentials = allow_credential_checks is True  # anything but a real true is off
     resolve = _resolver()  # one resolver for the task: the names are resolved once, for the scope judgment, and the banner probe connects to what was judged
     targets = validate_targets(targets, endpoint=True, resolver=resolve)
     web, service_runs = _split_by_service(targets, services)
@@ -872,6 +881,8 @@ def run_nuclei(targets, tags=None, severities=None, timeout=3600, register=None,
     if templates is not None and (not isinstance(templates, str) or not os.path.isabs(templates) or not os.path.isdir(templates)):
         raise TargetError('the approved template directory is not usable')
     clean_tags = _clean_words(tags, _TAG)
+    if not allow_credentials:
+        clean_tags = [t for t in clean_tags if t not in flags.NUCLEI_CREDENTIAL_TAGS]  # a tag of a check that sends credentials is not asked for
     if tags and not clean_tags:  # a filter was asked for and none of it is usable: never fall back to every template
         raise TargetError('none of the nuclei tags this task names is usable')
     clean_severities = _clean_words(severities, _SEVERITY)
@@ -883,6 +894,7 @@ def run_nuclei(targets, tags=None, severities=None, timeout=3600, register=None,
     started = _clock()
     deadline = started + timeout
     findings, unreachable, not_checked, incomplete = [], [], [], False
+    no_check = False  # a port of a service no allowlisted template speaks to: named in ``not_checked`` (never in ``unreachable``: it was not tried and failed)
     quiet = []  # per pass: whether its filter matched no template (nothing to check)
     attempts = failures = 0
     last_error = None
@@ -900,7 +912,7 @@ def run_nuclei(targets, tags=None, severities=None, timeout=3600, register=None,
         if left <= 0:
             stop_for(web, 'the task ran out of time before the web pass')
         else:
-            web_flags = nuclei_flags_for_budget(flags.nuclei_web_flags(len({host_of({'host': t}) for t in web}), spend)) + extra
+            web_flags = nuclei_flags_for_budget(flags.nuclei_web_flags(len({host_of({'host': t}) for t in web}), spend, allow_credentials)) + extra
             web_flags += (['-t', templates] if templates is not None else []) + (['-tags', ','.join(clean_tags)] if clean_tags else [])
             attempts += 1
             try:
@@ -935,14 +947,17 @@ def run_nuclei(targets, tags=None, severities=None, timeout=3600, register=None,
         findings += got['findings']
         incomplete = incomplete or got['incomplete']
         quiet.append(got['no_templates'])
-        if got['unreachable'] or got['reason']:
+        if got['reason'] == NO_CHECK_REASON:
+            no_check = True
+            not_checked.append({'target': target, 'reason': NO_CHECK_REASON})
+        elif got['unreachable'] or got['reason']:
             unreachable.append(target)  # a port not fully checked (nothing answered, out of time, runs failed) is reported so the server keeps it due
             not_checked.append({'target': target, 'reason': got['reason'] or 'not fully checked'})
         if got['reason'] and got['reason'].startswith('every template run failed'):
             failures += 1
     if attempts and failures == attempts and not findings:
         raise last_error or ToolExitError('every nuclei run of this task failed')  # nothing ran: that is an error, not an answer
-    if quiet and all(quiet) and not findings and not incomplete and not unreachable:
+    if quiet and all(quiet) and not findings and not incomplete and not unreachable and not no_check:
         # the filter this task asked for matches no template in this set: there is nothing to check on these targets, which is an answer, not a failure
         return {'findings': [], 'templates_release': release, 'unreachable': [], 'no_templates': True}
     out = {'findings': findings, 'templates_release': release, 'unreachable': [t for t in targets if t in set(unreachable)]}

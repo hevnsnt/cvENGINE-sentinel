@@ -79,7 +79,7 @@ jobs:
           from cvengine_scanner import contract, fingerprint, flags, nmap, parsers
           assert cvengine_scanner.__version__ == '99.0.0', cvengine_scanner.__version__
           assert (contract.FIXTURES / 'results' / 'v1' / 'nmap.json').is_file()
-          assert flags.NUCLEI_FLAGS[flags.NUCLEI_FLAGS.index('-etags') + 1] == 'dos'
+          assert flags.NUCLEI_FLAGS[flags.NUCLEI_FLAGS.index('-etags') + 1] == 'dos,default-login,bruteforce'
           print('installed', cvengine_scanner.__version__, 'contract', contract.version())
           PY
       - name: Install by commit sha (the server's pin since T7, no tag needed) and read the contract
