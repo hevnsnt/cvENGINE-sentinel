@@ -15,6 +15,7 @@ grep -E ' /(tmp|home|var/lib/cvengine)' /proc/mounts | cut -c1-200
 for dir in /tmp /home/sentinel/.cache /home/sentinel/.config /home/sentinel/.bbot/cache /home/sentinel/.bbot/logs /home/sentinel/.bbot/temp /var/lib/cvengine-sentinel; do
   if [ -d "$dir" ] && touch "$dir/.smoke-probe" 2>/dev/null; then rm -f "$dir/.smoke-probe"; echo "writable: $dir"; else echo "NOT writable: $dir ($(ls -ld "$dir" 2>&1))"; fi
 done
+echo "--- what the image keeps in ~/.bbot:"; du -sh "$HOME"/.bbot/* 2>&1 | head -n 20; ls -la "$HOME/.bbot/tools" 2>&1 | head -n 25
 work=$(mktemp -d) || { echo "SMOKE FAILED: cannot make a temporary directory" >&2; exit 1; }
 mkdir "$work/www" "$work/src"
 echo '<html><head><title>smoke</title></head><body>cvengine smoke</body></html>' > "$work/www/index.html"
