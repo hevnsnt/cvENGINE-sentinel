@@ -150,22 +150,34 @@ jobs:
       - name: Where the tools write (informational, root left writable), by docker diff after the same scans
         continue-on-error: true
         run: |
-          docker run --name write-set --cap-drop ALL --cap-add NET_RAW --security-opt seccomp=config/seccomp/playwright-chromium.json -v "$PWD/scripts/ci_scan_smoke.sh:/ci/smoke.sh:ro" -v "$PWD/client/tests:/opt/sentinel/client/tests:ro" --entrypoint sh cvengine-sentinel-local:ci -c '/ci/smoke.sh; python3 -m unittest client.tests.test_daemon client.tests.test_control client.tests.test_spool client.tests.test_templates client.tests.test_badkeys client.tests.test_secrets_scan client.tests.test_shot_browser 2>&1 | tail -n 5' || true
+          docker run --name write-set --cap-drop ALL --cap-add NET_RAW --security-opt seccomp=config/seccomp/playwright-chromium.json -v "$PWD/scripts/ci_scan_smoke.sh:/ci/smoke.sh:ro" -v "$PWD/client/tests:/opt/sentinel/client/tests:ro" --entrypoint sh cvengine-sentinel-local:ci -c 'sh /ci/smoke.sh; python3 -m unittest client.tests.test_daemon client.tests.test_control client.tests.test_spool client.tests.test_templates client.tests.test_badkeys client.tests.test_secrets_scan client.tests.test_shot_browser 2>&1 | tail -n 5' || true
           echo "=== files the container wrote or changed (docker diff, /tmp and /ci left out):"
           docker diff write-set | grep -Ev ' /(tmp|ci)(/|$)' || true
           docker rm write-set
+      - name: Chromium's sandbox with every capability dropped, and with each one added back (informational)
+        continue-on-error: true
+        run: |
+          for extra in NONE SYS_CHROOT SETUID SETGID SETPCAP CHOWN DAC_OVERRIDE KILL SYS_ADMIN; do
+            add=(--cap-add NET_RAW); [ "$extra" = NONE ] || add+=(--cap-add "$extra")
+            echo "=== cap_drop ALL, add NET_RAW + $extra"
+            docker run --rm --cap-drop ALL "${add[@]}" --security-opt seccomp=config/seccomp/playwright-chromium.json --entrypoint python3 cvengine-sentinel-local:ci -m client.shot_child --probe 2>&1 | cut -c1-1500 | tail -n 3
+          done
       - name: The scans run under the compose service's capability set and read-only root
         run: |
           docker tag cvengine-sentinel-local:ci cvengine-sentinel-local:latest
-          docker compose run --rm --no-deps --no-build -T -v "$PWD/scripts/ci_scan_smoke.sh:/ci/smoke.sh:ro" --entrypoint sh sentinel /ci/smoke.sh 2>&1 | tee "$RUNNER_TEMP/scan-smoke.txt"
+          # the service's own definition, with its build policy set to "never" so compose uses the image just built instead of building it again
+          printf 'services:\n  sentinel:\n    pull_policy: never\n' > "$RUNNER_TEMP/ci-no-build.yml"
+          export COMPOSE_FILE="docker-compose.yml:$RUNNER_TEMP/ci-no-build.yml"
+          echo "COMPOSE_FILE=$COMPOSE_FILE" >> "$GITHUB_ENV"
+          docker compose run --rm --no-deps -T -v "$PWD/scripts/ci_scan_smoke.sh:/ci/smoke.sh:ro" --entrypoint sh sentinel /ci/smoke.sh 2>&1 | tee "$RUNNER_TEMP/scan-smoke.txt"
           grep -q '^SMOKE OK' "$RUNNER_TEMP/scan-smoke.txt" || { echo "::error::a scan did not work under the compose service's settings"; exit 1; }
       - name: The client's own tests pass in the image under the same settings (daemon, state files, spool, templates, secrets) and so does the browser
         run: |
-          docker compose run --rm --no-deps --no-build -T -v "$PWD/client/tests:/opt/sentinel/client/tests:ro" --entrypoint python3 sentinel -m unittest \
+          docker compose run --rm --no-deps -T -v "$PWD/client/tests:/opt/sentinel/client/tests:ro" --entrypoint python3 sentinel -m unittest \
             client.tests.test_daemon client.tests.test_control client.tests.test_spool client.tests.test_templates client.tests.test_badkeys \
             client.tests.test_secrets_scan client.tests.test_selfupdate 2>&1 | tee "$RUNNER_TEMP/image-tests.txt"
           grep -q '^OK' "$RUNNER_TEMP/image-tests.txt" || { echo "::error::the client's tests failed in the image under the compose service's settings"; exit 1; }
-          docker compose run --rm --no-deps --no-build -T -v "$PWD/client/tests:/opt/sentinel/client/tests:ro" --entrypoint python3 sentinel -m unittest client.tests.test_shot_browser -v 2>&1 | tee "$RUNNER_TEMP/browser-tests-ro.txt"
+          docker compose run --rm --no-deps -T -v "$PWD/client/tests:/opt/sentinel/client/tests:ro" --entrypoint python3 sentinel -m unittest client.tests.test_shot_browser -v 2>&1 | tee "$RUNNER_TEMP/browser-tests-ro.txt"
           grep -q '^OK' "$RUNNER_TEMP/browser-tests-ro.txt" || { echo "::error::the browser tests failed under the compose service's settings"; exit 1; }
           grep -q 'skipped' "$RUNNER_TEMP/browser-tests-ro.txt" && { echo "::error::the browser tests were skipped"; exit 1; } || true
       # The two settings that were left out, with the evidence: NET_ADMIN is not needed (the step above passes without it), and no-new-privileges makes the

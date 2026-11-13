@@ -1,4 +1,5 @@
 #!/bin/sh
+# shellcheck disable=SC2034  # REFUSAL and TARGET_FULL are read by the scripts that source this file
 # Sourced by scripts/update.sh and scripts/pull-on-exit.sh (it runs nothing by itself): the rules for which commit a Sentinel may move to.
 #
 # A Sentinel on Automatic updates moves to the commit cvENGINE named in its heartbeat (the "target"), never to "whatever origin/<branch> is now".
