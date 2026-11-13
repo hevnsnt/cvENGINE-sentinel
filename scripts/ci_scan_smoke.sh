@@ -10,6 +10,11 @@ set -u
 fail() { echo "SMOKE FAILED: $*" >&2; FAILED=1; }
 FAILED=0
 echo "uid $(id -u), $(grep -c . /proc/self/status) status lines; capabilities:"; grep '^Cap' /proc/self/status
+echo "--- mounts and what this user can write:"
+grep -E ' /(tmp|home|var/lib/cvengine)' /proc/mounts | cut -c1-200
+for dir in /tmp /home/sentinel/.cache /home/sentinel/.config /home/sentinel/.bbot/cache /home/sentinel/.bbot/logs /home/sentinel/.bbot/temp /var/lib/cvengine-sentinel; do
+  if [ -d "$dir" ] && touch "$dir/.smoke-probe" 2>/dev/null; then rm -f "$dir/.smoke-probe"; echo "writable: $dir"; else echo "NOT writable: $dir ($(ls -ld "$dir" 2>&1))"; fi
+done
 work=$(mktemp -d) || { echo "SMOKE FAILED: cannot make a temporary directory" >&2; exit 1; }
 mkdir "$work/www" "$work/src"
 echo '<html><head><title>smoke</title></head><body>cvengine smoke</body></html>' > "$work/www/index.html"
@@ -84,7 +89,11 @@ run credtemplates 300 python3 -c "import logging, sys; logging.basicConfig(level
 ls "$HOME"/.cache/cvengine-sentinel/credential-templates-*.json "$HOME"/nuclei-templates/.cvengine-credential-templates.json >/dev/null 2>&1 || fail "the credential-template list was kept nowhere"
 echo "--- nuclei's config directory before it runs:"; ls -la "$HOME/.config/nuclei" 2>&1 | head; ls -ld "$HOME/nuclei-templates" "$HOME/nuclei-templates/http/technologies" 2>&1
 run nuclei 240 nuclei -u http://127.0.0.1:18080 -tags tech -jsonl -silent -duc -ni -nc -rl 150 -c 40 -timeout 10 -retries 1
-[ "$RC" = 0 ] || fail "nuclei exited $RC"
+if [ "$RC" != 0 ]; then
+  fail "nuclei exited $RC"
+  echo "--- nuclei again, verbose:"; timeout 120 nuclei -u http://127.0.0.1:18080 -tags tech -duc -ni -nc -v -jsonl 2>&1 | grep -v '^{' | head -n 60
+  ls -laR "$HOME/.config/nuclei" "$HOME/.cache/nuclei" 2>&1 | head -n 30
+fi
 run wpscan 300 wpscan --url http://127.0.0.1:18080 --no-banner --disable-tls-checks -f json -o "$work/wpscan.json"
 run wafw00f 120 wafw00f http://127.0.0.1:18080
 [ "$RC" = 0 ] || fail "wafw00f exited $RC"

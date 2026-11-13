@@ -96,13 +96,13 @@ class ComposeTests(unittest.TestCase):
 
     # The capability set, the read-only root and its writable paths (SN-8), for the default stack and with host networking. Every entry is proven by CI:
     # scripts/ci_scan_smoke.sh runs the scans in the built image under exactly these settings (.github/workflows/image.yml).
-    WRITABLE = ['/home/sentinel/.bbot/cache', '/home/sentinel/.bbot/logs', '/home/sentinel/.cache', '/home/sentinel/.config', '/tmp']
+    WRITABLE = ['/home/sentinel/.bbot/cache', '/home/sentinel/.bbot/logs', '/home/sentinel/.bbot/temp', '/home/sentinel/.cache', '/home/sentinel/.config', '/tmp']
 
-    def test_the_sentinel_keeps_net_raw_and_nothing_else(self):
+    def test_the_sentinel_keeps_net_raw_and_sys_chroot_and_nothing_else(self):
         for name, config in (('light', self.light), ('full', self.full), ('host network', self.host)):
             sentinel = config['services']['sentinel']
             self.assertEqual(sentinel.get('cap_drop'), ['ALL'], name)
-            self.assertEqual(sentinel.get('cap_add'), ['NET_RAW'], name)  # NET_ADMIN is gone: no scan needs it (the nmap and naabu smoke runs in CI)
+            self.assertEqual(sorted(sentinel.get('cap_add')), ['NET_RAW', 'SYS_CHROOT'], name)  # NET_ADMIN is gone: no scan needs it (the nmap and naabu smoke runs in CI); SYS_CHROOT is Chromium's sandbox
             self.assertFalse(sentinel.get('privileged'), name)
             self.assertNotIn('NET_ADMIN', json.dumps(sentinel), name)
             self.assertNotIn('SYS_ADMIN', json.dumps(sentinel), name)
