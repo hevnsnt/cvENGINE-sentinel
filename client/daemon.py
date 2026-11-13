@@ -389,6 +389,10 @@ class Daemon:
         except RuntimeError:  # out of threads: the poll loop and the heartbeat reap as well
             logger.exception('the reaper thread could not be started')
         self._ensure_badkeys()
+        try:  # the list of image templates that send a credential is made at start (about 40 s for the whole set), not inside the first task's time limit
+            threading.Thread(target=tools.warm_credential_templates, name='sentinel-credential-templates', daemon=True).start()
+        except RuntimeError:
+            logger.exception('the credential template list thread could not be started')
         if shot.available():  # the browser's sandbox is checked once at every start, as the server's celery container once did (never blocks a start)
             threading.Thread(target=self._check_screenshot_sandbox, name='sentinel-shot-sandbox', daemon=True).start()
         try:
