@@ -76,6 +76,11 @@ run naabu 120 naabu -host 127.0.0.1 -p 18080 -scan-type s -rate 1000 -retries 2 
 grep -q '18080' "$work/naabu.txt" || fail "naabu's SYN scan did not find the open port"
 
 # --- tools that write under $HOME or /tmp --------------------------------------------------------------------------------------------------
+# the daemon's start-up warm-up: a child process (python -I client/credential_templates.py --scan) lists the image templates that send a credential. It
+# cannot write beside the read-only templates, so the list is kept under ~/.cache/cvengine-sentinel, which must be writable.
+run credtemplates 300 python3 -c "import logging, sys; logging.basicConfig(level=logging.INFO, stream=sys.stdout); from client import tools; tools._credential_exclusion(None)"
+[ "$RC" = 0 ] || fail "the credential-template list could not be made (exit $RC)"
+ls "$HOME"/.cache/cvengine-sentinel/credential-templates-*.json >/dev/null 2>&1 || fail "the credential-template list was not kept under ~/.cache/cvengine-sentinel"
 run nuclei 240 nuclei -u http://127.0.0.1:18080 -t http/technologies -jsonl -silent -duc -ni -nc -rl 150 -c 40 -timeout 10 -retries 1
 [ "$RC" = 0 ] || fail "nuclei exited $RC"
 run wpscan 300 wpscan --url http://127.0.0.1:18080 --no-banner --disable-tls-checks -f json -o "$work/wpscan.json"
