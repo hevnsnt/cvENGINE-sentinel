@@ -193,6 +193,15 @@ class PrefilterTests(unittest.TestCase):
             with self.subTest(text=text[:60]):
                 self.assertTrue(checks.might_send_credential(text.encode()))
 
+    def test_a_yaml_escape_or_a_password_field_means_parse_it(self):
+        from cvengine_scanner import checks
+        for text in ('http:\n  - path: ["http:\\x2f\\x2fadmin:admin@{{Hostname}}/"]\n', 'http:\n  - path: ["http:\\/\\/admin:admin@{{Hostname}}/"]\n',
+                     'http:\n  - headers:\n      "\\x41uthorization": "Basic YWRt"\n', 'http:\n  - body: "user=a&password=admin"\n',
+                     'http:\n  - body: \'{"pwd": "x"}\'\n', 'http:\n  - body: "<password>admin</password>"\n', 'http:\n  - path: ["{{BaseURL}}/a?userpass=admin"]\n',
+                     'http:\n  - headers:\n      "Auth\\\norization": x\n'):
+            with self.subTest(text=text[:50]):
+                self.assertTrue(checks.might_send_credential(text.encode()))
+
     def test_the_prefilter_skips_what_cannot_be_flagged(self):
         from cvengine_scanner import checks
         self.assertFalse(checks.might_send_credential(PLAIN.encode()))

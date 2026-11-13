@@ -32,6 +32,16 @@ class CorpusTests(unittest.TestCase):
             with self.subTest(case=name):
                 self.assertEqual(checks.credential_problem(cases[name]), '')
 
+    def test_the_credential_verdict_of_every_case_that_names_one(self):
+        # ``credential``: whether ``credential_problem`` passes the template (a body password field, a helper over a literal variable or a payload, an escaped URL...)
+        named = [c for c in CORPUS if 'credential' in c]
+        self.assertGreaterEqual(len(named), 20)
+        self.assertEqual({c['credential'] for c in named}, {True, False})
+        for case in named:
+            with self.subTest(case=case['name']):
+                self.assertEqual(checks.credential_problem(case['template']) == '', case['credential'])
+                self.assertEqual(checks.might_send_credential(case['template'].encode()) or case['credential'], True)  # the prefilter never skips one the rule flags
+
     def test_the_read_only_verdict_of_every_case(self):
         for case in CORPUS:
             with self.subTest(case=case['name']):
