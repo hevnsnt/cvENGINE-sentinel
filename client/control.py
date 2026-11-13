@@ -11,6 +11,7 @@ only the second half: cvENGINE's updater asks it before it keeps a new built-in 
 """
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -93,8 +94,11 @@ def write_status(version, in_flight, update_reply, now=None, kinds=None, heartbe
     update_reply = update_reply if isinstance(update_reply, dict) else {}
     server = update_reply.get('setting') if update_reply.get('setting') in config.SELF_UPDATE else config.overrides().get('self_update')
     setting = config.capped_self_update(server)
+    target = str(update_reply.get('target') or '').strip().lower()
     _write_json('control.json', {'version': version, 'in_flight': in_flight, 'draining': is_draining(), 'mode': update_reply.get('mode'),
-                                 'setting': setting, 'requested': bool(update_reply.get('requested')), 'in_flight_kinds': sorted({k for k in (kinds or []) if isinstance(k, str)}),
+                                 'setting': setting, 'requested': bool(update_reply.get('requested')),
+                                 'target': target if re.fullmatch(r'[0-9a-f]{7,40}', target) else None,  # the commit cvENGINE named: scripts/update.sh moves to this commit and no other
+                                 'in_flight_kinds': sorted({k for k in (kinds or []) if isinstance(k, str)}),
                                  'at': int(now or time.time()), 'phase': 'running', 'builtin': config.builtin(),
                                  'heartbeat_at': int(heartbeat_at) if heartbeat_at else None, 'started_at': int(started_at or now or time.time()),
                                  **({'liveness': {k: int(v) for k, v in liveness.items()}} if liveness else {})})

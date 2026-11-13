@@ -293,8 +293,8 @@ docker compose up -d
 ```
 
 `docker-compose.override.yml` is git-ignored, and Compose reads it automatically. Host networking needs no privileged
-mode: nmap's OS detection, naabu's SYN scan and the UDP sweep use the `NET_RAW` and `NET_ADMIN` capabilities
-`docker-compose.yml` already grants. Host networking in this form is a Linux feature; Docker Desktop on macOS and
+mode: nmap's OS detection, naabu's SYN scan and the UDP sweep use the `NET_RAW` capability
+`docker-compose.yml` already grants (with every other capability dropped, `NET_ADMIN` included, the set is the same as on the bridge network). Host networking in this form is a Linux feature; Docker Desktop on macOS and
 Windows handles it differently.
 
 ### What docker-compose.yml sets
@@ -302,7 +302,8 @@ Windows handles it differently.
 | Setting                     | Value                                                                                           | Why                                                                                                        |
 | --------------------------- | ----------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
 | `image`                     | `cvengine-sentinel-local:latest`, `pull_policy: build`                                          | Built locally, never pulled from a registry. A plain `docker compose pull` does not ask Docker Hub for it. |
-| `cap_add`                   | `NET_RAW`, `NET_ADMIN` (no `--privileged`)                                                      | Raw sockets for nmap, naabu and the UDP sweep. The Sentinel runs as an unprivileged user (uid 10001) and only nmap and naabu carry file capabilities that use these; no other process in the image holds a capability.                                                             |
+| `cap_drop`, `cap_add`       | `ALL`, then `NET_RAW` and `SYS_CHROOT` (no `--privileged`, no `NET_ADMIN`)                      | `NET_RAW`: raw sockets for nmap (SYN scan, OS detection, UDP sweep) and naabu; the Sentinel runs as an unprivileged user (uid 10001) and only nmap and naabu carry a file capability (`cap_net_raw`); no other process in the image holds one. `SYS_CHROOT`: Chromium's sandbox (screenshots). Every one is proven by the scan smoke run in CI (`scripts/ci_scan_smoke.sh`). |
+| `no-new-privileges`, `read_only` | not set | `no-new-privileges` makes the kernel ignore file capabilities, so nmap and naabu keep raw sockets only on a container engine that passes the added `NET_RAW` on as an ambient capability (CI's does; an older engine on your host may not, and an update would silently end the raw-socket scans); add `security_opt: [no-new-privileges:true]` in `docker-compose.override.yml` if you have checked yours. The root filesystem stays writable: with `read_only: true` and memory-backed home subdirectories every scan works except bbot's discovery, which needs a writable `~/.bbot/tools` (907 MB of tools baked into the image). |
 | `init`, `stop_grace_period` | `true`, `75s`                                                                                   | See [Shutdown](#shutdown).                                                                                 |
 | `pids_limit`, `mem_limit`   | `512`, `2g`                                                                                     | Bounds a runaway tool.                                                                                     |
 | `healthcheck`               | `python3 -m client.control health` every 60 s                                                   | See [Health check](#health-check).                                                                         |
@@ -531,7 +532,7 @@ default, `GET/PUT sentinels/defaults`):
 | --------- | ---------------------------------------------------------------------------------------------------------------------- |
 | Off       | It never changes its own code.                                                                                         |
 | Manual    | It updates only when an administrator presses **Update now** for it (or `PATCH agents/{id}` with `{"update": "now"}`). |
-| Automatic | It updates at the next updater run after something new is on the branch.                                               |
+| Automatic | It updates at the next updater run after cvENGINE has named a newer commit for it (see [What Automatic trusts](#what-automatic-trusts)). |
 
 `CVENGINE_SENTINEL_UPDATE` in `.env` is a ceiling on that setting, not just a starting value: `off` means this
 Sentinel never self-updates, whatever cvENGINE says and even when an administrator presses **Update now**; `manual`
@@ -554,11 +555,33 @@ Who acts on the request:
 | Setup | What happens |
 | --- | --- |
 | The host updater is installed (`scripts/install-updater.sh`, the default of `setup.sh`) | `scripts/update.sh` sees `requested` at its next run (hourly), builds, drains and swaps, exactly as for **Update now**. Nothing else to set. |
-| `CVENGINE_SENTINEL_UPDATE_EXIT=1` and a supervisor that replaces the image on exit | The daemon takes no new work, waits for the running tasks (up to `CVENGINE_SENTINEL_DRAIN_TIMEOUT`, 1800 s; past that it goes back to work and keeps every task), then exits with **code 76**. `scripts/pull-on-exit.sh` (run it in the checkout) fast-forwards, pulls, builds and recreates the container on exit code 76 and nothing else; a registry-image setup can use any puller instead. The same target is not acted on twice within 6 hours, so a supervisor that brings nothing newer is not a restart loop. |
+| `CVENGINE_SENTINEL_UPDATE_EXIT=1` and a supervisor that replaces the image on exit | The daemon takes no new work, waits for the running tasks (up to `CVENGINE_SENTINEL_DRAIN_TIMEOUT`, 1800 s; past that it goes back to work and keeps every task), then exits with **code 76**. `scripts/pull-on-exit.sh` (run it in the checkout) fast-forwards to the commit the Sentinel left for (the same rules as the updater), pulls, builds and recreates the container on exit code 76 and nothing else; a registry-image setup can use any puller instead. The same target is not acted on twice within 6 hours, so a supervisor that brings nothing newer is not a restart loop. |
 | The built-in scanner of a cvENGINE server | Not the daemon: the server asks its host (`scripts/update-watch.sh`, `scripts/scanner-update.sh`) to pull the newest image when the scanner is idle. |
 
 Exit codes of the daemon: `0` stopped on request, `1` token refused or fatal, `3` heartbeats stopped (restart), `75` re-enrol (built-in scanner), `76` drained to be updated.
 Command line equivalents (the interface is cvENGINE, these are the same actions): `scripts/update.sh --now` on this machine, `PATCH agents/{id}` with `{"update": "now"}` on the API, and `docker compose exec sentinel python3 -m client.control status` to see what the daemon was told.
+
+### What Automatic trusts
+
+An Automatic Sentinel (and a Manual one when an administrator presses **Update now**) moves to **the commit cvENGINE named** in its heartbeat
+(`target`), and to no other. It never builds "whatever is at the head of `main` today". `scripts/update.sh` refuses, reports the update as failed to
+cvENGINE, exits non-zero and leaves the running Sentinel unchanged when:
+
+- cvENGINE named no target (Automatic and requested updates both need one);
+- the target is not in the history fetched from `origin` (a bad or unknown commit id);
+- the target is not reachable from `origin/main` (a commit pushed to another branch is not an update);
+- the target is not a descendant of the commit this Sentinel runs (no downgrade, no sideways move).
+
+After the checkout, `HEAD` must equal the target before anything is built or restarted. The same rules apply to `scripts/pull-on-exit.sh`.
+
+What is still trusted: **cvENGINE's choice of commit, and the repository's `main` branch** (whoever can push to `main` of the repository `origin` points
+at, or take over the server's idea of the newest build, decides what an Automatic Sentinel runs). **Commits are not signature-checked in 1.4.0**: there
+is no signing key and no verification of tags or commits. To stay in control of what runs, set the Sentinel to **Manual** (in cvENGINE, or
+`CVENGINE_SENTINEL_UPDATE=manual` in `.env`, which cvENGINE cannot loosen) or **Off**, and update by hand after you have looked at the change.
+
+A person at the machine can run `scripts/update.sh --now`: with no target from cvENGINE it moves to the head of `origin/main`, says which commit that is
+and that it is trusted only as far as the repository is. `scripts/update.sh --to COMMIT` names the commit; `--allow-non-descendant` (with `--now` or
+`--to`, by hand only) allows a rollback to an older commit on `origin/main`.
 
 ### The updater
 
@@ -585,7 +608,9 @@ The updater never gets the Docker socket inside a container: it talks to the dae
    existed counts as deployed at HEAD when the running Sentinel reports HEAD as its version.
 5. **Wanted?** Manual with nobody asking: it records `waiting` and stops. `--check` stops here and says what it would
    do.
-6. **Build while the Sentinel keeps working.** It fast-forwards the checkout, pulls the images
+6. **Target, then build while the Sentinel keeps working.** It settles which commit to move to (the one cvENGINE named; refusals as in
+   [What Automatic trusts](#what-automatic-trusts): "cannot update: ...", result `failed`, nothing changed), fast-forwards the checkout to exactly that
+   commit and checks `HEAD` equals it before going on, pulls the images
    (`docker compose pull --ignore-buildable`, so a moved Greenbone pin reaches the stack) and builds the new Sentinel
    image. A failed pull or build puts the checkout back on the commit it had (`git reset --hard`) and records
    `failed`; the Sentinel never stopped taking work. It also deletes any `CVENGINE_SENTINEL_VERSION` line from `.env`.
@@ -941,9 +966,10 @@ again when they run, so a DNS answer that changes in between is not caught (nmap
 ### What the operator must do
 
 - **Treat the `docker` group as root.** Anyone in it, including the updater's user, controls the machine.
-- **Protect the code source.** Updates are not signature-checked: the updater builds and runs whatever is on
-  `origin/main` (or the configured branch) of this checkout's `origin` remote. Anyone who can push there reaches every
-  Automatic Sentinel within about an hour. Keep `origin` pointed at
+- **Protect the code source.** Updates are not signature-checked in 1.4.0: the updater builds and runs the commit cvENGINE
+  names, which must be on `origin/main` (or the configured branch) of this checkout's `origin` remote
+  ([What Automatic trusts](#what-automatic-trusts)). Anyone who can push there reaches every
+  Automatic Sentinel once cvENGINE names that commit. Keep `origin` pointed at
   `https://github.com/hevnsnt/cvengine-sentinel.git` (or a fork you control), protect that repository, and use Manual
   or Off (`CVENGINE_SENTINEL_UPDATE=manual`) where that is not enough.
 - **Mind other unpinned inputs.** The nuclei templates in the image are a pinned release (checksum-verified at build) and are not

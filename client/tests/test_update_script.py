@@ -62,7 +62,8 @@ class UpdateScriptTests(unittest.TestCase):
         run(git + ['init', '-q', '--bare', '-b', 'main', self.origin], self.tmp)
         run(git + ['clone', '-q', self.origin, self.work], self.tmp)
         os.makedirs(os.path.join(self.work, 'scripts'))
-        shutil.copy(os.path.join(ROOT, 'scripts', 'update.sh'), os.path.join(self.work, 'scripts', 'update.sh'))
+        for name in ('update.sh', 'update-target.sh'):
+            shutil.copy(os.path.join(ROOT, 'scripts', name), os.path.join(self.work, 'scripts', name))
         put(os.path.join(self.work, 'README'), 'one\n')
         run(git + ['checkout', '-q', '-b', 'main'], self.work)
         run(git + ['add', '-A'], self.work)
@@ -90,8 +91,12 @@ class UpdateScriptTests(unittest.TestCase):
     def head(self):
         return run(['git', 'rev-parse', '--short=12', 'HEAD'], self.work).stdout.strip()
 
-    def status(self, setting, requested=False):
-        control.write_status('v0', 0, {'setting': setting, 'mode': 'manual', 'requested': requested})
+    def origin_main(self):
+        return run(['git', '--git-dir', self.origin, 'rev-parse', 'main'], self.work).stdout.strip()
+
+    def status(self, setting, requested=False, target='tip'):
+        target = self.origin_main() if target == 'tip' else target
+        control.write_status('v0', 0, {'setting': setting, 'mode': 'manual', 'requested': requested, **({'target': target} if target else {})})
         self.env['SHIM_SETTING'] = setting
 
     def update(self, *args, **env):
@@ -195,7 +200,7 @@ class UpdateScriptTests(unittest.TestCase):
 
     def test_a_running_openvas_scan_is_not_drained_for(self):
         self.publish()
-        control.write_status('v0', 1, {'setting': 'automatic', 'mode': 'manual', 'requested': False}, kinds=['openvas'])
+        control.write_status('v0', 1, {'setting': 'automatic', 'mode': 'manual', 'requested': False, 'target': self.origin_main()}, kinds=['openvas'])
         out = self.update()
         self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
         self.assertEqual(control.updater_info()['last_result'], 'waiting')
@@ -207,7 +212,7 @@ class UpdateScriptTests(unittest.TestCase):
 
     def test_other_running_tasks_are_still_drained_for(self):
         self.publish()
-        control.write_status('v0', 1, {'setting': 'automatic', 'mode': 'manual', 'requested': False}, kinds=['nmap'])
+        control.write_status('v0', 1, {'setting': 'automatic', 'mode': 'manual', 'requested': False, 'target': self.origin_main()}, kinds=['nmap'])
         out = self.update(CVENGINE_SENTINEL_DRAIN_TIMEOUT='1')
         self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
         self.assertIn('client.control drain', self.calls())
@@ -285,9 +290,185 @@ class UpdateScriptTests(unittest.TestCase):
         self.assertIn('up to date', out.stdout)
         self.assertEqual(self.calls().count('compose up -d'), 2)
 
+    # --- the commit an update moves to is the one cvENGINE named (SN-3) ---------------------------------------------------------------------
+
+    def publish_two(self):
+        """Two new commits on origin/main; returns (first, second) full ids."""
+        self.publish()
+        first = self.origin_main()
+        self.publish()
+        return first, self.origin_main()
+
+    def assert_refused(self, out, words, before):
+        self.assertNotEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertEqual(self.head(), before)  # the checkout is untouched
+        info = control.updater_info()
+        self.assertEqual(info['last_result'], 'failed')
+        self.assertIn('cannot update', info['detail'])
+        self.assertIn(words, info['detail'])
+        self.assertEqual(control.read_update()['status'], 'failed')  # reported back to cvENGINE
+        for call in ('compose pull', 'compose build', 'client.control drain', 'compose up'):
+            self.assertNotIn(call, self.calls())  # nothing was built, drained or restarted: the running Sentinel keeps running
+        self.assertFalse(control.is_draining())
+
+    def test_a_target_older_than_the_fetched_head_moves_to_the_target_not_the_head(self):
+        first, second = self.publish_two()
+        self.status('automatic', target=first)
+        out = self.update()
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertEqual(run(['git', 'rev-parse', 'HEAD'], self.work).stdout.strip(), first)
+        self.assertNotEqual(first, second)
+        self.assertEqual(self.marker(), first[:12])
+        self.assertIn('cvENGINE named it', out.stdout)
+        self.assertEqual(control.updater_info()['last_result'], 'updated')
+
+    def test_a_short_target_is_resolved_and_the_commit_checked_out(self):
+        self.publish()
+        self.status('automatic', target=self.origin_main()[:9])
+        out = self.update()
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertEqual(run(['git', 'rev-parse', 'HEAD'], self.work).stdout.strip(), self.origin_main())
+
+    def test_automatic_without_a_target_is_refused(self):
+        self.publish()
+        before = self.head()
+        self.status('automatic', target=None)
+        out = self.update()
+        self.assert_refused(out, 'has not named a commit', before)
+        self.assertIn('--now', control.updater_info()['detail'])
+
+    def test_a_requested_manual_update_without_a_target_is_refused_too(self):
+        self.publish()
+        before = self.head()
+        self.status('manual', requested=True, target=None)
+        self.assert_refused(self.update(), 'has not named a commit', before)
+
+    def test_a_target_that_is_not_a_commit_id_is_refused(self):
+        self.publish()
+        before = self.head()
+        self.status('manual')
+        out = self.update('--to', 'origin/main')
+        self.assert_refused(out, 'is not a commit id', before)
+
+    def test_a_target_that_the_fetched_history_does_not_contain_is_refused(self):
+        self.publish()
+        before = self.head()
+        self.status('automatic', target='0123456789abcdef0123456789abcdef01234567')
+        self.assert_refused(self.update(), 'is not in the history fetched', before)
+
+    def make_commit_on_other_branch(self):
+        other = os.path.join(self.tmp, 'branchy')
+        run(self.git + ['clone', '-q', self.origin, other], self.tmp)
+        run(self.git + ['checkout', '-q', '-b', 'evil'], other)
+        put(os.path.join(other, 'README'), 'evil\n', 'a')
+        run(self.git + ['commit', '-q', '-am', 'evil'], other)
+        run(self.git + ['push', '-q', 'origin', 'evil'], other)
+        return run(['git', 'rev-parse', 'HEAD'], other).stdout.strip()
+
+    def test_a_target_pushed_to_another_branch_is_not_an_update(self):
+        self.publish()
+        evil = self.make_commit_on_other_branch()
+        before = self.head()
+        self.status('automatic', target=evil)
+        self.assert_refused(self.update(), 'is not in the history fetched', before)  # a branch-only fetch never brought it
+        run(self.git + ['fetch', '-q', 'origin', 'evil'], self.work)  # and even with its objects already here it is not reachable from main
+        self.assert_refused(self.update(), 'is not reachable from origin/main', before)
+
+    def test_an_older_target_never_moves_a_sentinel_that_is_on_the_head(self):
+        first, second = self.publish_two()
+        self.status('automatic', target=second)
+        self.assertEqual(self.update().returncode, 0)
+        deployed = self.head()
+        self.assertEqual(deployed, second[:12])
+        self.status('automatic', target=first)  # the server (or whoever answers as it) names an older commit
+        out = self.update()  # already on main's head: there is nothing to do, and certainly no move backwards
+        self.assertIn('up to date', out.stdout)
+        self.assertEqual(self.head(), deployed)
+        self.assertEqual(self.marker(), deployed)
+        self.assertEqual(self.calls().count('compose up -d'), 1)  # only the first update ever restarted anything
+
+    def test_a_downgrade_is_refused(self):
+        first, second = self.publish_two()
+        self.status('automatic', target=second)
+        self.assertEqual(self.update().returncode, 0)
+        self.publish()  # main moves on, so the deployed commit is no longer main's head and the early "up to date" exit does not apply
+        self.status('automatic', target=first)
+        out = self.update()
+        self.assertNotEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertIn('not a descendant', control.updater_info()['detail'])
+        self.assertEqual(self.head(), second[:12])
+
+    def test_a_person_can_roll_back_only_with_the_explicit_flag(self):
+        first, second = self.publish_two()
+        self.status('automatic', target=second)
+        self.assertEqual(self.update().returncode, 0)
+        before = self.head()
+        self.publish()
+        out = self.update('--to', first)
+        self.assertNotEqual(out.returncode, 0)
+        self.assertEqual(self.head(), before)
+        out = self.update('--to', first, '--allow-non-descendant')
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertEqual(run(['git', 'rev-parse', 'HEAD'], self.work).stdout.strip(), first)
+        self.assertEqual(self.marker(), first[:12])
+
+    def test_the_flag_for_a_non_descendant_needs_a_person(self):
+        out = self.update('--allow-non-descendant')
+        self.assertEqual(out.returncode, 2, out.stdout + out.stderr)
+        self.assertEqual(self.calls(), '')
+
+    def test_a_person_with_no_target_moves_to_the_head_and_is_told_what_that_trusts(self):
+        self.publish()
+        self.status('off', target=None)
+        out = self.update('--now')
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertEqual(run(['git', 'rev-parse', 'HEAD'], self.work).stdout.strip(), self.origin_main())
+        self.assertIn('head of origin/main', out.stdout)
+        self.assertIn('trusted only as far as the repository is', out.stdout)
+
+    def test_a_person_naming_a_target_gets_exactly_that_commit(self):
+        first, second = self.publish_two()
+        self.status('manual', target=None)
+        out = self.update('--to', first[:12])
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertEqual(run(['git', 'rev-parse', 'HEAD'], self.work).stdout.strip(), first)
+
+    def test_head_is_verified_before_anything_is_built(self):
+        # A hook that moves HEAD after the merge stands for any way the checkout could end up elsewhere than the approved target.
+        self.publish()
+        before = self.head()
+        hook = os.path.join(self.work, '.git', 'hooks', 'post-merge')
+        put(hook, f'#!/bin/sh\ngit reset --hard --quiet {before}\n')
+        os.chmod(hook, 0o755)
+        self.status('automatic')
+        out = self.update()
+        self.assertNotEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertEqual(self.head(), before)
+        self.assertIn('HEAD is not the target', control.updater_info()['detail'])
+        for call in ('compose pull', 'compose build', 'client.control drain', 'compose up'):
+            self.assertNotIn(call, self.calls())
+        self.assertEqual(control.updater_info()['last_result'], 'failed')
+
+    def test_the_exit_supervisor_follows_the_same_target_rules(self):
+        with open(os.path.join(ROOT, 'scripts', 'pull-on-exit.sh')) as handle:
+            text = handle.read()
+        self.assertIn('. ./scripts/update-target.sh', text)
+        self.assertIn('check_update_target', text)
+        self.assertNotIn('git pull', text.replace('# ', '#'))  # no more "whatever origin/main is": it merges the named commit only
+        self.assertIn('git merge --ff-only', text)
+        self.assertIn('update-exit.json', text)  # where the daemon wrote the target it left for (client/selfupdate.py remember)
+
+    def test_the_docs_say_what_automatic_trusts(self):
+        with open(os.path.join(ROOT, 'README.md')) as handle:
+            readme = handle.read()
+        self.assertIn('What Automatic trusts', readme)
+        self.assertIn('are not signature-checked in 1.4.0', readme)
+        self.assertIn('CVENGINE_SENTINEL_UPDATE=manual', readme)
+
+
     def test_a_task_still_running_at_the_drain_deadline_is_waiting_not_a_failure(self):
         self.publish()
-        control.write_status('v0', 1, {'setting': 'automatic', 'mode': 'manual', 'requested': False})
+        control.write_status('v0', 1, {'setting': 'automatic', 'mode': 'manual', 'requested': False, 'target': self.origin_main()})
         out = self.update(CVENGINE_SENTINEL_DRAIN_TIMEOUT='1')
         self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
         self.assertIn('compose build', self.calls())  # the image is built and ready for the next run
@@ -352,7 +533,7 @@ class UpdateScriptTests(unittest.TestCase):
 
     def test_sigterm_while_draining_undrains_and_records_a_failure(self):
         self.publish()
-        control.write_status('v0', 1, {'setting': 'automatic', 'mode': 'manual', 'requested': False})
+        control.write_status('v0', 1, {'setting': 'automatic', 'mode': 'manual', 'requested': False, 'target': self.origin_main()})
         proc = subprocess.Popen(['sh', os.path.join(self.work, 'scripts', 'update.sh')], cwd=self.work, start_new_session=True,
                                 env={**self.env, 'CVENGINE_SENTINEL_DRAIN_TIMEOUT': '120'}, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         deadline = time.time() + 30

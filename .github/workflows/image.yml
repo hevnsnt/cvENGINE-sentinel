@@ -142,6 +142,56 @@ jobs:
         run: |
           docker run --rm --security-opt seccomp=config/seccomp/playwright-chromium.json -v "$PWD/client/tests:/opt/sentinel/client/tests:ro" --entrypoint python3 cvengine-sentinel-local:ci -m unittest client.tests.test_shot_browser -v 2>&1 | tee "$RUNNER_TEMP/browser-tests.txt"
           grep -q 'skipped' "$RUNNER_TEMP/browser-tests.txt" && { echo "::error::the browser tests were skipped"; exit 1; } || true
+      # The scans, run in the built image the way an operator's Sentinel runs: through docker-compose.yml's own sentinel service (every capability dropped but
+      # NET_RAW and SYS_CHROOT, Playwright's seccomp profile), as uid 10001, against the container's own loopback only
+      # (scripts/ci_scan_smoke.sh starts a web server and a TLS server there). This is the regression run for the capability set:
+      # a tool that needs a capability the service dropped fails here. docker compose run uses the service definition itself
+      # (--no-deps leaves out the OpenVAS stack and the one-shot that hands over the state volume, whose ownership the image already sets).
+      - name: Chromium's sandbox with every capability dropped, and with each one added back (informational)
+        continue-on-error: true
+        run: |
+          for extra in NONE SYS_CHROOT SETUID SETGID SETPCAP CHOWN DAC_OVERRIDE KILL SYS_ADMIN; do
+            add=(--cap-add NET_RAW); [ "$extra" = NONE ] || add+=(--cap-add "$extra")
+            echo "=== cap_drop ALL, add NET_RAW + $extra"
+            docker run --rm --cap-drop ALL "${add[@]}" --security-opt seccomp=config/seccomp/playwright-chromium.json --entrypoint python3 cvengine-sentinel-local:ci -m client.shot_child --probe 2>&1 | cut -c1-1500 | tail -n 3 || true
+          done
+      - name: The scans run under the compose service's capability set
+        run: |
+          docker tag cvengine-sentinel-local:ci cvengine-sentinel-local:latest
+          # the service's own definition, with its build policy set to "never" so compose uses the image just built instead of building it again
+          printf 'services:\n  sentinel:\n    pull_policy: never\n' > "$RUNNER_TEMP/ci-no-build.yml"
+          export COMPOSE_FILE="docker-compose.yml:$RUNNER_TEMP/ci-no-build.yml"
+          echo "COMPOSE_FILE=$COMPOSE_FILE" >> "$GITHUB_ENV"
+          docker compose run --rm --no-deps -T -v "$PWD/scripts/ci_scan_smoke.sh:/ci/smoke.sh:ro" --entrypoint sh sentinel /ci/smoke.sh 2>&1 | tee "$RUNNER_TEMP/scan-smoke.txt"
+          grep -q '^SMOKE OK' "$RUNNER_TEMP/scan-smoke.txt" || { echo "::error::a scan did not work under the compose service's settings"; exit 1; }
+      - name: The client's own tests pass in the image under the same settings (daemon, templates, secrets, without the tests that assume a source checkout) and so does the browser
+        run: |
+          docker compose run --rm --no-deps -T -v "$PWD/client/tests:/opt/sentinel/client/tests:ro" --entrypoint python3 sentinel -m unittest \
+            client.tests.test_daemon client.tests.test_templates \
+            client.tests.test_secrets_scan client.tests.test_selfupdate 2>&1 | tee "$RUNNER_TEMP/image-tests.txt"
+          grep -q '^OK' "$RUNNER_TEMP/image-tests.txt" || { echo "::error::the client's tests failed in the image under the compose service's settings"; exit 1; }
+          docker compose run --rm --no-deps -T -v "$PWD/client/tests:/opt/sentinel/client/tests:ro" --entrypoint python3 sentinel -m unittest client.tests.test_shot_browser -v 2>&1 | tee "$RUNNER_TEMP/browser-tests-ro.txt"
+          grep -q '^OK' "$RUNNER_TEMP/browser-tests-ro.txt" || { echo "::error::the browser tests failed under the compose service's settings"; exit 1; }
+          grep -q 'skipped' "$RUNNER_TEMP/browser-tests-ro.txt" && { echo "::error::the browser tests were skipped"; exit 1; } || true
+      # read_only: true was tried. Everything the scans write works with a read-only root and memory-backed ~/.config, ~/.cache, ~/.bbot/{cache,logs,temp}
+      # and /tmp (the same smoke passed that way), except bbot's discovery: it creates a working directory inside ~/.bbot/tools, where the image keeps 907 MB of
+      # tools installed at build, and a scan dies at once when that is read-only. This step shows it (it is expected to fail; if it ever passes, read_only can
+      # be set in docker-compose.yml).
+      - name: Why the root filesystem is not read-only (informational, expected to fail)
+        continue-on-error: true
+        run: |
+          docker run --rm --read-only --tmpfs /tmp --tmpfs /home/sentinel/.config --tmpfs /home/sentinel/.cache --tmpfs /home/sentinel/.bbot/cache --tmpfs /home/sentinel/.bbot/logs --tmpfs /home/sentinel/.bbot/temp \
+            --cap-drop ALL --cap-add NET_RAW --cap-add SYS_CHROOT --security-opt seccomp=config/seccomp/playwright-chromium.json --hostname ci-bbot-deep \
+            --entrypoint python3 cvengine-sentinel-local:ci /opt/sentinel/scripts/ci_bbot_deep_start.py 2>&1 | tail -n 12
+      # no-new-privileges, tried: the raw-socket scan under it, on the engine of this runner (printed). The kernel ignores file capabilities under that flag, so
+      # whether nmap and naabu keep raw sockets depends on the container engine passing the added capability on to an unprivileged user's process (an
+      # ambient capability), which is a property of the engine's version on the operator's host and cannot be checked from here. A scan lost to it after an
+      # automatic update is worse than the flag is worth next to dropped capabilities, so the flag is not set; this step only records what this engine does.
+      - name: no-new-privileges and the raw-socket scan on this runner's container engine (informational)
+        continue-on-error: true
+        run: |
+          docker version --format 'engine {{.Server.Version}}'
+          docker run --rm --cap-drop ALL --cap-add NET_RAW --security-opt no-new-privileges --entrypoint nmap cvengine-sentinel-local:ci -sS -Pn -n -p 22 127.0.0.1 | tail -n 4
       - name: bbot starts as the unprivileged user, in a container with a hostname of its own, and installs nothing
         # The command is the one a bbot_discovery task builds (client/bbot.py), plus --dry-run: the modules load and set up, nothing is scanned.
         # A fresh hostname matters: bbot's record of installed dependencies is keyed by it, and a start that consults the record wants sudo.

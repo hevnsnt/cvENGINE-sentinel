@@ -114,10 +114,26 @@ services:
       # Optional: 0 turns off the daily refresh of the badkeys blocklist data the ssh_probe host key check reads (an air-gapped Sentinel). The check then
       # reports "not checked" unless you put the data in the badkeys volume yourself (README.md). The download's address is fixed and not configurable.
       CVENGINE_BADKEYS_REFRESH: "${CVENGINE_BADKEYS_REFRESH:-}"
-    # nmap's OS detection, naabu's SYN scanning and the UDP sweep need raw sockets; NET_RAW/NET_ADMIN are enough, no --privileged.
+    # Every capability dropped, then the two the work needs. NET_RAW: nmap's SYN scan, OS detection and UDP sweep and naabu's SYN scan (raw and packet
+    # sockets), which reach an unprivileged user through the file capability the Dockerfile puts on those two binaries and nothing else. SYS_CHROOT:
+    # Chromium's sandbox chroots the renderer into an empty directory inside its own user namespace (CI: image.yml, "Chromium's sandbox with every
+    # capability dropped": the sandbox engages with SYS_CHROOT added and not without it, and no other capability tried changes that). NET_ADMIN is NOT
+    # kept: no scan needs it (CI runs nmap -sS, -O, -sU and its path-probe flags and naabu -scan-type s under exactly this set, scripts/ci_scan_smoke.sh),
+    # and with host networking (docker-compose.override.yml.example) it would be a hold on the host's own routes, firewall and interfaces. no --privileged.
+    # no-new-privileges is not set on purpose: under it the kernel ignores file capabilities, so nmap and naabu keep raw sockets only if the container engine
+    # hands the added NET_RAW to an unprivileged user's process itself (an ambient capability). CI shows the engine of its runner does; an older engine on an
+    # operator's host may not, and an automatic update would then silently end every raw-socket scan. The caps are dropped, the user is not root and the
+    # image has no sudo; the flag can be added in docker-compose.override.yml by an operator whose engine is known to pass it.
+    cap_drop:
+      - ALL
     cap_add:
       - NET_RAW
-      - NET_ADMIN
+      - SYS_CHROOT
+    # The root filesystem stays writable in 1.4.0 (read_only: true was tried and does not work yet): bbot's discovery (kitchen-sink, the deep discovery the
+    # server can ask for) creates a working directory inside ~/.bbot/tools, which holds the 907 MB of tools (gowitness, trufflehog, Chromium, jadx) installed
+    # at build, and dies at once when the directory is read-only (CI: image.yml, "Why the root filesystem is not read-only"). A memory-backed directory over
+    # it would hide those tools, and a volume would keep a stale copy across updates. Everything else the scans write (~/.config, ~/.cache, ~/.bbot/cache,
+    # ~/.bbot/logs, ~/.bbot/temp, /tmp) works read-only; moving the baked tools out of the home directory is the work that remains.
     # To scan your LAN directly instead of only the Docker bridge network: docker-compose.override.yml.example (./setup.sh --host-network).
     volumes:
       - sentinel-state:/var/lib/cvengine-sentinel
