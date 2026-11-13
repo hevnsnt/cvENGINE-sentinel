@@ -30,11 +30,15 @@ BUILTIN_NAME = 'CVEngine Scanner'  # what the install's own scanner is called; t
 # What the built-in scanner can do beyond the kinds, reported in ``info.features``: ``secret_read`` (signed-in nuclei through the server's single-use read
 # of a stored credential, client/signed_in.py) and ``vantage`` (it applies the server's egress proxy and private-target settings, ``vantage()``). The
 # server offers that work, and stops warning about the vantage point, only to a built-in scanner that says so.
-BUILTIN_FEATURES = ('secret_read', 'vantage')
+# ``credential_filter`` (every Sentinel, built-in or not): this client leaves default-login and bruteforce templates, and every installed template that sends a fixed
+# credential (``credential_templates``), out of a nuclei web run whose task does not carry ``allow_credential_checks``. The server hands nuclei web work to a
+# Sentinel that does not say so only while credential checks are allowed.
+CREDENTIAL_FEATURE = 'credential_filter'
+BUILTIN_FEATURES = ('secret_read', 'vantage', CREDENTIAL_FEATURE)
 # What every other Sentinel reports in ``info.features``: ``bbot_keys`` says this client reads a bbot discovery task's API keys through the single-use
 # secret read, keeps them only in a private file for the run, and masks them in everything it reports. A server sends keys only to a Sentinel that says so
 # (and the owner has not switched it off); an old Sentinel does not say it and never gets them. Optional: a server that does not know it ignores it.
-EXTERNAL_FEATURES = ('bbot_keys',)
+EXTERNAL_FEATURES = ('bbot_keys', CREDENTIAL_FEATURE)
 
 logger = logging.getLogger('sentinel.config')
 

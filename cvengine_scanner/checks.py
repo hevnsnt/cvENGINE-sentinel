@@ -189,19 +189,54 @@ CREDENTIAL_HEADER_PATTERNS = ('^(?:proxy-)?authorization$', '^cookie2?$', 'auth'
 CREDENTIAL_HEADERS_KEY = 'headers'  # the block key whose mapping is a request's headers
 CREDENTIAL_RAW_KEY = 'raw'  # the block key whose strings are raw requests (header lines after the request line)
 CREDENTIAL_URL_KEYS = ('path', 'raw', 'host', 'address', 'url')  # the keys whose strings are looked at for a user name in a URL
+CREDENTIAL_BODY_KEYS = ('body', 'path', 'raw')  # the keys whose strings are looked at for a password field (a form or JSON body, a query string, a raw request's body)
+CREDENTIAL_PAYLOADS_KEY = 'payloads'  # the block key whose names are lists of fixed values a request is repeated with
+# What makes a request field one that carries a password: a name with ``passw`` (password, passwd, hashedpasswd), ``passphrase`` or ``pwd`` in it, or ending in
+# ``pass`` (userpass, login_pass; not ``bypass``, ``compass``, ``trespass``, ``overpass``) or having ``pass`` as a segment of its own (pass1, pass_confirm).
+CREDENTIAL_FIELD_PATTERNS = ('passw', 'passphrase', 'pwd', '(?<!by)(?<!com)(?<!tres)(?<!over)pass\\d*$', '(?<![a-z])pass(?![a-z])')
 _CRED_HEADER = re.compile('(?i)' + '|'.join(CREDENTIAL_HEADER_PATTERNS))
 _AUTH_SCHEME = re.compile(r'(?i)\b(?:bearer|basic|digest|negotiate|ntlm|token|apikey)\b')
 _USERINFO = re.compile(r'(?i)[a-z0-9+.-]://[^/\s?#]*@')  # one scheme character before ://, so a long run of letters is not rescanned from every position
 _PLACEHOLDER = re.compile(r'\{\{\s*([^}]*?)\s*\}\}')
 
 
+_IDENT = re.compile(r'[A-Za-z_][A-Za-z0-9_]*')
+_PASSWORD_FIELD = re.compile('(?i)' + '|'.join(CREDENTIAL_FIELD_PATTERNS))
+_FIELD = re.compile(r'(?i)(?:^|[&?\s"{,;\'(])([\w.\[\]-]{1,40})["\']?\s*[=:]\s*["\']?((?:\{\{[^}]*\}\}|[^&"\'\s,}<\\])*)')  # name=value, "name": "value"
+_XML_FIELD = re.compile(r'(?i)<([\w:.-]{1,40})>((?:\{\{[^}]*\}\}|[^<])*)<')  # <password>value</password>
+
+
 def _fixed_text(value, literal_names):
     """What is left of ``value`` once every placeholder that is not a fixed value is taken out. A placeholder that holds a quoted literal
-    (``{{base64('admin:admin')}}``) or names a variable the template gives a fixed value counts as text."""
+    (``{{base64('admin:admin')}}``) or in which any name (a variable, a payload) is one the template gives a fixed value counts as text."""
     def one(match):
-        name = match.group(1)
-        return 'x' if ("'" in name or '"' in name or name in literal_names) else ''
+        inner = match.group(1)
+        return 'x' if ("'" in inner or '"' in inner or inner in literal_names or any(word in literal_names for word in _IDENT.findall(inner))) else ''
     return _PLACEHOLDER.sub(one, str(value))
+
+
+def _literal_names(variables, payloads=()):
+    """The names of the variables that hold a fixed value (also through another such variable) and of the payload lists: a placeholder that names one is fixed."""
+    names = {str(k) for k in payloads}
+    for _round in range(5):
+        more = {str(k) for k, v in variables.items() if re.search(r'[A-Za-z0-9]', _fixed_text(v, names)) and str(k) not in names}
+        if not more:
+            break
+        names |= more
+    return names
+
+
+def _password_field_problem(text, literal_names):
+    """The name of a password field of a form, JSON or XML body (or query string) in ``text`` that is given a fixed value, else ``''``."""
+    if not isinstance(text, str) or len(text) > 200_000:
+        return ''
+    for match in _FIELD.finditer(text):
+        if _PASSWORD_FIELD.search(match.group(1)) and re.search(r'[A-Za-z0-9]', _fixed_text(match.group(2), literal_names)):
+            return match.group(1)[:40]
+    for match in _XML_FIELD.finditer(text):
+        if _PASSWORD_FIELD.search(match.group(1)) and re.search(r'[A-Za-z0-9]', _fixed_text(match.group(2), literal_names)):
+            return match.group(1)[:40]
+    return ''
 
 
 def _literal_credential_header(name, value, literal_names):
@@ -220,14 +255,29 @@ def _bytes_pattern(pattern):
 _BLOCK_KEYS_BYTES = tuple(k.encode() for k in (CREDENTIAL_HEADERS_KEY, CREDENTIAL_RAW_KEY))
 _KEY_BYTES = re.compile(rb'["\']?\b(?:' + rb'|'.join(re.escape(k) for k in _BLOCK_KEYS_BYTES) + rb')["\']?\s*:')  # matched on lower-case bytes
 _WORD_BYTES = re.compile(rb'|'.join(_bytes_pattern(p).lower() for p in CREDENTIAL_HEADER_PATTERNS))  # likewise
+
+
+def _field_word(pattern):
+    """The letters a ``CREDENTIAL_FIELD_PATTERNS`` entry needs in a text (its look-arounds, ``\\d*`` and anchors taken out)."""
+    return re.sub(r'\(\?<?[!=][^)]*\)|\\d\*|[$^]|\(\?:|\)', '', pattern).lower().encode()
+
+
+_FIELD_WORDS = b'|'.join(re.escape(_field_word(p)) for p in CREDENTIAL_FIELD_PATTERNS)
+# a field name (the rule's ``_FIELD``: name chars, an optional quote, ``=`` or ``:``; or an XML tag) that holds one of the words; matched on lower-case bytes
+_FIELD_BYTES = re.compile(rb'(?:' + _FIELD_WORDS + rb')[\w.\[\]-]{0,40}(?:["\']?\s*[=:]|>)')
+# A YAML double-quoted scalar can write any character as an escape (``\x2f``, ``\u0040``, ``\/``) or join lines with a trailing backslash, so the bytes of a file that
+# uses one do not show the words the rule reads: such a file is always parsed.
+_ESCAPE_BYTES = re.compile(rb'\\[xuU/\r\n]')
 _USERINFO_BYTES = re.compile(_USERINFO.pattern.encode(), re.IGNORECASE)
 
 
 def might_send_credential(raw):
     """Whether the bytes of a template could be flagged by ``credential_problem``: a cheap superset test that needs no YAML parse. The rule only reads the headers
     of a ``headers`` mapping and of a ``raw`` request (a header name that matches ``CREDENTIAL_HEADER_PATTERNS``) and URLs with a user name, so a text with
-    no such key or none of those words, and no ``://user@``, cannot be flagged. Built from the rule's own tables; ``True`` means "parse it", never "it is flagged"."""
+    no such key or none of those words, no password field name, no ``://user@`` and no YAML escape, cannot be flagged. Built from the rule's own tables; ``True`` means "parse it", never "it is flagged"."""
     low = raw.lower()
+    if _ESCAPE_BYTES.search(raw) or _FIELD_BYTES.search(low):
+        return True
     if b'://' in low and b'@' in low and _USERINFO_BYTES.search(low):
         return True
     return any(k in low for k in _BLOCK_KEYS_BYTES) and bool(_KEY_BYTES.search(low) and _WORD_BYTES.search(low))
@@ -241,35 +291,42 @@ def credential_problem(text, max_bytes=MAX_TEMPLATE_BYTES):
     if problem:
         return problem
     variables = doc.get('variables') if isinstance(doc.get('variables'), dict) else {}
-    literal_names = {str(k) for k, v in variables.items() if re.search(r'[A-Za-z0-9]', _PLACEHOLDER.sub('', str(v)))}
     refuse = 'template not validated: it sends a credential of its own'
 
-    def walk(node, key=''):
+    def walk(node, key='', names=None):
+        names = names if names is not None else _literal_names(variables)
         if isinstance(node, dict):
+            if isinstance(node.get(CREDENTIAL_PAYLOADS_KEY), dict):  # a request repeated with the values of these lists: their names are fixed values
+                names = names | _literal_names(variables, node[CREDENTIAL_PAYLOADS_KEY])
             if str(key).lower() == CREDENTIAL_HEADERS_KEY:
                 for name, value in node.items():
-                    if _literal_credential_header(name, value, literal_names):
+                    if _literal_credential_header(name, value, names):
                         return f'{refuse} (the {str(name)[:40]} header has a fixed value)'
             for k, value in node.items():
-                found = walk(value, k)
+                found = walk(value, k, names)
                 if found:
                     return found
         elif isinstance(node, list):
             for value in node:
-                found = walk(value, key)
+                found = walk(value, key, names)
                 if found:
                     return found
         elif isinstance(node, str):
-            if str(key).lower() in CREDENTIAL_URL_KEYS and _USERINFO.search(node):
+            lowered = str(key).lower()
+            if lowered in CREDENTIAL_URL_KEYS and _USERINFO.search(node):
                 return f'{refuse} (a URL with a user name in it)'
-            if str(key).lower() == CREDENTIAL_RAW_KEY:
+            if lowered == CREDENTIAL_RAW_KEY:
                 lines = node.strip().splitlines()
                 for line in lines[1:]:
                     if not line.strip():
                         break
                     name, sep, value = line.partition(':')
-                    if sep and _literal_credential_header(name, value, literal_names):
+                    if sep and _literal_credential_header(name, value, names):
                         return f'{refuse} (the {name.strip()[:40]} header has a fixed value)'
+            if lowered in CREDENTIAL_BODY_KEYS:
+                field = _password_field_problem(node, names)
+                if field:
+                    return f'{refuse} (the {field} field has a fixed value)'
         return ''
     return walk({k: v for k, v in doc.items() if k not in ('info', 'variables')})
 
