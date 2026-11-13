@@ -43,7 +43,7 @@ from cvengine_scanner.parsers import (MAX_FINDINGS, MAX_FINDINGS_BYTES, MAX_LIST
                                       testssl_result, unreached_targets,
                                       parse_waf_output)
 
-from . import admission, bbot, config, dbprobe, egress, openvas, rdp, scope
+from . import admission, bbot, config, credential_templates, dbprobe, egress, openvas, rdp, scope
 
 logger = logging.getLogger('sentinel.tools')
 
@@ -93,6 +93,10 @@ def _proxy_args(tool, hosts):
         return egress.for_tool(tool, hosts)
     except egress.ProxyUnavailable as exc:
         raise TargetError(str(exc)) from None
+
+
+class _SkippedPass(Exception):
+    """The web pass was not run (its template list could not be made); the targets are already named not checked."""
 
 
 class ToolExitError(RuntimeError):
@@ -851,6 +855,32 @@ def _reports_cuts(run):
     return wrapper
 
 
+def _image_templates_dir():
+    return os.environ.get('CVENGINE_NUCLEI_TEMPLATES_DIR') or os.path.join(os.path.expanduser('~'), 'nuclei-templates')
+
+
+def _credential_exclusion(templates):
+    """``(exclusion file or None, with a credential, unreadable)`` for a web pass that may not send credentials: the templates under ``templates`` (the server's
+    bundle) or, with none, the ones baked into this image, that carry a fixed credential (``client.credential_templates``). An image with no template directory
+    has nothing to leave out (nuclei would find nothing to run). Raises ``CredentialListError`` when the list cannot be made."""
+    if templates is not None:
+        return credential_templates.exclusion_file(templates, os.path.basename(os.path.normpath(templates)))
+    directory = _image_templates_dir()
+    if not os.path.isdir(directory):
+        return None, 0, 0
+    return credential_templates.exclusion_file(directory, f'image:{IMAGE_TEMPLATES_VERSION}', beside=True)
+
+
+def warm_credential_templates():
+    """Make (or read) the list of image templates that send a credential, so the first nuclei task is not charged for it. Never raises."""
+    try:
+        exclusion, _credential, _unreadable = _credential_exclusion(None)
+        if exclusion:
+            os.unlink(exclusion)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning('nuclei: the list of image templates that send a credential could not be made at start: %s', str(exc)[:200])
+
+
 @_reports_cuts
 def run_nuclei(targets, tags=None, severities=None, timeout=3600, register=None, templates=None, secret_file=None, services=None, budget=None, allow_credential_checks=False):
     """Host names are passed to nuclei as names, because each finding reports the host it was given. They were judged by scope (and by
@@ -914,9 +944,26 @@ def run_nuclei(targets, tags=None, severities=None, timeout=3600, register=None,
         else:
             web_flags = nuclei_flags_for_budget(flags.nuclei_web_flags(len({host_of({'host': t}) for t in web}), spend, allow_credentials)) + extra
             web_flags += (['-t', templates] if templates is not None else []) + (['-tags', ','.join(clean_tags)] if clean_tags else [])
-            attempts += 1
+            exclusion = None
+            if not allow_credentials:  # no check that sends credentials runs unless a person turned it on: the installed set is filtered, never run whole
+                try:
+                    exclusion, with_credentials, unreadable = _credential_exclusion(templates)
+                except Exception as exc:  # noqa: BLE001 - the list could not be made: the unfiltered set must not run in its place
+                    logger.warning('nuclei: the list of templates that send a credential could not be made: %s', str(exc)[:200])
+                    stop_for(web, 'the list of templates that send a credential could not be made, so the web pass did not run')
+                    web = []
+                else:
+                    if exclusion:
+                        web_flags += ['-et', exclusion]
+                        _nuclei_cuts().items('templates_with_credentials', 0, with_credentials)
+                        _nuclei_cuts().items('templates_unreadable', 0, unreadable)
+            attempts += 1 if web else 0
             try:
+                if not web:
+                    raise _SkippedPass()
                 got = _nuclei_pass(web, web_flags, max(1, math.ceil(left)), register, secret_file, filtered=bool(clean_tags or clean_severities))
+            except _SkippedPass:
+                pass
             except ToolExitError as exc:
                 failures += 1
                 last_error = exc
@@ -929,6 +976,12 @@ def run_nuclei(targets, tags=None, severities=None, timeout=3600, register=None,
                 if got['incomplete']:
                     not_checked.extend({'target': t, 'reason': 'the run ran out of time'} for t in got['unreachable'])
                 quiet.append(got['no_templates'])
+            finally:
+                if exclusion:
+                    try:
+                        os.unlink(exclusion)
+                    except OSError:
+                        pass
     for number, (target, klass) in enumerate(service_runs):
         if number >= flags.NUCLEI_SERVICE_MAX_PORTS:
             stop_for([target], f'a task checks at most {flags.NUCLEI_SERVICE_MAX_PORTS} non-web ports; this one is for another task')

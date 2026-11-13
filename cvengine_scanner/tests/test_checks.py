@@ -21,6 +21,17 @@ class CorpusTests(unittest.TestCase):
         self.assertEqual({c['own_target'] for c in CORPUS}, {True, False})
         self.assertFalse([c['name'] for c in CORPUS if c['own_target'] and not c['read_only']])  # own target is checked on read-only text only
 
+    def test_credential_problem_names_the_header_and_the_read_only_rule_includes_it(self):
+        cases = {c['name']: c['template'] for c in CORPUS}
+        for name in ('credential_basic_header', 'credential_fixed_cookie', 'credential_userinfo_url', 'credential_in_raw_request_header'):
+            with self.subTest(case=name):
+                self.assertTrue(checks.readonly_problem(cases[name]).startswith('template not validated: '))
+        self.assertIn('Authorization header', checks.credential_problem(cases['credential_basic_header']))
+        # what a signed-in run or an extractor supplies is a placeholder, never a fixed value
+        for name in ('authorization_from_a_placeholder_only', 'cookie_echoing_an_extracted_value', 'plain_user_agent_header'):
+            with self.subTest(case=name):
+                self.assertEqual(checks.credential_problem(cases[name]), '')
+
     def test_the_read_only_verdict_of_every_case(self):
         for case in CORPUS:
             with self.subTest(case=case['name']):
