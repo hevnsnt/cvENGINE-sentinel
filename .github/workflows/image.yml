@@ -142,6 +142,42 @@ jobs:
         run: |
           docker run --rm --security-opt seccomp=config/seccomp/playwright-chromium.json -v "$PWD/client/tests:/opt/sentinel/client/tests:ro" --entrypoint python3 cvengine-sentinel-local:ci -m unittest client.tests.test_shot_browser -v 2>&1 | tee "$RUNNER_TEMP/browser-tests.txt"
           grep -q 'skipped' "$RUNNER_TEMP/browser-tests.txt" && { echo "::error::the browser tests were skipped"; exit 1; } || true
+      # The scans, run in the built image the way an operator's Sentinel runs: through docker-compose.yml's own sentinel service (every capability dropped but
+      # NET_RAW, a read-only root filesystem with its tmpfs paths, Playwright's seccomp profile), as uid 10001, against the container's own loopback only
+      # (scripts/ci_scan_smoke.sh starts a web server and a TLS server there). This is the regression run for the capability set and the read-only root:
+      # a tool that needs a capability the service dropped, or writes where it may not, fails here. docker compose run uses the service definition itself
+      # (--no-deps leaves out the OpenVAS stack and the one-shot that hands over the state volume, whose ownership the image already sets).
+      - name: Where the tools write (informational, root left writable): docker diff after the same scans
+        continue-on-error: true
+        run: |
+          docker run --name write-set --cap-drop ALL --cap-add NET_RAW --security-opt seccomp=config/seccomp/playwright-chromium.json -v "$PWD/scripts/ci_scan_smoke.sh:/ci/smoke.sh:ro" -v "$PWD/client/tests:/opt/sentinel/client/tests:ro" --entrypoint sh cvengine-sentinel-local:ci -c '/ci/smoke.sh; python3 -m unittest client.tests.test_daemon client.tests.test_control client.tests.test_spool client.tests.test_templates client.tests.test_badkeys client.tests.test_secrets_scan client.tests.test_shot_browser 2>&1 | tail -n 5' || true
+          echo "=== files the container wrote or changed (docker diff, /tmp and /ci left out):"
+          docker diff write-set | grep -Ev ' /(tmp|ci)(/|$)' || true
+          docker rm write-set
+      - name: The scans run under the compose service's capability set and read-only root
+        run: |
+          docker tag cvengine-sentinel-local:ci cvengine-sentinel-local:latest
+          docker compose run --rm --no-deps --no-build -T -v "$PWD/scripts/ci_scan_smoke.sh:/ci/smoke.sh:ro" --entrypoint sh sentinel /ci/smoke.sh 2>&1 | tee "$RUNNER_TEMP/scan-smoke.txt"
+          grep -q '^SMOKE OK' "$RUNNER_TEMP/scan-smoke.txt" || { echo "::error::a scan did not work under the compose service's settings"; exit 1; }
+      - name: The client's own tests pass in the image under the same settings (daemon, state files, spool, templates, secrets) and so does the browser
+        run: |
+          docker compose run --rm --no-deps --no-build -T -v "$PWD/client/tests:/opt/sentinel/client/tests:ro" --entrypoint python3 sentinel -m unittest \
+            client.tests.test_daemon client.tests.test_control client.tests.test_spool client.tests.test_templates client.tests.test_badkeys \
+            client.tests.test_secrets_scan client.tests.test_selfupdate 2>&1 | tee "$RUNNER_TEMP/image-tests.txt"
+          grep -q '^OK' "$RUNNER_TEMP/image-tests.txt" || { echo "::error::the client's tests failed in the image under the compose service's settings"; exit 1; }
+          docker compose run --rm --no-deps --no-build -T -v "$PWD/client/tests:/opt/sentinel/client/tests:ro" --entrypoint python3 sentinel -m unittest client.tests.test_shot_browser -v 2>&1 | tee "$RUNNER_TEMP/browser-tests-ro.txt"
+          grep -q '^OK' "$RUNNER_TEMP/browser-tests-ro.txt" || { echo "::error::the browser tests failed under the compose service's settings"; exit 1; }
+          grep -q 'skipped' "$RUNNER_TEMP/browser-tests-ro.txt" && { echo "::error::the browser tests were skipped"; exit 1; } || true
+      # The two settings that were left out, with the evidence: NET_ADMIN is not needed (the step above passes without it), and no-new-privileges makes the
+      # kernel ignore the file capabilities nmap and naabu carry, so the same scan must FAIL under it. If this step ever passes the scan, no-new-privileges
+      # can be added to docker-compose.yml.
+      - name: no-new-privileges stops the raw-socket scans (why it is not set), and the scan works without it
+        run: |
+          scan() { docker run --rm --cap-drop ALL --cap-add NET_RAW "$@" --entrypoint nmap cvengine-sentinel-local:ci -sS -Pn -n -p 22 127.0.0.1; }
+          scan | tail -n 3
+          scan --security-opt no-new-privileges > "$RUNNER_TEMP/nnp.txt" 2>&1 && status=0 || status=$?
+          cat "$RUNNER_TEMP/nnp.txt"
+          [ "$status" != 0 ] || { echo "::error::the SYN scan worked under no-new-privileges: it can be set in docker-compose.yml now"; exit 1; }
       - name: bbot starts as the unprivileged user, in a container with a hostname of its own, and installs nothing
         # The command is the one a bbot_discovery task builds (client/bbot.py), plus --dry-run: the modules load and set up, nothing is scanned.
         # A fresh hostname matters: bbot's record of installed dependencies is keyed by it, and a start that consults the record wants sudo.
