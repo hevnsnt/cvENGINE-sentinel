@@ -125,8 +125,8 @@ class ComposeTests(unittest.TestCase):
         self.assertIn('~/.bbot/tools', compose)
         self.assertIn('Why the root filesystem is not read-only', text('.github', 'workflows', 'image.yml'))
 
-    def test_no_new_privileges_is_not_set_because_it_would_switch_off_the_file_capabilities(self):
-        # The kernel ignores file capabilities under no-new-privileges, so nmap and naabu would lose raw sockets for an unprivileged user (CI shows it).
+    def test_no_new_privileges_is_not_set_because_it_depends_on_the_engine_version(self):
+        # Under no-new-privileges the kernel ignores file capabilities: nmap and naabu keep raw sockets only on an engine that passes the capability on as an ambient one, which an operator's older engine may not (CI records what its own engine does).
         for config in (self.light, self.full, self.host):
             self.assertFalse([o for o in config['services']['sentinel'].get('security_opt', []) if 'no-new-privileges' in o])
         self.assertIn('no-new-privileges', text('docker-compose.yml'))  # and the file says why

@@ -120,8 +120,10 @@ services:
     # capability dropped": the sandbox engages with SYS_CHROOT added and not without it, and no other capability tried changes that). NET_ADMIN is NOT
     # kept: no scan needs it (CI runs nmap -sS, -O, -sU and its path-probe flags and naabu -scan-type s under exactly this set, scripts/ci_scan_smoke.sh),
     # and with host networking (docker-compose.override.yml.example) it would be a hold on the host's own routes, firewall and interfaces. no --privileged.
-    # no-new-privileges is not set on purpose: the kernel then ignores file capabilities (a program run by an unprivileged user gets no more than its
-    # parent had), so nmap and naabu would lose raw sockets; CI shows that (image.yml, "no-new-privileges stops the raw-socket scans").
+    # no-new-privileges is not set on purpose: under it the kernel ignores file capabilities, so nmap and naabu keep raw sockets only if the container engine
+    # hands the added NET_RAW to an unprivileged user's process itself (an ambient capability). CI shows the engine of its runner does; an older engine on an
+    # operator's host may not, and an automatic update would then silently end every raw-socket scan. The caps are dropped, the user is not root and the
+    # image has no sudo; the flag can be added in docker-compose.override.yml by an operator whose engine is known to pass it.
     cap_drop:
       - ALL
     cap_add:
