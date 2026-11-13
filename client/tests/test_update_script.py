@@ -411,16 +411,19 @@ class UpdateScriptTests(unittest.TestCase):
         self.assertEqual(self.marker(), deployed)
         self.assertEqual(self.calls().count('compose up -d'), 1)  # only the first update ever restarted anything
 
-    def test_a_downgrade_is_refused(self):
+    def test_a_downgrade_is_never_made_and_is_waiting_not_a_failure(self):
+        # FB-7: the server may pin an older commit than the Sentinel runs (a Sentinel that went ahead of its server): nothing moves, and the hourly run is not a failure
         first, second = self.publish_two()
         self.status('automatic', target=second)
         self.assertEqual(self.update().returncode, 0)
         self.publish()  # main moves on, so the deployed commit is no longer main's head and the early "up to date" exit does not apply
         self.status('automatic', target=first)
         out = self.update()
-        self.assertNotEqual(out.returncode, 0, out.stdout + out.stderr)
-        self.assertIn('not a descendant', control.updater_info()['detail'])
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertEqual(control.updater_info()['last_result'], 'waiting')
+        self.assertIn('older than the one this Sentinel runs', control.updater_info()['detail'])
         self.assertEqual(self.head(), second[:12])
+        self.assertEqual(self.calls().count('compose up -d'), 1)  # only the first update ever restarted anything
 
     def test_a_person_can_roll_back_only_with_the_explicit_flag(self):
         first, second = self.publish_two()

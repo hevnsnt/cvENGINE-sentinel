@@ -571,7 +571,7 @@ cvENGINE, exits non-zero and leaves the running Sentinel unchanged when:
 
 - the target is not in the history fetched from `origin` (a bad or unknown commit id);
 - the target is not reachable from `origin/main` (a commit pushed to another branch is not an update);
-- the target is not a descendant of the commit this Sentinel runs (no downgrade, no sideways move).
+- the target is not a descendant of the commit this Sentinel runs (no downgrade, no sideways move). A target that is simply *older* than what runs (a server that pins an older build) is no failure either: nothing moves and it is reported as waiting, once a day.
 
 After the checkout, `HEAD` must equal the target before anything is built or restarted. The same rules apply to `scripts/pull-on-exit.sh`.
 
