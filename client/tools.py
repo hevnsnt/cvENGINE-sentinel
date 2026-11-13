@@ -860,21 +860,21 @@ def _image_templates_dir():
 
 
 def _credential_exclusion(templates):
-    """``(exclusion file or None, how many templates it leaves out)`` for a web pass that may not send credentials: the templates under ``templates`` (the server's
+    """``(exclusion file or None, with a credential, unreadable)`` for a web pass that may not send credentials: the templates under ``templates`` (the server's
     bundle) or, with none, the ones baked into this image, that carry a fixed credential (``client.credential_templates``). An image with no template directory
     has nothing to leave out (nuclei would find nothing to run). Raises ``CredentialListError`` when the list cannot be made."""
     if templates is not None:
         return credential_templates.exclusion_file(templates, os.path.basename(os.path.normpath(templates)))
     directory = _image_templates_dir()
     if not os.path.isdir(directory):
-        return None, 0
+        return None, 0, 0
     return credential_templates.exclusion_file(directory, f'image:{IMAGE_TEMPLATES_VERSION}', beside=True)
 
 
 def warm_credential_templates():
     """Make (or read) the list of image templates that send a credential, so the first nuclei task is not charged for it. Never raises."""
     try:
-        exclusion, _count = _credential_exclusion(None)
+        exclusion, _credential, _unreadable = _credential_exclusion(None)
         if exclusion:
             os.unlink(exclusion)
     except Exception as exc:  # noqa: BLE001
@@ -947,7 +947,7 @@ def run_nuclei(targets, tags=None, severities=None, timeout=3600, register=None,
             exclusion = None
             if not allow_credentials:  # no check that sends credentials runs unless a person turned it on: the installed set is filtered, never run whole
                 try:
-                    exclusion, excluded = _credential_exclusion(templates)
+                    exclusion, with_credentials, unreadable = _credential_exclusion(templates)
                 except Exception as exc:  # noqa: BLE001 - the list could not be made: the unfiltered set must not run in its place
                     logger.warning('nuclei: the list of templates that send a credential could not be made: %s', str(exc)[:200])
                     stop_for(web, 'the list of templates that send a credential could not be made, so the web pass did not run')
@@ -955,7 +955,8 @@ def run_nuclei(targets, tags=None, severities=None, timeout=3600, register=None,
                 else:
                     if exclusion:
                         web_flags += ['-et', exclusion]
-                        _nuclei_cuts().items('templates_with_credentials', 0, excluded)
+                        _nuclei_cuts().items('templates_with_credentials', 0, with_credentials)
+                        _nuclei_cuts().items('templates_unreadable', 0, unreadable)
             attempts += 1 if web else 0
             try:
                 if not web:

@@ -42,56 +42,85 @@ class Library(unittest.TestCase):
         return result, seen
 
 
+def checks_rule_refuses_it_at_200k(path):
+    from cvengine_scanner import checks
+    with open(path, encoding='utf-8') as handle:
+        return checks.credential_problem(handle.read()).endswith('too large')
+
+
 class ListTests(Library):
     def test_the_list_holds_the_fixed_credential_and_neither_the_placeholder_nor_the_plain_template(self):
-        self.assertEqual(ct.compute(self.dir), [self.basic])
+        self.assertEqual(ct.compute(self.dir), ([self.basic], []))
 
-    def test_a_template_the_rule_cannot_judge_is_on_the_list(self):
-        big = os.path.join(self.dir, 'http', 'big.yaml')
-        with open(big, 'w') as handle:
-            handle.write(PLAIN + '# ' + 'x' * 250_000)
+    def test_a_template_that_cannot_be_read_or_parsed_is_on_the_list_apart(self):
         broken = os.path.join(self.dir, 'http', 'broken.yaml')
         with open(broken, 'w') as handle:
             handle.write('id: [unclosed token\n  authorization: {\n')
-        self.assertEqual(ct.compute(self.dir), sorted([self.basic, big, broken]))
+        self.assertEqual(ct.compute(self.dir), ([self.basic], [broken]))
+        with mock.patch.object(ct, 'MAX_INSTALLED_BYTES', 100):  # over the ceiling: cannot be judged
+            credential, unreadable = ct.compute(self.dir)
+        self.assertEqual(credential, [])
+        self.assertIn(self.basic, unreadable)
+
+    def test_a_large_template_is_judged_at_its_real_size(self):
+        padding = '\n' + ''.join(f'# {i} filler line of a big detection feed\n' for i in range(8000))  # about 350,000 bytes, over the rule's 200,000
+        clean = os.path.join(self.dir, 'http', 'big-clean.yaml')
+        dirty = os.path.join(self.dir, 'http', 'big-basic.yaml')
+        with open(clean, 'w') as handle:
+            handle.write(PLAIN.replace('plain', 'big-clean') + padding)
+        with open(dirty, 'w') as handle:
+            handle.write(BASIC.replace('planted-basic', 'big-basic') + padding)
+        self.assertGreater(os.path.getsize(clean), 200_000)
+        credential, unreadable = ct.compute(self.dir)
+        self.assertEqual(credential, sorted([self.basic, dirty]))  # the large template with a Basic header is excluded
+        self.assertEqual(unreadable, [])  # the large clean one stays in
+        self.assertTrue(checks_rule_refuses_it_at_200k(dirty))
 
     def test_the_list_is_kept_and_reused(self):
-        self.assertEqual(ct.paths_for(self.dir, 'v1'), [self.basic])
+        self.assertEqual(ct.lists_for(self.dir, 'v1'), ([self.basic], []))
         with mock.patch.object(ct, 'compute', side_effect=AssertionError('made again')):
-            self.assertEqual(ct.paths_for(self.dir, 'v1'), [self.basic])
+            self.assertEqual(ct.lists_for(self.dir, 'v1'), ([self.basic], []))
 
     def test_a_new_release_a_changed_file_set_or_a_new_library_makes_it_again(self):
-        ct.paths_for(self.dir, 'v1')
-        with mock.patch.object(ct, 'compute', return_value=['/x']) as made:
-            self.assertEqual(ct.paths_for(self.dir, 'v2'), ['/x'])  # a new templates release
+        ct.lists_for(self.dir, 'v1')
+        with mock.patch.object(ct, 'compute', return_value=(['/x'], [])) as made:
+            self.assertEqual(ct.lists_for(self.dir, 'v2'), (['/x'], []))  # a new templates release
             self.assertEqual(made.call_count, 1)
         with open(os.path.join(self.dir, 'http', 'another.yaml'), 'w') as handle:
             handle.write(PLAIN.replace('plain', 'another'))
-        with mock.patch.object(ct, 'compute', return_value=['/y']) as made:
-            self.assertEqual(ct.paths_for(self.dir, 'v2'), ['/y'])  # a file was added
+        with mock.patch.object(ct, 'compute', return_value=(['/y'], [])) as made:
+            self.assertEqual(ct.lists_for(self.dir, 'v2'), (['/y'], []))  # a file was added
             self.assertEqual(made.call_count, 1)
-        with mock.patch.object(ct, 'RULE_REV', 2), mock.patch.object(ct, 'compute', return_value=['/z']) as made:
-            self.assertEqual(ct.paths_for(self.dir, 'v2'), ['/z'])  # the rule changed
+        with mock.patch.object(ct, 'RULE_REV', ct.RULE_REV + 1), mock.patch.object(ct, 'compute', return_value=(['/z'], [])) as made:
+            self.assertEqual(ct.lists_for(self.dir, 'v2'), (['/z'], []))  # the rule changed
             self.assertEqual(made.call_count, 1)
 
     def test_an_unreadable_or_damaged_cache_means_make_it_now(self):
-        ct.paths_for(self.dir, 'v1')
+        ct.lists_for(self.dir, 'v1')
         for path in ct._cache_paths(self.dir):
             if os.path.exists(path):
                 with open(path, 'w') as handle:
                     handle.write('{"paths": 5')
-        self.assertEqual(ct.paths_for(self.dir, 'v1'), [self.basic])
+        self.assertEqual(ct.lists_for(self.dir, 'v1'), ([self.basic], []))
 
     def test_a_directory_that_cannot_be_read_raises(self):
         with self.assertRaises(ct.CredentialListError):
-            ct.paths_for(os.path.join(self.home.name, 'missing'), 'v1')
+            ct.lists_for(os.path.join(self.home.name, 'missing'), 'v1')
 
 
 class RunTests(Library):
     def test_a_run_without_the_field_leaves_out_the_planted_template_and_says_how_many(self):
         result, seen = self.run_web()
         self.assertEqual(seen['excluded'], [self.basic])
-        self.assertEqual(result['cuts'], [{'what': 'templates_with_credentials', 'kind': 'items', 'limit': 0, 'dropped': 1}])
+        self.assertEqual(result['cuts'], [{'what': 'templates_with_credentials', 'kind': 'items', 'limit': 0, 'dropped': 1}])  # one count, not names
+
+    def test_unreadable_templates_are_counted_apart(self):
+        with open(os.path.join(self.dir, 'http', 'broken.yaml'), 'w') as handle:
+            handle.write('id: [unclosed token\n  authorization: {\n')
+        result, seen = self.run_web()
+        self.assertEqual(result['cuts'], [{'what': 'templates_with_credentials', 'kind': 'items', 'limit': 0, 'dropped': 1},
+                                          {'what': 'templates_unreadable', 'kind': 'items', 'limit': 0, 'dropped': 1}])
+        self.assertEqual(len(seen['excluded']), 2)
 
     def test_a_run_with_the_field_on_does_not(self):
         result, seen = self.run_web(allow_credential_checks=True)
@@ -113,7 +142,7 @@ class RunTests(Library):
         self.assertNotIn('-et', seen['argv'])
 
     def test_when_the_list_cannot_be_made_the_unfiltered_set_does_not_run(self):
-        with mock.patch.object(ct, 'paths_for', side_effect=ct.CredentialListError('boom')), mock.patch('client.tools._run') as fake_run:
+        with mock.patch.object(ct, 'lists_for', side_effect=ct.CredentialListError('boom')), mock.patch('client.tools._run') as fake_run:
             result = tools.run_nuclei(['www.example.test'])
         fake_run.assert_not_called()
         self.assertEqual(result['unreachable'], ['www.example.test'])  # the server keeps it due
@@ -137,5 +166,5 @@ class WarmTests(Library):
         self.assertEqual(seen['excluded'], [self.basic])
 
     def test_the_start_never_raises(self):
-        with mock.patch.object(ct, 'paths_for', side_effect=RuntimeError('boom')):
+        with mock.patch.object(ct, 'lists_for', side_effect=RuntimeError('boom')):
             tools.warm_credential_templates()

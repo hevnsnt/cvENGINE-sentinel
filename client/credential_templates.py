@@ -6,8 +6,8 @@ this image, and a bundle the server packed, are far too many to judge per task (
 once per templates release and kept on disk; a run hands it to nuclei as ``-exclude-templates <file>`` (one path per line, measured on nuclei 3.11.1).
 
 The list is keyed on the templates directory, its release marker, a cheap fingerprint of the files (their number and newest time) and this library's version
-and rule revision: any change makes it be made again. A template the rule cannot judge (over the size limit, not YAML) is on the list too: when in doubt it is
-left out. A cache that is missing, unreadable or stale means "make it now"; if that fails, ``CredentialListError`` is raised and the caller does not run the
+and rule revision: any change makes it be made again. A template that cannot be read or parsed (unreadable, over ``MAX_INSTALLED_BYTES``, not YAML) is on the list too, counted apart: when in doubt it is
+left out. A large template is judged at its real size. A cache that is missing, unreadable or stale means "make it now"; if that fails, ``CredentialListError`` is raised and the caller does not run the
 unfiltered set.
 """
 import hashlib
@@ -21,7 +21,8 @@ from cvengine_scanner import checks
 
 logger = logging.getLogger(__name__)
 
-RULE_REV = 1  # bump when ``checks.credential_problem`` changes what it refuses: every list is then made again
+MAX_INSTALLED_BYTES = 32 * 1024 * 1024  # the ceiling for a template read from this Sentinel's own disk; the rule's 200,000 is for text handed to it
+RULE_REV = 2  # bump when ``checks.credential_problem`` changes what it refuses: every list is then made again
 CACHE_NAME = '.cvengine-credential-templates.json'
 # a template with none of these words cannot carry a fixed credential header or a user name in a URL, so it is not parsed (the rule parses the rest)
 _CANDIDATE = re.compile(r'(?i)authorization|cookie|api[-_]?key|token|secret|passw|session|credential|jwt|csrf|xsrf|signature|bearer|://[^/\s?#"\']*@')
@@ -59,31 +60,32 @@ def fingerprint(directory):
 
 
 def compute(directory):
-    """The sorted absolute paths of the templates under ``directory`` that send a credential of their own or cannot be judged. Raises ``CredentialListError``
-    when the directory cannot be read at all."""
+    """``(with_credentials, unreadable)``: the sorted absolute paths of the templates under ``directory`` that send a credential of their own, and of those that
+    cannot be read or parsed (so cannot be judged). Raises ``CredentialListError`` when the directory cannot be read at all."""
     if not os.path.isdir(directory):
         raise CredentialListError('the template directory is not readable')
-    found = []
+    credential, unreadable = [], []
     for path in _files(directory):
+        absolute = os.path.abspath(path)
         try:
             with open(path, 'rb') as handle:
-                raw = handle.read(checks.MAX_TEMPLATE_BYTES + 1)
+                raw = handle.read(MAX_INSTALLED_BYTES + 1)
         except OSError:
-            found.append(os.path.abspath(path))  # cannot be read, so cannot be judged
+            unreadable.append(absolute)
             continue
-        if len(raw) > checks.MAX_TEMPLATE_BYTES:
-            found.append(os.path.abspath(path))
+        if len(raw) > MAX_INSTALLED_BYTES:
+            unreadable.append(absolute)
             continue
         text = raw.decode('utf-8', 'replace')
         if not _CANDIDATE.search(text):
             continue
         try:
-            problem = checks.credential_problem(text)
+            problem = checks.credential_problem(text, MAX_INSTALLED_BYTES)
         except Exception:  # noqa: BLE001 - a rule that crashes on a file has not cleared it
             problem = 'not judged'
         if problem:
-            found.append(os.path.abspath(path))
-    return sorted(found)
+            (credential if 'sends a credential' in problem else unreadable).append(absolute)
+    return sorted(credential), sorted(unreadable)
 
 
 def _cache_paths(directory, beside=False):
@@ -100,14 +102,15 @@ def _read(path, want):
             data = json.load(handle)
     except (OSError, ValueError):
         return None
-    if isinstance(data, dict) and all(data.get(k) == v for k, v in want.items()) and isinstance(data.get('paths'), list) \
-            and all(isinstance(p, str) for p in data['paths']):
-        return data['paths']
+    if isinstance(data, dict) and all(data.get(k) == v for k, v in want.items()):
+        lists = (data.get('credential'), data.get('unreadable'))
+        if all(isinstance(x, list) and all(isinstance(p, str) for p in x) for x in lists):
+            return lists
     return None
 
 
-def _write(paths, want, data):
-    body = json.dumps({**want, 'paths': data})
+def _write(paths, want, credential, unreadable):
+    body = json.dumps({**want, 'credential': credential, 'unreadable': unreadable})
     for path in paths:
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -122,8 +125,8 @@ def _write(paths, want, data):
     return False  # nothing writable: the list is made again next time, never skipped
 
 
-def paths_for(directory, release, beside=False):
-    """The paths of the templates under ``directory`` to leave out of a run that may not send credentials: read from the cache when it is for this directory,
+def lists_for(directory, release, beside=False):
+    """``(with_credentials, unreadable)``, the paths of the templates under ``directory`` to leave out of a run that may not send credentials: read from the cache when it is for this directory,
     release, file fingerprint and library, else made now and kept. Raises ``CredentialListError`` when it cannot be made."""
     directory = os.path.abspath(directory)
     want = {'directory': directory, 'release': str(release), 'files': fingerprint(directory), 'library': _library()}
@@ -132,23 +135,25 @@ def paths_for(directory, release, beside=False):
         if cached is not None:
             return cached
     try:
-        found = compute(directory)
+        credential, unreadable = compute(directory)
     except CredentialListError:
         raise
     except Exception as exc:  # noqa: BLE001
         raise CredentialListError(f'the list could not be made ({type(exc).__name__})') from None
-    _write(_cache_paths(directory, beside), want, found)
-    logger.info('nuclei: %d of the templates under %s send a credential of their own and are left out of runs that may not send one', len(found), directory)
-    return found
+    _write(_cache_paths(directory, beside), want, credential, unreadable)
+    logger.info('nuclei: %d of the templates under %s send a credential of their own and %d cannot be read or parsed; they are left out of runs that may not send one',
+                len(credential), directory, len(unreadable))
+    return credential, unreadable
 
 
 def exclusion_file(directory, release, beside=False):
-    """``(path, count)``: a temporary file listing the templates to exclude, one absolute path a line, for ``-exclude-templates``, or ``(None, 0)`` when none is to
-    be left out. The caller removes the file. Raises ``CredentialListError`` as ``paths_for`` does."""
-    found = paths_for(directory, release, beside)
+    """``(path, with_credentials, unreadable)``: a temporary file listing the templates to exclude, one absolute path a line, for ``-exclude-templates``, or
+    ``(None, 0, 0)`` when none is to be left out. The caller removes the file. Raises ``CredentialListError`` as ``lists_for`` does."""
+    credential, unreadable = lists_for(directory, release, beside)
+    found = sorted(set(credential) | set(unreadable))
     if not found:
-        return None, 0
+        return None, 0, 0
     fd, path = tempfile.mkstemp(prefix='nuclei-exclude-', suffix='.txt')
     with os.fdopen(fd, 'w', encoding='utf-8') as handle:
         handle.write('\n'.join(found) + '\n')
-    return path, len(found)
+    return path, len(credential), len(unreadable)

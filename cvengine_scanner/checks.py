@@ -165,9 +165,10 @@ def destination_problem(doc):
     return ''
 
 
-def _parse(text):
-    """``(doc, problem)``: the template as data, or why it is not one."""
-    if not isinstance(text, str) or not text or '\0' in text or len(text.encode('utf-8', 'replace')) > MAX_TEMPLATE_BYTES:
+def _parse(text, max_bytes=MAX_TEMPLATE_BYTES):
+    """``(doc, problem)``: the template as data, or why it is not one. ``max_bytes`` is 200,000 for text handed to a rule (AI-written or submitted); the
+    Sentinel's own installed templates are judged at their real size (``credential_problem``'s ``max_bytes``)."""
+    if not isinstance(text, str) or not text or '\0' in text or len(text.encode('utf-8', 'replace')) > max_bytes:
         return None, 'template not validated: empty or too large'
     import yaml
     try:
@@ -206,11 +207,11 @@ def _literal_credential_header(name, value, literal_names):
     return bool(re.search(r'[A-Za-z0-9]', _AUTH_SCHEME.sub('', text)))
 
 
-def credential_problem(text):
+def credential_problem(text, max_bytes=MAX_TEMPLATE_BYTES):
     """Why a template sends a credential of its own, or ``''``: a header that authenticates (Authorization, Cookie, an API key, a token...) with a fixed value
     in the ``headers`` of a block or in a raw request, or a URL with a user name in it (``http://admin:admin@{{Hostname}}``). A value made only of placeholders is
     not fixed. Pure; ``readonly_problem`` includes it, and the server lets an App Admin lift it for installed templates only (never for an AI-written one)."""
-    doc, problem = _parse(text)
+    doc, problem = _parse(text, max_bytes)
     if problem:
         return problem
     variables = doc.get('variables') if isinstance(doc.get('variables'), dict) else {}
