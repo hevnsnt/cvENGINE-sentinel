@@ -55,12 +55,12 @@ class ConfigTests(Env):
         with mock.patch('client.control.updater_info', return_value={'installed': False}):
             out = daemon.info()
         self.assertIs(out['builtin'], True)
-        self.assertEqual(out['features'], ['secret_read', 'vantage'])
+        self.assertEqual(out['features'], ['secret_read', 'vantage', 'credential_filter'])
 
-    def test_an_external_sentinel_advertises_bbot_keys_and_nothing_else(self):
+    def test_an_external_sentinel_advertises_bbot_keys_and_the_credential_filter_and_nothing_else(self):
         with mock.patch('client.control.updater_info', return_value={'installed': False}), mock.patch.object(config, 'builtin', return_value=False):
             out = daemon.info()
-        self.assertEqual(out['features'], ['bbot_keys'])
+        self.assertEqual(out['features'], ['bbot_keys', 'credential_filter'])
         self.assertNotIn('builtin', out)
         self.assertEqual(out['contract_version'], config.CONTRACT_VERSION)
 
