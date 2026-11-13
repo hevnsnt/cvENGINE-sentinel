@@ -96,7 +96,7 @@ class ComposeTests(unittest.TestCase):
 
     # The capability set, the read-only root and its writable paths (SN-8), for the default stack and with host networking. Every entry is proven by CI:
     # scripts/ci_scan_smoke.sh runs the scans in the built image under exactly these settings (.github/workflows/image.yml).
-    WRITABLE = ['/home/sentinel/.cache', '/home/sentinel/.config', '/home/sentinel/.local', '/home/sentinel/.wpscan', '/tmp']
+    WRITABLE = ['/home/sentinel/.bbot/cache', '/home/sentinel/.bbot/logs', '/home/sentinel/.cache', '/home/sentinel/.config', '/tmp']
 
     def test_the_sentinel_keeps_net_raw_and_nothing_else(self):
         for name, config in (('light', self.light), ('full', self.full), ('host network', self.host)):
@@ -142,7 +142,7 @@ class ComposeTests(unittest.TestCase):
 
     def test_ci_runs_the_scans_in_the_built_image_under_the_compose_settings(self):
         workflow = text('.github', 'workflows', 'image.yml')
-        self.assertIn('docker compose run --rm --no-deps --no-build', workflow)  # the real service definition, not a copy of its flags
+        self.assertIn('docker compose run --rm --no-deps -T', workflow)  # the real service definition, not a copy of its flags
         self.assertIn('scripts/ci_scan_smoke.sh', workflow)
         smoke = text('scripts', 'ci_scan_smoke.sh')
         for needle in ('nmap -sS -O', 'nmap -sU', 'naabu -host', '-scan-type s', 'nuclei -u', 'wpscan --url', 'testssl.sh', 'kingfisher scan', 'ci_bbot_start.py'):

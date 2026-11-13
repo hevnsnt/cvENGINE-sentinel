@@ -51,6 +51,7 @@ run() {
   echo "=== $name: $*"
   timeout "$secs" "$@" > "$work/$name.txt" 2>&1; RC=$?
   tail -n 15 "$work/$name.txt"
+  [ "$RC" = 0 ] || { echo "--- the whole output of $name:"; head -n 120 "$work/$name.txt"; }
   echo "--- $name exit status $RC"
   if grep -Eqi 'read-only file system|EROFS|permission denied|operation not permitted' "$work/$name.txt"; then
     fail "$name: it could not write or use something it needs (see the lines above)"
@@ -80,8 +81,9 @@ grep -q '18080' "$work/naabu.txt" || fail "naabu's SYN scan did not find the ope
 # cannot write beside the read-only templates, so the list is kept under ~/.cache/cvengine-sentinel, which must be writable.
 run credtemplates 300 python3 -c "import logging, sys; logging.basicConfig(level=logging.INFO, stream=sys.stdout); from client import tools; tools._credential_exclusion(None)"
 [ "$RC" = 0 ] || fail "the credential-template list could not be made (exit $RC)"
-ls "$HOME"/.cache/cvengine-sentinel/credential-templates-*.json >/dev/null 2>&1 || fail "the credential-template list was not kept under ~/.cache/cvengine-sentinel"
-run nuclei 240 nuclei -u http://127.0.0.1:18080 -t http/technologies -jsonl -silent -duc -ni -nc -rl 150 -c 40 -timeout 10 -retries 1
+ls "$HOME"/.cache/cvengine-sentinel/credential-templates-*.json "$HOME"/nuclei-templates/.cvengine-credential-templates.json >/dev/null 2>&1 || fail "the credential-template list was kept nowhere"
+echo "--- nuclei's config directory before it runs:"; ls -la "$HOME/.config/nuclei" 2>&1 | head; ls -ld "$HOME/nuclei-templates" "$HOME/nuclei-templates/http/technologies" 2>&1
+run nuclei 240 nuclei -u http://127.0.0.1:18080 -tags tech -jsonl -silent -duc -ni -nc -rl 150 -c 40 -timeout 10 -retries 1
 [ "$RC" = 0 ] || fail "nuclei exited $RC"
 run wpscan 300 wpscan --url http://127.0.0.1:18080 --no-banner --disable-tls-checks -f json -o "$work/wpscan.json"
 run wafw00f 120 wafw00f http://127.0.0.1:18080

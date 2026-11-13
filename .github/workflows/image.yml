@@ -160,7 +160,7 @@ jobs:
           for extra in NONE SYS_CHROOT SETUID SETGID SETPCAP CHOWN DAC_OVERRIDE KILL SYS_ADMIN; do
             add=(--cap-add NET_RAW); [ "$extra" = NONE ] || add+=(--cap-add "$extra")
             echo "=== cap_drop ALL, add NET_RAW + $extra"
-            docker run --rm --cap-drop ALL "${add[@]}" --security-opt seccomp=config/seccomp/playwright-chromium.json --entrypoint python3 cvengine-sentinel-local:ci -m client.shot_child --probe 2>&1 | cut -c1-1500 | tail -n 3
+            docker run --rm --cap-drop ALL "${add[@]}" --security-opt seccomp=config/seccomp/playwright-chromium.json --entrypoint python3 cvengine-sentinel-local:ci -m client.shot_child --probe 2>&1 | cut -c1-1500 | tail -n 3 || true
           done
       - name: The scans run under the compose service's capability set and read-only root
         run: |

@@ -130,10 +130,10 @@ services:
     read_only: true
     tmpfs:
       - /tmp:rw,nosuid,nodev,size=512m
-      - /home/sentinel/.cache:rw,nosuid,nodev,size=128m,uid=10001,gid=10001,mode=0700
+      - /home/sentinel/.cache:rw,nosuid,nodev,size=384m,uid=10001,gid=10001,mode=0700
       - /home/sentinel/.config:rw,nosuid,nodev,size=32m,uid=10001,gid=10001,mode=0700
-      - /home/sentinel/.local:rw,nosuid,nodev,size=32m,uid=10001,gid=10001,mode=0700
-      - /home/sentinel/.wpscan:rw,nosuid,nodev,size=256m,uid=10001,gid=10001,mode=0700
+      - /home/sentinel/.bbot/cache:rw,nosuid,nodev,size=64m,uid=10001,gid=10001,mode=0700
+      - /home/sentinel/.bbot/logs:rw,nosuid,nodev,size=64m,uid=10001,gid=10001,mode=0700
     # To scan your LAN directly instead of only the Docker bridge network: docker-compose.override.yml.example (./setup.sh --host-network).
     volumes:
       - sentinel-state:/var/lib/cvengine-sentinel
