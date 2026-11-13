@@ -127,17 +127,11 @@ services:
     cap_add:
       - NET_RAW
       - SYS_CHROOT
-    # A read-only root filesystem: the code, the tools and the pinned nuclei templates cannot be changed by anything that runs here. What the daemon and the
-    # tools write goes to the state volumes below or to these memory-backed directories, which are empty at every start (the sizes are ceilings; only what
-    # is written uses memory, inside mem_limit). The image's own user (uid 10001) owns the ones under its home.
-    read_only: true
-    tmpfs:
-      - /tmp:rw,nosuid,nodev,size=512m
-      - /home/sentinel/.cache:rw,nosuid,nodev,size=384m,uid=10001,gid=10001,mode=0700
-      - /home/sentinel/.config:rw,nosuid,nodev,size=32m,uid=10001,gid=10001,mode=0700
-      - /home/sentinel/.bbot/cache:rw,nosuid,nodev,size=64m,uid=10001,gid=10001,mode=0700
-      - /home/sentinel/.bbot/temp:rw,nosuid,nodev,size=64m,uid=10001,gid=10001,mode=0700
-      - /home/sentinel/.bbot/logs:rw,nosuid,nodev,size=64m,uid=10001,gid=10001,mode=0700
+    # The root filesystem stays writable in 1.4.0 (read_only: true was tried and does not work yet): bbot's discovery (kitchen-sink, the deep discovery the
+    # server can ask for) creates a working directory inside ~/.bbot/tools, which holds the 907 MB of tools (gowitness, trufflehog, Chromium, jadx) installed
+    # at build, and dies at once when the directory is read-only (CI: image.yml, "Why the root filesystem is not read-only"). A memory-backed directory over
+    # it would hide those tools, and a volume would keep a stale copy across updates. Everything else the scans write (~/.config, ~/.cache, ~/.bbot/cache,
+    # ~/.bbot/logs, ~/.bbot/temp, /tmp) works read-only; moving the baked tools out of the home directory is the work that remains.
     # To scan your LAN directly instead of only the Docker bridge network: docker-compose.override.yml.example (./setup.sh --host-network).
     volumes:
       - sentinel-state:/var/lib/cvengine-sentinel

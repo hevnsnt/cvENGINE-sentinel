@@ -94,9 +94,8 @@ class ComposeTests(unittest.TestCase):
         self.assertNotIn('nuclei -update-templates', text)  # templates are pinned, not downloaded at build or start
         self.assertIn('NUCLEI_TEMPLATES_SHA256=', text)
 
-    # The capability set, the read-only root and its writable paths (SN-8), for the default stack and with host networking. Every entry is proven by CI:
+    # The capability set (SN-8), for the default stack and with host networking. Every entry is proven by CI:
     # scripts/ci_scan_smoke.sh runs the scans in the built image under exactly these settings (.github/workflows/image.yml).
-    WRITABLE = ['/home/sentinel/.bbot/cache', '/home/sentinel/.bbot/logs', '/home/sentinel/.bbot/temp', '/home/sentinel/.cache', '/home/sentinel/.config', '/tmp']
 
     def test_the_sentinel_keeps_net_raw_and_sys_chroot_and_nothing_else(self):
         for name, config in (('light', self.light), ('full', self.full), ('host network', self.host)):
@@ -111,22 +110,20 @@ class ComposeTests(unittest.TestCase):
         light, host = self.light['services']['sentinel'], self.host['services']['sentinel']
         self.assertEqual(host.get('network_mode'), 'host')
         self.assertNotIn('network_mode', light)
-        for key in ('cap_add', 'cap_drop', 'read_only', 'tmpfs', 'security_opt', 'privileged', 'pids_limit', 'mem_limit'):
+        for key in ('cap_add', 'cap_drop', 'read_only', 'security_opt', 'privileged', 'pids_limit', 'mem_limit'):
             self.assertEqual(host.get(key), light.get(key), key)
 
-    def test_the_root_filesystem_is_read_only_with_memory_backed_scratch_space(self):
+    def test_the_root_filesystem_stays_writable_and_the_file_says_what_blocks_read_only(self):
+        # read_only: true was tried in CI with memory-backed ~/.config, ~/.cache, ~/.bbot/{cache,logs,temp} and /tmp: every scan tool worked except bbot's
+        # discovery, which makes a working directory inside ~/.bbot/tools (907 MB of tools baked into the image) and dies when it is read-only. A tmpfs there
+        # would hide the tools, so for 1.4.0 the root is writable; this test fails when someone sets it without the work that remains (the tools moved out).
         for name, config in (('light', self.light), ('full', self.full), ('host network', self.host)):
             sentinel = config['services']['sentinel']
-            self.assertIs(sentinel.get('read_only'), True, name)
-            paths = sorted(entry.split(':')[0] for entry in sentinel.get('tmpfs', []))
-            self.assertEqual(paths, self.WRITABLE, name)
-            for entry in sentinel['tmpfs']:
-                self.assertIn('nosuid', entry)
-                self.assertIn('nodev', entry)
-                self.assertRegex(entry, r'size=\d+m')  # a ceiling on what a runaway tool can put in memory
-            mounts = {v['target'] for v in sentinel['volumes']}
-            self.assertFalse(mounts & set(self.WRITABLE), name)  # a path is either a volume or scratch space, never both
-            self.assertIn('/var/lib/cvengine-sentinel', mounts)  # the state the daemon keeps is a volume, not the root filesystem
+            self.assertFalse(sentinel.get('read_only'), name)
+            self.assertFalse(sentinel.get('tmpfs'), name)  # a tmpfs over a baked directory would hide what the image keeps there
+        compose = text('docker-compose.yml')
+        self.assertIn('~/.bbot/tools', compose)
+        self.assertIn('Why the root filesystem is not read-only', text('.github', 'workflows', 'image.yml'))
 
     def test_no_new_privileges_is_not_set_because_it_would_switch_off_the_file_capabilities(self):
         # The kernel ignores file capabilities under no-new-privileges, so nmap and naabu would lose raw sockets for an unprivileged user (CI shows it).

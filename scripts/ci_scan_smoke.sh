@@ -1,8 +1,8 @@
 #!/bin/sh
 # Scan smoke test, run by .github/workflows/image.yml INSIDE the built image under the settings docker-compose.yml gives the sentinel service
-# (cap_drop ALL + NET_RAW, read-only root with its tmpfs paths, the Playwright seccomp profile), as the image's own unprivileged user (uid 10001).
+# (cap_drop ALL + NET_RAW and SYS_CHROOT, the Playwright seccomp profile), as the image's own unprivileged user (uid 10001).
 # It scans only the container's own loopback (a web server and a TLS server it starts itself), never another host. Each tool must start, do its job
-# and write only where the service lets it: a "Read-only file system" or "Permission denied" anywhere in a tool's output fails the run.
+# and need nothing the service dropped: an "Operation not permitted", "Permission denied" or "Read-only file system" in a tool's output fails the run.
 #
 #   nmap -sS and -O and -sU, naabu -scan-type s   need raw sockets: this is what proves which capabilities the container must keep
 #   nuclei, WPScan, wafw00f, testssl.sh, Kingfisher, sshamble, bbot   write their working files under $HOME or /tmp
@@ -59,7 +59,7 @@ run() {
   tail -n 15 "$work/$name.txt"
   [ "$RC" = 0 ] || { echo "--- the whole output of $name:"; head -n 120 "$work/$name.txt"; }
   echo "--- $name exit status $RC"
-  grep -v "Failed to create directory at /home/sentinel/.bbot/tools" "$work/$name.txt" > "$work/$name.checked"  # bbot probes its baked tools directory for write access; it is not needed
+  cp "$work/$name.txt" "$work/$name.checked"
   if grep -Eqi 'read-only file system|EROFS|permission denied|operation not permitted' "$work/$name.checked"; then
     fail "$name: it could not write or use something it needs (see the lines above)"
     grep -Ei 'read-only file system|EROFS|permission denied|operation not permitted' "$work/$name.checked" | head -n 5

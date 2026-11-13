@@ -337,10 +337,6 @@ RUN apt-get update -y && apt-get install -y --no-install-recommends libcap2-bin 
     && setcap cap_net_raw+eip /usr/local/bin/nmap \
     && setcap cap_net_raw+eip /usr/local/bin/naabu \
     && getcap /usr/local/bin/nmap /usr/local/bin/naabu
-# nuclei finds the pinned templates baked at /home/sentinel/nuclei-templates through its own config file, which it writes to ~/.config/nuclei on first run; with
-# a read-only root and an empty (memory-backed) ~/.config it fell back to a directory that does not exist and ran no template (CI, SN-8). Naming the
-# directory settles it.
-ENV NUCLEI_TEMPLATES_DIR=/home/sentinel/nuclei-templates
 ENV NMAP_PRIVILEGED=1 \
     HOME=/home/sentinel
 

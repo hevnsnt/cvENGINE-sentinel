@@ -293,8 +293,8 @@ docker compose up -d
 ```
 
 `docker-compose.override.yml` is git-ignored, and Compose reads it automatically. Host networking needs no privileged
-mode: nmap's OS detection, naabu's SYN scan and the UDP sweep use the `NET_RAW` and `NET_ADMIN` capabilities
-`docker-compose.yml` already grants. Host networking in this form is a Linux feature; Docker Desktop on macOS and
+mode: nmap's OS detection, naabu's SYN scan and the UDP sweep use the `NET_RAW` capability
+`docker-compose.yml` already grants (with every other capability dropped, `NET_ADMIN` included, the set is the same as on the bridge network). Host networking in this form is a Linux feature; Docker Desktop on macOS and
 Windows handles it differently.
 
 ### What docker-compose.yml sets
@@ -302,7 +302,8 @@ Windows handles it differently.
 | Setting                     | Value                                                                                           | Why                                                                                                        |
 | --------------------------- | ----------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
 | `image`                     | `cvengine-sentinel-local:latest`, `pull_policy: build`                                          | Built locally, never pulled from a registry. A plain `docker compose pull` does not ask Docker Hub for it. |
-| `cap_add`                   | `NET_RAW`, `NET_ADMIN` (no `--privileged`)                                                      | Raw sockets for nmap, naabu and the UDP sweep. The Sentinel runs as an unprivileged user (uid 10001) and only nmap and naabu carry file capabilities that use these; no other process in the image holds a capability.                                                             |
+| `cap_drop`, `cap_add`       | `ALL`, then `NET_RAW` and `SYS_CHROOT` (no `--privileged`, no `NET_ADMIN`)                      | `NET_RAW`: raw sockets for nmap (SYN scan, OS detection, UDP sweep) and naabu; the Sentinel runs as an unprivileged user (uid 10001) and only nmap and naabu carry a file capability (`cap_net_raw`); no other process in the image holds one. `SYS_CHROOT`: Chromium's sandbox (screenshots). Every one is proven by the scan smoke run in CI (`scripts/ci_scan_smoke.sh`). |
+| `no-new-privileges`, `read_only` | not set | `no-new-privileges` makes the kernel ignore file capabilities, so nmap and naabu would lose raw sockets for an unprivileged user (CI shows it). The root filesystem stays writable: with `read_only: true` and memory-backed home subdirectories every scan works except bbot's discovery, which needs a writable `~/.bbot/tools` (907 MB of tools baked into the image). |
 | `init`, `stop_grace_period` | `true`, `75s`                                                                                   | See [Shutdown](#shutdown).                                                                                 |
 | `pids_limit`, `mem_limit`   | `512`, `2g`                                                                                     | Bounds a runaway tool.                                                                                     |
 | `healthcheck`               | `python3 -m client.control health` every 60 s                                                   | See [Health check](#health-check).                                                                         |

@@ -143,9 +143,9 @@ jobs:
           docker run --rm --security-opt seccomp=config/seccomp/playwright-chromium.json -v "$PWD/client/tests:/opt/sentinel/client/tests:ro" --entrypoint python3 cvengine-sentinel-local:ci -m unittest client.tests.test_shot_browser -v 2>&1 | tee "$RUNNER_TEMP/browser-tests.txt"
           grep -q 'skipped' "$RUNNER_TEMP/browser-tests.txt" && { echo "::error::the browser tests were skipped"; exit 1; } || true
       # The scans, run in the built image the way an operator's Sentinel runs: through docker-compose.yml's own sentinel service (every capability dropped but
-      # NET_RAW, a read-only root filesystem with its tmpfs paths, Playwright's seccomp profile), as uid 10001, against the container's own loopback only
-      # (scripts/ci_scan_smoke.sh starts a web server and a TLS server there). This is the regression run for the capability set and the read-only root:
-      # a tool that needs a capability the service dropped, or writes where it may not, fails here. docker compose run uses the service definition itself
+      # NET_RAW and SYS_CHROOT, Playwright's seccomp profile), as uid 10001, against the container's own loopback only
+      # (scripts/ci_scan_smoke.sh starts a web server and a TLS server there). This is the regression run for the capability set:
+      # a tool that needs a capability the service dropped fails here. docker compose run uses the service definition itself
       # (--no-deps leaves out the OpenVAS stack and the one-shot that hands over the state volume, whose ownership the image already sets).
       - name: Where the tools write (informational, root left writable), by docker diff after the same scans
         continue-on-error: true
@@ -162,7 +162,7 @@ jobs:
             echo "=== cap_drop ALL, add NET_RAW + $extra"
             docker run --rm --cap-drop ALL "${add[@]}" --security-opt seccomp=config/seccomp/playwright-chromium.json --entrypoint python3 cvengine-sentinel-local:ci -m client.shot_child --probe 2>&1 | cut -c1-1500 | tail -n 3 || true
           done
-      - name: The scans run under the compose service's capability set and read-only root
+      - name: The scans run under the compose service's capability set
         run: |
           docker tag cvengine-sentinel-local:ci cvengine-sentinel-local:latest
           # the service's own definition, with its build policy set to "never" so compose uses the image just built instead of building it again
@@ -183,6 +183,16 @@ jobs:
       # The two settings that were left out, with the evidence: NET_ADMIN is not needed (the step above passes without it), and no-new-privileges makes the
       # kernel ignore the file capabilities nmap and naabu carry, so the same scan must FAIL under it. If this step ever passes the scan, no-new-privileges
       # can be added to docker-compose.yml.
+      # read_only: true was tried. Everything the scans write works with a read-only root and memory-backed ~/.config, ~/.cache, ~/.bbot/{cache,logs,temp}
+      # and /tmp (the same smoke passed that way), except bbot's discovery: it creates a working directory inside ~/.bbot/tools, where the image keeps 907 MB of
+      # tools installed at build, and a scan dies at once when that is read-only. This step shows it (it is expected to fail; if it ever passes, read_only can
+      # be set in docker-compose.yml).
+      - name: Why the root filesystem is not read-only (informational, expected to fail)
+        continue-on-error: true
+        run: |
+          docker run --rm --read-only --tmpfs /tmp --tmpfs /home/sentinel/.config --tmpfs /home/sentinel/.cache --tmpfs /home/sentinel/.bbot/cache --tmpfs /home/sentinel/.bbot/logs --tmpfs /home/sentinel/.bbot/temp \
+            --cap-drop ALL --cap-add NET_RAW --cap-add SYS_CHROOT --security-opt seccomp=config/seccomp/playwright-chromium.json --hostname ci-bbot-deep \
+            --entrypoint python3 cvengine-sentinel-local:ci /opt/sentinel/scripts/ci_bbot_deep_start.py 2>&1 | tail -n 12
       - name: no-new-privileges stops the raw-socket scans (why it is not set), and the scan works without it
         run: |
           scan() { docker run --rm --cap-drop ALL --cap-add NET_RAW "$@" --entrypoint nmap cvengine-sentinel-local:ci -sS -Pn -n -p 22 127.0.0.1; }
