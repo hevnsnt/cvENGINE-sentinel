@@ -1,11 +1,20 @@
 #!/bin/sh
-# Update this Sentinel from its git checkout: fast-forward to origin/main, pull and build the new images while the old Sentinel keeps working, then
-# drain running tasks, swap the stack and report how it went.
+# Update this Sentinel from its git checkout: fast-forward to the commit cvENGINE named, pull and build the new images while the old Sentinel keeps
+# working, then drain running tasks, swap the stack and report how it went.
 #
 #   scripts/update.sh            update when this Sentinel's self-update setting says so: Automatic always, Manual only when an administrator
-#                                pressed Update now, Off never (the setting is chosen in cvENGINE, or CVENGINE_SENTINEL_UPDATE here, which is a ceiling: a local off or manual caps what cvENGINE can ask for)
-#   scripts/update.sh --now      update whatever the setting says (a person typing it here; still drains running tasks first)
+#                                pressed Update now, Off never (the setting is chosen in cvENGINE, or CVENGINE_SENTINEL_UPDATE here, which is a ceiling: a local off or manual caps what cvENGINE can ask for).
+#                                It moves to the commit cvENGINE named in the heartbeat (the target) and to no other: with no target it refuses
+#   scripts/update.sh --now      update whatever the setting says (a person typing it here; still drains running tasks first). With no target from
+#                                cvENGINE it moves to the head of origin/<branch> and prints that this is trusted only as far as the repository is
+#   scripts/update.sh --to SHA   a person naming the commit (implies --now). It must be on origin/<branch>
+#   scripts/update.sh --allow-non-descendant   with --now or --to: a person may move to a commit that is not a descendant of the running one (a rollback)
 #   scripts/update.sh --check    only say whether an update is available and whether the setting wants it
+#
+# The target rules (scripts/update-target.sh): the commit must be in the history fetched from origin, reachable from origin/<branch> (a commit pushed
+# to another branch is not an update) and a descendant of the commit running now (no downgrade, no sideways move; only --allow-non-descendant by hand
+# lifts that one). After the checkout HEAD must equal the target before anything is built or restarted. Any refusal is reported to cvENGINE as a
+# failed update, exits non-zero and leaves the running Sentinel unchanged. Commits are not signature-checked in 1.4.0 (README.md, "What Automatic trusts").
 #
 # Run it by hand, from cron, or from the systemd timer scripts/install-updater.sh sets up, always as the user who owns this checkout (a root run
 # re-runs itself as that user). It runs on the Docker host and needs no access to the Docker socket from any container: it talks to the daemon
@@ -22,13 +31,23 @@ cd "$(dirname "$0")/.."
 
 NOW=0
 CHECK=0
-for arg in "$@"; do
-  case "$arg" in
+TO=""
+ALLOW_MOVE=0
+USAGE="usage: scripts/update.sh [--now|--check|--to COMMIT] [--allow-non-descendant]"
+while [ $# -gt 0 ]; do
+  case "$1" in
     --now) NOW=1 ;;
     --check) CHECK=1 ;;
-    *) echo "usage: scripts/update.sh [--now|--check]" >&2; exit 2 ;;
+    --to) [ $# -ge 2 ] || { echo "$USAGE" >&2; exit 2; }; TO=$2; NOW=1; shift ;;
+    --allow-non-descendant) ALLOW_MOVE=1 ;;
+    *) echo "$USAGE" >&2; exit 2 ;;
   esac
+  shift
 done
+if [ "$ALLOW_MOVE" = 1 ] && [ "$NOW" = 0 ]; then
+  echo "--allow-non-descendant is only for a person typing --now or --to by hand" >&2
+  exit 2
+fi
 
 DRAIN_TIMEOUT="${CVENGINE_SENTINEL_DRAIN_TIMEOUT:-1800}"
 case "$DRAIN_TIMEOUT" in
@@ -37,6 +56,8 @@ esac
 BRANCH="${CVENGINE_SENTINEL_BRANCH:-main}"
 MARKER=.deployed-commit
 say() { echo "$(date -u +%FT%TZ) update: $*"; }
+# shellcheck source=scripts/update-target.sh
+. ./scripts/update-target.sh
 ctl() { docker compose exec -T sentinel python3 -m client.control "$@"; }
 
 [ -e .git ] || { say "this is not a git checkout, so there is nothing to update from"; exit 1; }
@@ -92,8 +113,12 @@ cannot() {
 git fetch --quiet origin "$BRANCH" || cannot "git fetch from origin failed"
 ON=$(git symbolic-ref --short -q HEAD || true)
 [ "$ON" = "$BRANCH" ] || cannot "the checkout is on '${ON:-a detached HEAD}', not $BRANCH (git checkout $BRANCH)"
+# What is on the branch now. This is only what is AVAILABLE: the commit this run may move to is decided below (the server's named target).
 TARGET_FULL=$(git rev-parse "origin/$BRANCH")
 TARGET=$(git rev-parse --short=12 "origin/$BRANCH")
+AVAILABLE_FULL=$TARGET_FULL
+# The commit cvENGINE named in its last heartbeat answer (the daemon writes it to the status file; an older image has no such field, which reads as none).
+SERVER_TARGET=$(ctl status 2>/dev/null | sed -n 's/.*"target": "\([0-9a-f]\{7,40\}\)".*/\1/p' | head -n 1)
 
 # An install from before the marker existed counts as deployed at HEAD once the running Sentinel reports HEAD as its version.
 if [ ! -f "$MARKER" ] && ctl status 2>/dev/null | grep -q "\"version\": \"$CURRENT\""; then
@@ -101,7 +126,7 @@ if [ ! -f "$MARKER" ] && ctl status 2>/dev/null | grep -q "\"version\": \"$CURRE
 fi
 DEPLOYED=$(cat "$MARKER" 2>/dev/null || true)
 DEPLOYED_SHORT=$(printf '%s' "$DEPLOYED" | cut -c1-12)
-if [ "$DEPLOYED" = "$TARGET_FULL" ]; then
+if [ -z "$TO" ] && [ "$DEPLOYED" = "$TARGET_FULL" ]; then
   RESULT=ok
   DETAIL="up to date at $TARGET"
   say "up to date at $TARGET"
@@ -129,6 +154,31 @@ if [ "$WANTED" != yes ]; then
   exit 0
 fi
 
+# Which commit this run moves to, and why that is allowed. Nothing has been changed yet: a refusal leaves the running Sentinel as it is.
+if [ -n "$TO" ]; then
+  REQUESTED=$TO
+  WHY="you named it with --to"
+elif [ -n "$SERVER_TARGET" ]; then
+  REQUESTED=$SERVER_TARGET
+  WHY="cvENGINE named it as this Sentinel's target"
+elif [ "$NOW" = 1 ]; then
+  REQUESTED=$AVAILABLE_FULL
+  WHY="cvENGINE named no target, so this is the head of origin/$BRANCH, which you asked for with --now; it is trusted only as far as the repository is (commits are not signature-checked)"
+else
+  cannot "cvENGINE has not named a commit for this Sentinel to update to, and an Automatic or requested update moves only to the commit cvENGINE names, never to whatever is on origin/$BRANCH (a person can run scripts/update.sh --now)"
+fi
+TARGET=$(printf '%s' "$REQUESTED" | cut -c1-12)
+RUNNING_FULL=$(git rev-parse --verify --quiet "${DEPLOYED:-HEAD}^{commit}" 2>/dev/null || git rev-parse HEAD)
+check_update_target "$REQUESTED" "$BRANCH" "$ALLOW_MOVE" "$RUNNING_FULL" "$(git rev-parse HEAD)" || cannot "$REFUSAL"
+TARGET=$(git rev-parse --short=12 "$TARGET_FULL")
+if [ "$DEPLOYED" = "$TARGET_FULL" ] && [ "$(git rev-parse HEAD)" = "$TARGET_FULL" ]; then
+  RESULT=ok
+  DETAIL="up to date at $TARGET (the commit cvENGINE named)"
+  say "$DETAIL"
+  exit 0
+fi
+say "moving to $TARGET: $WHY"
+
 fail() {
   DETAIL="$1"
   say "FAILED: $1"
@@ -145,8 +195,14 @@ rollback() {
 
 if [ "$PREV" != "$TARGET_FULL" ]; then
   ctl report updating --phase code --detail "fast-forwarding to $TARGET" --from "$CURRENT" --to "$TARGET" 2>/dev/null || true
-  git merge --ff-only --quiet "origin/$BRANCH" || fail "this checkout cannot fast-forward to origin/$BRANCH" code
+  if git merge-base --is-ancestor "$PREV" "$TARGET_FULL"; then
+    git merge --ff-only --quiet "$TARGET_FULL" || fail "this checkout cannot fast-forward to $TARGET" code
+  else
+    git reset --hard --quiet "$TARGET_FULL" || rollback "this checkout cannot move to $TARGET" code  # only --allow-non-descendant gets here
+  fi
 fi
+# The checkout must be exactly the commit that was approved before anything is built or restarted from it.
+[ "$(git rev-parse HEAD)" = "$TARGET_FULL" ] || rollback "after the checkout HEAD is not the target $TARGET, so nothing was built or restarted" code
 ctl report updating --phase images --detail "pulling images" --from "$CURRENT" --to "$TARGET" 2>/dev/null || true
 docker compose pull --quiet --ignore-buildable || rollback "docker compose pull failed" images
 ctl report updating --phase build --detail "building the new Sentinel image" --from "$CURRENT" --to "$TARGET" 2>/dev/null || true

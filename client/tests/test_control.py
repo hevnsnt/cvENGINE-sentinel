@@ -87,6 +87,15 @@ class StatusTests(Base):
         self.assertEqual(control.read_status()['in_flight'], 0)
 
 
+class TargetTests(Base):
+    def test_the_commit_the_server_named_is_written_for_the_updater_and_nothing_else_is(self):
+        control.write_status('v1', 0, {'requested': True, 'target': 'ABCDEF1234567890abcdef1234567890abcdef12'})
+        self.assertEqual(control.read_status()['target'], 'abcdef1234567890abcdef1234567890abcdef12')
+        for bad in ('main', 'origin/main; rm -rf /', '', None, 12, 'abc'):
+            control.write_status('v1', 0, {'requested': True, 'target': bad})
+            self.assertIsNone(control.read_status()['target'], bad)
+
+
 class UpdateReportTests(Base):
     def test_progress_is_recorded_and_validated(self):
         control.record_update('draining', 'drain', '1 task running', 'abc', 'def')
