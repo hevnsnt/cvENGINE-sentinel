@@ -81,7 +81,9 @@ class StatusTests(Base):
             while not seen and time.monotonic() < deadline:
                 time.sleep(0.01)
             gate.set()
-            while d._active_count() and time.monotonic() < deadline:
+            # wait on the condition, not on the clock: the task is counted out before its status line is written, so a slow runner read 1 here
+            done = time.monotonic() + 10
+            while (d._active_count() or control.read_status()['in_flight']) and time.monotonic() < done:
                 time.sleep(0.01)
         self.assertEqual(seen, [1])
         self.assertEqual(control.read_status()['in_flight'], 0)
