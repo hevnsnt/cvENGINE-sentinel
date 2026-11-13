@@ -147,7 +147,7 @@ jobs:
       # (scripts/ci_scan_smoke.sh starts a web server and a TLS server there). This is the regression run for the capability set and the read-only root:
       # a tool that needs a capability the service dropped, or writes where it may not, fails here. docker compose run uses the service definition itself
       # (--no-deps leaves out the OpenVAS stack and the one-shot that hands over the state volume, whose ownership the image already sets).
-      - name: Where the tools write (informational, root left writable): docker diff after the same scans
+      - name: Where the tools write (informational, root left writable), by docker diff after the same scans
         continue-on-error: true
         run: |
           docker run --name write-set --cap-drop ALL --cap-add NET_RAW --security-opt seccomp=config/seccomp/playwright-chromium.json -v "$PWD/scripts/ci_scan_smoke.sh:/ci/smoke.sh:ro" -v "$PWD/client/tests:/opt/sentinel/client/tests:ro" --entrypoint sh cvengine-sentinel-local:ci -c '/ci/smoke.sh; python3 -m unittest client.tests.test_daemon client.tests.test_control client.tests.test_spool client.tests.test_templates client.tests.test_badkeys client.tests.test_secrets_scan client.tests.test_shot_browser 2>&1 | tail -n 5' || true
