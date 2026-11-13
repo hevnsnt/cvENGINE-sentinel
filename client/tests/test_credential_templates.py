@@ -55,10 +55,10 @@ class ListTests(Library):
     def test_a_template_that_cannot_be_read_or_parsed_is_on_the_list_apart(self):
         broken = os.path.join(self.dir, 'http', 'broken.yaml')
         with open(broken, 'w') as handle:
-            handle.write('id: [unclosed token\n  authorization: {\n')
+            handle.write('id: [unclosed\nhttp:\n  - headers:\n      Authorization: {\n')
         self.assertEqual(ct.compute(self.dir), ([self.basic], [broken]))
-        with mock.patch.object(ct, 'MAX_INSTALLED_BYTES', 100):  # over the ceiling: cannot be judged
-            credential, unreadable = ct.compute(self.dir)
+        with mock.patch.object(ct, 'MAX_INSTALLED_BYTES', 100):  # over the ceiling: cannot be judged (in process: the child has its own ceiling)
+            credential, unreadable = ct.scan(self.dir)
         self.assertEqual(credential, [])
         self.assertIn(self.basic, unreadable)
 
@@ -116,7 +116,7 @@ class RunTests(Library):
 
     def test_unreadable_templates_are_counted_apart(self):
         with open(os.path.join(self.dir, 'http', 'broken.yaml'), 'w') as handle:
-            handle.write('id: [unclosed token\n  authorization: {\n')
+            handle.write('id: [unclosed\nhttp:\n  - headers:\n      Authorization: {\n')
         result, seen = self.run_web()
         self.assertEqual(result['cuts'], [{'what': 'templates_with_credentials', 'kind': 'items', 'limit': 0, 'dropped': 1},
                                           {'what': 'templates_unreadable', 'kind': 'items', 'limit': 0, 'dropped': 1}])
@@ -168,3 +168,78 @@ class WarmTests(Library):
     def test_the_start_never_raises(self):
         with mock.patch.object(ct, 'lists_for', side_effect=RuntimeError('boom')):
             tools.warm_credential_templates()
+
+
+class PrefilterTests(unittest.TestCase):
+    def test_every_template_the_rule_flags_passes_the_prefilter(self):
+        """The prefilter is a superset: it is built from the rule's own tables, and a template the rule flags is never skipped."""
+        import json
+        from cvengine_scanner import checks, contract
+        corpus = json.loads((contract.FIXTURES / 'checks' / 'corpus.json').read_text(encoding='utf-8'))['cases']
+        flagged = 0
+        for case in corpus:
+            text = case['template']
+            if 'sends a credential' in checks.credential_problem(text):
+                flagged += 1
+                self.assertTrue(checks.might_send_credential(text.encode()), case['name'])
+        self.assertGreaterEqual(flagged, 8)
+
+    def test_variations_of_a_flagged_template_all_pass(self):
+        from cvengine_scanner import checks
+        for text in (BASIC, BASIC.replace('Authorization', 'authorization'), BASIC.replace('headers:', '"headers" :'), BASIC.upper(),
+                     BASIC.replace('Authorization', 'X-Auth-Token'), BASIC.replace('Authorization', 'Proxy-Authorization'),
+                     "http:\n  - headers: {Cookie: 'sid=abc123'}\n", "http:\n  - raw:\n      - |\n        GET / HTTP/1.1\n        Cookie: sid=abc\n",
+                     "http:\n  - path: ['http://admin:admin@{{Hostname}}/']\n"):
+            with self.subTest(text=text[:60]):
+                self.assertTrue(checks.might_send_credential(text.encode()))
+
+    def test_the_prefilter_skips_what_cannot_be_flagged(self):
+        from cvengine_scanner import checks
+        self.assertFalse(checks.might_send_credential(PLAIN.encode()))
+        self.assertFalse(checks.might_send_credential(b"info:\n  author: someone\nhttp:\n  - matchers:\n      - type: word\n        part: raw\n        words: [token]\n"))
+
+    def test_a_template_the_prefilter_skips_is_never_parsed(self):
+        with mock.patch('cvengine_scanner.checks.credential_problem', side_effect=AssertionError('parsed')):
+            with tempfile.TemporaryDirectory() as directory:
+                with open(os.path.join(directory, 'plain.yaml'), 'w') as handle:
+                    handle.write(PLAIN)
+                self.assertEqual(ct.scan(directory), ([], []))
+
+
+class ChildTests(Library):
+    def test_the_child_gives_the_same_answer_as_the_in_process_scan(self):
+        self.assertEqual(ct.compute(self.dir), ct.scan(self.dir))
+
+    def test_a_file_that_kills_the_child_is_unreadable_and_the_rest_goes_on(self):
+        fake = os.path.join(self.home.name, 'fake_child.py')
+        with open(fake, 'w') as handle:  # parses nothing: says it begins the file named 'basic', dies there, and judges the others
+            handle.write("import os, sys\nsys.path.insert(0, %r)\nfrom client import credential_templates as ct\n"
+                         "after = sys.argv[sys.argv.index('--after') + 1] if '--after' in sys.argv else None\n"
+                         "def emit(kind, path):\n    sys.stdout.write(kind + '\\t' + path + '\\n'); sys.stdout.flush()\n"
+                         "    if kind == 'P' and path.endswith('basic.yaml'):\n        os._exit(9)\n"
+                         "ct.scan(sys.argv[sys.argv.index('--scan') + 1], after, emit)\nprint('END\\t')\n" % os.getcwd())
+        with open(os.path.join(self.dir, 'http', 'zlast.yaml'), 'w') as handle:
+            handle.write(BASIC.replace('planted-basic', 'zlast'))
+        with mock.patch.object(ct, '_child_command', lambda directory, after: [os.sys.executable, fake, '--scan', directory] + (['--after', after] if after else [])):
+            credential, unreadable = ct.compute(self.dir)
+        self.assertEqual(unreadable, [self.basic])  # the one that killed it
+        self.assertEqual(credential, [os.path.join(self.dir, 'http', 'zlast.yaml')])  # the scan went on after it
+
+    def test_a_child_that_fails_before_any_file_means_cannot_compute(self):
+        with mock.patch.object(ct, '_child_command', lambda directory, after: [os.sys.executable, '-c', 'import sys; sys.exit(3)']):
+            with self.assertRaises(ct.CredentialListError):
+                ct.compute(self.dir)
+
+    def test_a_child_that_takes_too_long_is_killed_and_the_list_cannot_be_made(self):
+        with mock.patch.object(ct, 'SCAN_SECONDS', 1), mock.patch.object(ct, '_child_command', lambda directory, after: [os.sys.executable, '-c', 'import time; time.sleep(30)']):
+            with self.assertRaises(ct.CredentialListError):
+                ct.compute(self.dir)
+
+    def test_a_candidate_too_big_for_the_childs_memory_limit_is_unreadable_not_a_crash(self):
+        big = os.path.join(self.dir, 'http', 'big-header.yaml')
+        with open(big, 'w') as handle:
+            handle.write(BASIC.replace('planted-basic', 'big-header') + 'variables:\n' + ''.join(f'  key{i}: value-number-{i}\n' for i in range(400_000)))
+        with mock.patch.object(ct, 'SCAN_MEMORY_MB', 128):
+            credential, unreadable = ct.compute(self.dir)
+        self.assertIn(self.basic, credential)  # the small ones are still judged
+        self.assertIn(big, unreadable)

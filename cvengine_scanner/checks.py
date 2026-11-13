@@ -183,9 +183,15 @@ def _parse(text, max_bytes=MAX_TEMPLATE_BYTES):
 # A literal credential a template sends (TL-2, item 3): a header whose name says it authenticates (Authorization, Cookie, X-Api-Key, a token...) with a value
 # the template itself fixes, or a URL with a user name in it. A value made only of placeholders ({{token}}: what a signed-in run or an extractor supplies) is
 # not literal. Mirrored by cveFeed.validation.credential_problem on the server; both are tested against ``fixtures/checks/corpus.json``.
-_CRED_HEADER = re.compile(r'(?i)^(?:proxy-)?authorization$|^cookie2?$|auth|token|secret|passw|api[-_]?key|session|credential|jwt|csrf|xsrf|signature|bearer')
+# The tables ``credential_problem`` acts on, and the only source of ``might_send_credential``'s prefilter: a change here changes both.
+CREDENTIAL_HEADER_PATTERNS = ('^(?:proxy-)?authorization$', '^cookie2?$', 'auth', 'token', 'secret', 'passw', 'api[-_]?key', 'session', 'credential', 'jwt', 'csrf',
+                              'xsrf', 'signature', 'bearer')  # what makes a header name one that authenticates
+CREDENTIAL_HEADERS_KEY = 'headers'  # the block key whose mapping is a request's headers
+CREDENTIAL_RAW_KEY = 'raw'  # the block key whose strings are raw requests (header lines after the request line)
+CREDENTIAL_URL_KEYS = ('path', 'raw', 'host', 'address', 'url')  # the keys whose strings are looked at for a user name in a URL
+_CRED_HEADER = re.compile('(?i)' + '|'.join(CREDENTIAL_HEADER_PATTERNS))
 _AUTH_SCHEME = re.compile(r'(?i)\b(?:bearer|basic|digest|negotiate|ntlm|token|apikey)\b')
-_USERINFO = re.compile(r'(?i)[a-z][a-z0-9+.-]*://[^/\s?#]*@')
+_USERINFO = re.compile(r'(?i)[a-z0-9+.-]://[^/\s?#]*@')  # one scheme character before ://, so a long run of letters is not rescanned from every position
 _PLACEHOLDER = re.compile(r'\{\{\s*([^}]*?)\s*\}\}')
 
 
@@ -207,6 +213,26 @@ def _literal_credential_header(name, value, literal_names):
     return bool(re.search(r'[A-Za-z0-9]', _AUTH_SCHEME.sub('', text)))
 
 
+def _bytes_pattern(pattern):
+    return pattern.replace('^', '').replace('$', '').encode()
+
+
+_BLOCK_KEYS_BYTES = tuple(k.encode() for k in (CREDENTIAL_HEADERS_KEY, CREDENTIAL_RAW_KEY))
+_KEY_BYTES = re.compile(rb'["\']?\b(?:' + rb'|'.join(re.escape(k) for k in _BLOCK_KEYS_BYTES) + rb')["\']?\s*:')  # matched on lower-case bytes
+_WORD_BYTES = re.compile(rb'|'.join(_bytes_pattern(p).lower() for p in CREDENTIAL_HEADER_PATTERNS))  # likewise
+_USERINFO_BYTES = re.compile(_USERINFO.pattern.encode(), re.IGNORECASE)
+
+
+def might_send_credential(raw):
+    """Whether the bytes of a template could be flagged by ``credential_problem``: a cheap superset test that needs no YAML parse. The rule only reads the headers
+    of a ``headers`` mapping and of a ``raw`` request (a header name that matches ``CREDENTIAL_HEADER_PATTERNS``) and URLs with a user name, so a text with
+    no such key or none of those words, and no ``://user@``, cannot be flagged. Built from the rule's own tables; ``True`` means "parse it", never "it is flagged"."""
+    low = raw.lower()
+    if b'://' in low and b'@' in low and _USERINFO_BYTES.search(low):
+        return True
+    return any(k in low for k in _BLOCK_KEYS_BYTES) and bool(_KEY_BYTES.search(low) and _WORD_BYTES.search(low))
+
+
 def credential_problem(text, max_bytes=MAX_TEMPLATE_BYTES):
     """Why a template sends a credential of its own, or ``''``: a header that authenticates (Authorization, Cookie, an API key, a token...) with a fixed value
     in the ``headers`` of a block or in a raw request, or a URL with a user name in it (``http://admin:admin@{{Hostname}}``). A value made only of placeholders is
@@ -220,7 +246,7 @@ def credential_problem(text, max_bytes=MAX_TEMPLATE_BYTES):
 
     def walk(node, key=''):
         if isinstance(node, dict):
-            if str(key).lower() == 'headers':
+            if str(key).lower() == CREDENTIAL_HEADERS_KEY:
                 for name, value in node.items():
                     if _literal_credential_header(name, value, literal_names):
                         return f'{refuse} (the {str(name)[:40]} header has a fixed value)'
@@ -234,9 +260,9 @@ def credential_problem(text, max_bytes=MAX_TEMPLATE_BYTES):
                 if found:
                     return found
         elif isinstance(node, str):
-            if str(key).lower() in ('path', 'raw', 'host', 'address', 'url') and _USERINFO.search(node):
+            if str(key).lower() in CREDENTIAL_URL_KEYS and _USERINFO.search(node):
                 return f'{refuse} (a URL with a user name in it)'
-            if str(key).lower() == 'raw':
+            if str(key).lower() == CREDENTIAL_RAW_KEY:
                 lines = node.strip().splitlines()
                 for line in lines[1:]:
                     if not line.strip():
