@@ -58,9 +58,10 @@ run() {
   tail -n 15 "$work/$name.txt"
   [ "$RC" = 0 ] || { echo "--- the whole output of $name:"; head -n 120 "$work/$name.txt"; }
   echo "--- $name exit status $RC"
-  if grep -Eqi 'read-only file system|EROFS|permission denied|operation not permitted' "$work/$name.txt"; then
+  grep -v "Failed to create directory at /home/sentinel/.bbot/tools" "$work/$name.txt" > "$work/$name.checked"  # bbot probes its baked tools directory for write access; it is not needed
+  if grep -Eqi 'read-only file system|EROFS|permission denied|operation not permitted' "$work/$name.checked"; then
     fail "$name: it could not write or use something it needs (see the lines above)"
-    grep -Ei 'read-only file system|EROFS|permission denied|operation not permitted' "$work/$name.txt" | head -n 5
+    grep -Ei 'read-only file system|EROFS|permission denied|operation not permitted' "$work/$name.checked" | head -n 5
   fi
 }
 
@@ -86,13 +87,17 @@ grep -q '18080' "$work/naabu.txt" || fail "naabu's SYN scan did not find the ope
 # cannot write beside the read-only templates, so the list is kept under ~/.cache/cvengine-sentinel, which must be writable.
 run credtemplates 300 python3 -c "import logging, sys; logging.basicConfig(level=logging.INFO, stream=sys.stdout); from client import tools; tools._credential_exclusion(None)"
 [ "$RC" = 0 ] || fail "the credential-template list could not be made (exit $RC)"
-ls "$HOME"/.cache/cvengine-sentinel/credential-templates-*.json "$HOME"/nuclei-templates/.cvengine-credential-templates.json >/dev/null 2>&1 || fail "the credential-template list was kept nowhere"
+{ ls "$HOME"/.cache/cvengine-sentinel/credential-templates-*.json || ls "$HOME"/nuclei-templates/.cvengine-credential-templates.json; } >/dev/null 2>&1 || fail "the credential-template list was kept nowhere"
 echo "--- nuclei's config directory before it runs:"; ls -la "$HOME/.config/nuclei" 2>&1 | head; ls -ld "$HOME/nuclei-templates" "$HOME/nuclei-templates/http/technologies" 2>&1
 run nuclei 240 nuclei -u http://127.0.0.1:18080 -tags tech -jsonl -silent -duc -ni -nc -rl 150 -c 40 -timeout 10 -retries 1
 if [ "$RC" != 0 ]; then
   fail "nuclei exited $RC"
   echo "--- nuclei again, verbose:"; timeout 120 nuclei -u http://127.0.0.1:18080 -tags tech -duc -ni -nc -v -jsonl 2>&1 | grep -v '^{' | head -n 60
   ls -laR "$HOME/.config/nuclei" "$HOME/.cache/nuclei" 2>&1 | head -n 30
+  echo "--- variant: NUCLEI_TEMPLATES_DIR"; NUCLEI_TEMPLATES_DIR="$HOME/nuclei-templates" timeout 120 nuclei -u http://127.0.0.1:18080 -tags tech -duc -ni -nc -silent -jsonl 2>&1 | cut -c1-160 | head -n 5
+  echo "--- variant: -ud"; timeout 120 nuclei -ud "$HOME/nuclei-templates" -u http://127.0.0.1:18080 -tags tech -duc -ni -nc -silent -jsonl 2>&1 | cut -c1-160 | head -n 5
+else
+  echo "--- nuclei's templates config after a run that worked:"; cat "$HOME/.config/nuclei/.templates-config.json" 2>&1 | head -n 20
 fi
 run wpscan 300 wpscan --url http://127.0.0.1:18080 --no-banner --disable-tls-checks -f json -o "$work/wpscan.json"
 run wafw00f 120 wafw00f http://127.0.0.1:18080
@@ -106,6 +111,8 @@ run sshamble 60 sshamble scan --help
 [ "$RC" = 0 ] || fail "sshamble exited $RC"
 run bbot 600 python3 /opt/sentinel/scripts/ci_bbot_start.py
 [ "$RC" = 0 ] || fail "the bbot start check exited $RC"
+run bbot-deep 120 python3 /opt/sentinel/scripts/ci_bbot_deep_start.py  # a real scan of example.com for ten seconds, as the existing CI step runs it
+[ "$RC" = 0 ] || fail "the deep bbot start check exited $RC"
 run control 30 python3 -m client.control status
 [ "$RC" = 0 ] || fail "client.control status exited $RC"
 
