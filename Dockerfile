@@ -330,11 +330,12 @@ RUN h="$(cat /tmp/gitmeta/HEAD 2>/dev/null || true)"; v=""; \
     printf '%s' "$v" | tr -cd '0-9a-f' | cut -c1-12 > /opt/sentinel/VERSION; rm -rf /tmp/gitmeta
 
 # Raw sockets for an unprivileged user: file capabilities on exactly the two tools that send raw packets (nmap's SYN scan, OS detection and ARP
-# discovery, naabu's SYN scan). They only take effect because the container is given NET_RAW and NET_ADMIN (docker-compose.yml); no other process in
-# the image holds any capability. NMAP_PRIVILEGED tells nmap to use them although it does not run as root.
+# discovery, naabu's SYN scan). They only take effect because the container is given NET_RAW (docker-compose.yml drops every other capability, NET_ADMIN
+# included: a file capability the container's bounding set lacks makes the program fail to start, so the file asks for NET_RAW alone); no other
+# process in the image holds any capability. NMAP_PRIVILEGED tells nmap to use them although it does not run as root.
 RUN apt-get update -y && apt-get install -y --no-install-recommends libcap2-bin && rm -rf /var/lib/apt/lists/* \
-    && setcap cap_net_raw,cap_net_admin+eip /usr/local/bin/nmap \
-    && setcap cap_net_raw,cap_net_admin+eip /usr/local/bin/naabu \
+    && setcap cap_net_raw+eip /usr/local/bin/nmap \
+    && setcap cap_net_raw+eip /usr/local/bin/naabu \
     && getcap /usr/local/bin/nmap /usr/local/bin/naabu
 ENV NMAP_PRIVILEGED=1 \
     HOME=/home/sentinel
