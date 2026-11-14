@@ -773,8 +773,8 @@ the Sentinels page shows. An image built from a download with no `.git` reports 
 Every push to `main` and every `v*` tag builds the image for amd64 and arm64 and pushes it to `ghcr.io/hevnsnt/cvengine-sentinel`
 (`.github/workflows/publish.yml`), with an SBOM and build provenance attached to each platform. It is tagged `sha-<version>` (the
 12-character commit the client reports), `main` for the newest build of `main`, and `X.Y.Z` and `X.Y` for a tag `vX.Y.Z`; the run's summary
-prints the digest. cvENGINE's built-in scanner pins this image by digest (`scanner.lock.json` in the cvENGINE repository), so a tag moving
-never changes what an install runs. A tag cut by the *Tag a release* workflow does not start this one (GitHub never starts a workflow for
+prints the digest. cvENGINE's built-in scanner follows the moving `main` tag (`ghcr.io/hevnsnt/cvengine-sentinel:main`); `scanner.lock.json` in the cvENGINE
+repository is only the known-good floor (a commit, a contract version and a digest for provenance), not a pin. A tag cut by the *Tag a release* workflow does not start this one (GitHub never starts a workflow for
 an event its own token made), so publish such a tag with Actions, Publish, Run workflow on the tag. A Sentinel set up with `setup.sh` still
 builds its own image from this checkout.
 
@@ -803,7 +803,7 @@ unless the run ticks `tools_reviewed` after someone looked at the newer version 
 ## The built-in scanner
 
 cvENGINE runs this image next to the server as its built-in scanner, shown as **CVEngine Scanner** (the `scanner` service of cvENGINE's own
-`docker-compose.yml`, pinned there by digest). It is a Sentinel like any other, with `CVENGINE_SENTINEL_BUILTIN=1`, which changes these things:
+`docker-compose.yml`, which runs the moving `main` tag; `scanner.lock.json` there names the floor). It is a Sentinel like any other, with `CVENGINE_SENTINEL_BUILTIN=1`, which changes these things:
 
 - **Name and updates.** It is always called CVEngine Scanner, and its self-update setting is always `off`: cvENGINE's updater replaces its image,
   and rolls back to the previous image if the new one does not heartbeat.
@@ -814,8 +814,8 @@ cvENGINE runs this image next to the server as its built-in scanner, shown as **
   file to change. The blob is never logged.
 - **It restarts itself when its heartbeats stop.** When none has reached the server for 180 seconds it stops with exit code 3, and compose
   (`restart: unless-stopped`) starts a fresh process. Docker never restarts a container only because its health check fails.
-- **What it reports.** `info.builtin = true` and `info.features` (`secret_read`, `vantage`). The server decides from the enrollment whether a
-  Sentinel is its built-in scanner, never from this; the features tell it this image can do the two things below.
+- **What it reports.** `info.builtin = true` and `info.features` (`secret_read`, `vantage`, `credential_filter`). The server decides from the enrollment whether a
+  Sentinel is its built-in scanner, never from this; the features tell it this image can do the things below. `credential_filter` (every Sentinel, not only this one) tells the server this client leaves checks that send credentials out of a nuclei web run; a server that has those checks off gives nuclei web work only to a Sentinel that declares it.
 - **Signed-in nuclei.** A nuclei task marked `signed_in` names a stored sign-in. Only the built-in scanner runs it: it reads the credential once with
   `POST /api/v1/sentinel/tasks/<id>/secret`, writes it as a nuclei secrets file (mode 600, in a private directory on `/dev/shm`), runs nuclei with
   `-sf` and `-dr` (no redirects), then overwrites and removes the file. Any value of it that a finding echoes is replaced by `***`. Every other
@@ -884,14 +884,8 @@ Or, without a local clone, run the **Tag a release** workflow (Actions, `tag-rel
 of `main` to tag. It refuses a tag that is not `vMAJOR.MINOR.PATCH`, a commit that is not on `main`, and a tag that already exists.
 
 Use `vMAJOR.MINOR.PATCH`. Raise MAJOR when a function the server calls changes or goes away, and MINOR for a new kind or
-function. A tag is never moved or reused. The server pins the tag in its `web/requirements.txt`, and its Docker build and its
+function. A tag is never moved or reused. The server does not pin a tag. Its `web/requirements.txt` pins a **commit sha of `main`** (cvENGINE 1.4.0 pins `5ac80a23b43f`), and its Docker build and its
 CI both install it from there:
-
-```
-cvengine-scanner @ git+https://github.com/hevnsnt/cvENGINE-sentinel@v1.4.0
-```
-
-The server now pins a **commit sha of `main`** instead (a tag is a release and needs the owner's approval; a sha is not a version change):
 
 ```
 cvengine-scanner @ git+https://github.com/hevnsnt/cvENGINE-sentinel@<40 character sha of a main commit>
