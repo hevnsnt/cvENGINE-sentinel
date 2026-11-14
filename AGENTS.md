@@ -23,6 +23,8 @@ cover:
 | One organization (every project, present and future) | `org` (its slug)     | `GET /api/v1/orgs/{slug}/sentinels/enroll?format=blob`     | admin of that organization                |
 | The whole instance                                   | neither              | `GET /api/v1/sentinels/enroll?format=blob`                 | App Admin (superuser)                     |
 
+A token (MCP or REST) cannot make an enrollment for an `internal` network on a cvENGINE 1.4.0 server; that is a person's decision, made on the **Sentinels** page. A token makes external enrollments only, so do not choose `--internal` for a blob you made this way; if the machine is inside a private network, ask a person to provision it.
+
 Give at most one of `project` and `org`. `list_projects` and `whoami` tell you which level you qualify for; if none,
 say so and ask a human or another agent who does.
 
