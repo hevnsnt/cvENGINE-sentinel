@@ -190,8 +190,11 @@ used again, even if a copy of the `sentinel-state` volume survives somewhere.
 
 ### Revoked token
 
-When cvENGINE answers 401 or 403, the Sentinel logs `this Sentinel's token was revoked or is invalid; stopping` and
-exits with status 1. Docker's restart policy (`unless-stopped`) then restarts it, and it stops again each time.
+When cvENGINE answers 401, or 403 with `"code": "token_revoked"` (or a message saying the token is revoked or invalid),
+the Sentinel logs `this Sentinel's token was revoked or is invalid; stopping` and exits with status 1. A Sentinel that
+cvENGINE holds instead (pending approval, suspended, or a 403 `"code": "agent_blocked"` / "no work can be assigned" for
+an active agent whose user is disabled, whose token is read only or expired, or whose user must set up MFA) keeps its
+token, logs the server's reason once and keeps heartbeating and polling until that is fixed in cvENGINE: do not re-enroll it. Docker's restart policy (`unless-stopped`) then restarts it, and it stops again each time.
 Restarting does not help: provision it again. Delete only the saved token (the same volume holds the GVM login,
 which you want to keep), put a new blob in `.env`, and start it:
 
@@ -633,7 +636,8 @@ prefer to wait longer per run, or lower it to drain for shorter periods.
 
 Every run records when it ran and its result (`ok`, `waiting`, `off`, `updated` or `failed`, with a detail) in the
 state volume, and the Sentinel reports it with its heartbeat. During a run the page also shows the update's progress
-(`waiting`, `draining`, `updating`, `done` or `failed`).
+(`waiting`, `draining`, `updating`, `done` or `failed`). A Sentinel that starts with an update still marked `updating` or
+`draining` (it left with code 76, or an updater died) records `done` when it runs the target build, else `failed` with the reason.
 
 | Updater state                    | What it means                                                                                                                                                          | What to do                                                                                                                                               |
 | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
