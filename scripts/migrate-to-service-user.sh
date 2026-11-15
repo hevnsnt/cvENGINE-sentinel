@@ -6,20 +6,23 @@
 #   --from DIR   the install to move (default: the checkout this script is in)
 #   --dir DIR    where it goes (default /opt/cvengine-sentinel; not under /root)
 #   --old-project-name NAME
-#                the Docker Compose project name the old install really uses, for an install whose directory is not called `cvengine-sentinel`
-#                (see `docker volume ls`: the volume is NAME_sentinel-state). The new install keeps that name, so its volumes still match.
+#                override the Docker Compose project name this script works out for the old install (COMPOSE_PROJECT_NAME in its .env, else its
+#                directory name lower-cased with other characters removed). The volume is NAME_sentinel-state (see `docker volume ls`).
+#   --allow-no-volume
+#                continue although no NAME_sentinel-state volume exists (only for a Sentinel that never started)
 #   --updater    install the updater at the new place even if the old install had none (by default it is reinstalled only if one was there)
 #   --wait N     wait up to N seconds (default 300) for the container to report healthy
 #   --dry-run    print the plan and run only read-only checks
 #
-# What it does, in order: checks the project name against the Docker volumes; creates the `cvengine` user (the same code as install.sh) and adds it
+# What it does, in order: works out the Compose project name and checks its volume exists; creates the `cvengine` user (the same code as install.sh) and adds it
 # to the docker group; `docker compose down` in the old directory (never with -v: the volumes sentinel-state, sentinel-badkeys and the OpenVAS ones,
 # which hold the Sentinel's token, are untouched); moves the checkout, keeping .env, docker-compose.override.yml and every untracked file; chowns it
 # to cvengine:cvengine; `docker compose up -d` as cvengine; reinstalls the updater (new path, User=cvengine; a cron.d entry for the old path goes);
 # waits for the container to report healthy; prints a before and after summary.
 #
-# The Sentinel stays enrolled because the volumes are found by the compose project name, which this script keeps the same. It refuses, before changing
-# anything, when the old directory's name would give a different project name than the new install, unless you pass --old-project-name.
+# The Sentinel stays enrolled because the volumes are found by the compose project name, which this script keeps the same: when the new directory's
+# name would give another project name, it writes COMPOSE_PROJECT_NAME=<old name> into the moved .env. It refuses, before changing anything, only when
+# no NAME_sentinel-state volume exists for that name, so it never starts a fresh, unenrolled stack silently.
 # Running it again after an interruption continues where it stopped (a checkout already in the new place is not moved again).
 #
 # What this does NOT do: cvengine is in the docker group, which is equivalent to root on this machine. See README.md, "Security model".
@@ -36,12 +39,13 @@ unset CVENGINE_INSTALL_LIB_ONLY
 UNITS="$PREFIX/etc/systemd/system"
 CRON="$PREFIX/etc/cron.d/cvengine-sentinel-update"
 
-src="$HERE" dest="$DEFAULT_DIR" given_old_name="" force_updater=0 dry=0 wait_secs=300
+src="$HERE" dest="$DEFAULT_DIR" given_old_name="" allow_fresh=0 force_updater=0 dry=0 wait_secs=300
 while [ $# -gt 0 ]; do
   case "$1" in
     --from) src="${2:?--from needs a value}"; shift 2 ;;
     --dir) dest="${2:?--dir needs a value}"; shift 2 ;;
     --old-project-name) given_old_name="${2:?--old-project-name needs a value}"; shift 2 ;;
+    --allow-no-volume) allow_fresh=1; shift ;;
     --updater) force_updater=1; shift ;;
     --wait) wait_secs="${2:?--wait needs a value}"; shift 2 ;;
     --dry-run) dry=1; shift ;;
@@ -74,30 +78,21 @@ fi
 env_value() { [ -f "$cur/.env" ] && sed -n "s/^$1=//p" "$cur/.env" | tail -n 1 | tr -d '"'"'" || true; }
 env_name=$(env_value COMPOSE_PROJECT_NAME)
 
-# --- the project name guard: the volumes are called <project>_sentinel-state, so the name decides whether the token is found again ---
+# --- the project name: the volumes are called <project>_sentinel-state, so keeping the name is what keeps the token ---
 old_name="${given_old_name:-${env_name:-$(svc_project_name_of "$src")}}"
 if [ -n "$given_old_name" ] && [ -n "$env_name" ] && [ "$given_old_name" != "$env_name" ]; then
   die "--old-project-name $given_old_name disagrees with COMPOSE_PROJECT_NAME=$env_name in $cur/.env; one of them is wrong (docker volume ls shows the real name)"
 fi
-write_name=""  # a COMPOSE_PROJECT_NAME line to add to .env
-if [ -n "$env_name" ]; then
-  new_name="$env_name"
-elif [ "$old_name" = "$PROJECT_NAME" ]; then
-  new_name="$PROJECT_NAME"
-elif [ -n "$given_old_name" ]; then
-  new_name="$given_old_name"; write_name="$given_old_name"
-else
-  die "the old directory '$(basename "$src")' gives the Compose project name '$old_name', but the new install uses '$PROJECT_NAME', so it would not find this Sentinel's volumes (${old_name}_sentinel-state) and would enroll again from scratch. Nothing was changed. Run: docker volume ls | grep sentinel-state   to confirm the name, then pass it: --old-project-name $old_name"
-fi
-# A name that differs from what the new directory's own name would give must be written down, or a plain `docker compose` there would pick another one.
-if [ -z "$env_name" ] && [ -z "$write_name" ] && [ "$(svc_project_name_of "$dest")" != "$new_name" ]; then write_name="$new_name"; fi
+new_name="$old_name"  # the project does not change
+write_name=""  # a COMPOSE_PROJECT_NAME line to add to .env, when the new directory's own name would give another project
+if [ -z "$env_name" ] && [ "$(svc_project_name_of "$dest")" != "$old_name" ]; then write_name="$old_name"; fi
 
 if docker volume inspect "${old_name}_sentinel-state" >/dev/null 2>&1; then
-  say "Found the volume ${old_name}_sentinel-state: the Sentinel's token is kept."
-elif [ -n "$given_old_name" ]; then
-  die "--old-project-name $old_name was given, but there is no Docker volume ${old_name}_sentinel-state; check the name with: docker volume ls | grep sentinel-state"
+  say "Found the volume ${old_name}_sentinel-state: the Sentinel's token is kept (Compose project $old_name)."
+elif [ "$allow_fresh" = 1 ]; then
+  say "note: no volume ${old_name}_sentinel-state exists; continuing because of --allow-no-volume (the Sentinel will start unenrolled unless its .env still holds a blob)."
 else
-  say "note: no volume ${old_name}_sentinel-state exists (this Sentinel never started, or it was not enrolled here); continuing."
+  die "there is no Docker volume ${old_name}_sentinel-state, so the new install would start a fresh, unenrolled Sentinel. Nothing was changed. Check the real name with: docker volume ls | grep sentinel-state   and pass it with --old-project-name NAME (or --allow-no-volume if this Sentinel never started)."
 fi
 
 # --- what is there now ---

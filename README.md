@@ -220,29 +220,24 @@ sudo /root/cvengine-sentinel/scripts/migrate-to-service-user.sh --dry-run   # pr
 sudo /root/cvengine-sentinel/scripts/migrate-to-service-user.sh             # do it
 ```
 
-In order, it: checks the project name against your Docker volumes; creates the `cvengine` user (the same code as
+In order, it: works out the Compose project name and checks its volume exists; creates the `cvengine` user (the same code as
 `install.sh`); runs `docker compose down` in the old directory (never `-v`); moves the checkout to
 `/opt/cvengine-sentinel`, keeping `.env`, `docker-compose.override.yml` and every untracked file; runs
 `chown -R cvengine:cvengine` on it; runs `docker compose up -d` as `cvengine`; reinstalls the updater for the new path
 (`User=cvengine`; a cron entry for the old path is removed) if one was installed; waits up to 5 minutes for the
 container to report healthy; and prints a before and after summary. Options: `--from DIR`, `--dir DIR`, `--updater`
-(add an updater even if there was none), `--wait SECONDS`, `--old-project-name NAME`. Run again after an interruption
+(add an updater even if there was none), `--wait SECONDS`, `--old-project-name NAME`, `--allow-no-volume`. Run again after an interruption
 it carries on (a checkout already moved is not moved twice).
 
-**The project name.** `docker-compose.yml` now pins `name: cvengine-sentinel`. That is what Docker already called a
-checkout in a directory named `cvengine-sentinel`, so those installs keep their volumes. A checkout in a directory
-with another name (say `/root/sentinel`) has volumes named `sentinel_sentinel-state`; the script refuses to move it
-(before changing anything) unless you pass the name, which it then writes to `.env` as `COMPOSE_PROJECT_NAME=sentinel`
-so the volumes still match:
-
-```bash
-docker volume ls | grep sentinel-state                  # shows sentinel_sentinel-state
-sudo /root/sentinel/scripts/migrate-to-service-user.sh --old-project-name sentinel
-```
-
-If you update such an install (without moving it) to a version that has the pin, add `COMPOSE_PROJECT_NAME=<directory
-name>` to its `.env` first: it wins over the pin, and without it the stack would start under the new name and enroll
-again from scratch.
+**The project name.** Docker Compose names the volumes after the project, which comes from the checkout's directory name
+(`cvengine-sentinel_sentinel-state` for a directory called `cvengine-sentinel`) or from `COMPOSE_PROJECT_NAME` in `.env`.
+`docker-compose.yml` does not fix it, so nothing changes for an install that stays where it is. The script works out the
+old name (`COMPOSE_PROJECT_NAME` from the old `.env`, else the directory name lower-cased with other characters
+removed), keeps it, and when `/opt/cvengine-sentinel` would give another name, writes `COMPOSE_PROJECT_NAME=<old name>`
+into the moved `.env`. It refuses (before changing anything) only when no `<name>_sentinel-state` volume exists, so it
+never starts a fresh, unenrolled stack silently. If its guess is wrong (you used `docker compose -p`), name the project
+yourself with `--old-project-name NAME` (check `docker volume ls | grep sentinel-state`); `--allow-no-volume` is for a
+Sentinel that never started. `install.sh` does the same for a fresh install in a `--dir` not called `cvengine-sentinel`.
 
 ## Stop, restart and remove
 

@@ -199,6 +199,9 @@ class InstallTests(ServiceUserBase):
         self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
         self.assertTrue(os.path.exists(os.path.join(other, 'setup.sh')))
         self.assertIn(f'WorkingDirectory={other}\n', self.unit('cvengine-sentinel-update.service'))
+        self.assertIn('COMPOSE_PROJECT_NAME=cvengine-sentinel\n', read(os.path.join(other, '.env')))  # the directory is not called cvengine-sentinel
+        self.assertEqual(os.stat(os.path.join(other, '.env')).st_mode & 0o777, 0o600)
+        self.assertNotIn('COMPOSE_PROJECT_NAME', read(os.path.join(self.dest, '.env')) if os.path.exists(os.path.join(self.dest, '.env')) else '')
         for bad, why in (('/root/cvengine-sentinel', 'cannot reach /root'), ('/root', 'cannot reach /root'), ('relative/dir', 'absolute'),
                          ('/opt/my sentinel', 'characters')):
             out = self.install('--yes', '--dir', bad)
@@ -357,26 +360,36 @@ class MigrateTests(ServiceUserBase):
         for word in ('useradd', 'usermod', 'chown', ' down', ' up -d', 'runuser'):
             self.assertNotIn(word, calls)
 
-    def test_a_directory_with_another_name_is_refused_unless_the_old_name_is_given(self):
+    def test_a_directory_with_another_name_keeps_its_project_name_and_its_volumes(self):
         old = self.make_old(os.path.join(self.tmp, 'oldhome', 'My_Sentinel'))
+        # no volume for the computed name: refuse before changing anything, so a fresh unenrolled stack is never started silently
         out = self.migrate(old=old)
         self.assertEqual(out.returncode, 1, out.stdout + out.stderr)
-        self.assertIn("'my_sentinel'", out.stderr)
-        self.assertIn('--old-project-name my_sentinel', out.stderr)
+        self.assertIn('no Docker volume my_sentinel_sentinel-state', out.stderr)
+        self.assertIn('unenrolled', out.stderr)
         self.assertTrue(os.path.exists(old))
         self.assertNotIn(' down', self.calls())
         self.assertNotIn('useradd', self.calls())
 
-        out = self.migrate('--old-project-name', 'my_sentinel', old=old)  # the volume my_sentinel_sentinel-state is not there
-        self.assertEqual(out.returncode, 1)
-        self.assertIn('no Docker volume my_sentinel_sentinel-state', out.stderr)
-        self.assertTrue(os.path.exists(old))
-
-        out = self.migrate('--old-project-name', 'my_sentinel', old=old, STUB_VOLUMES='my_sentinel_sentinel-state')
+        out = self.migrate(old=old, STUB_VOLUMES='my_sentinel_sentinel-state')  # with the volume it moves, writing the name down
         self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
         self.assertIn('COMPOSE_PROJECT_NAME=my_sentinel\n', read(os.path.join(self.dest, '.env')))
         self.assertIn('docker compose -p my_sentinel down', self.calls())
         self.assertIn('docker compose -p my_sentinel up -d', self.calls())
+
+    def test_old_project_name_overrides_the_computed_name_and_needs_its_volume(self):
+        old = self.make_old(os.path.join(self.tmp, 'oldhome', 'sentinel'))
+        out = self.migrate('--old-project-name', 'lab', old=old, STUB_VOLUMES='sentinel_sentinel-state')
+        self.assertEqual(out.returncode, 1)
+        self.assertIn('no Docker volume lab_sentinel-state', out.stderr)
+        out = self.migrate('--old-project-name', 'lab', old=old, STUB_VOLUMES='lab_sentinel-state')
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertIn('COMPOSE_PROJECT_NAME=lab\n', read(os.path.join(self.dest, '.env')))
+
+    def test_allow_no_volume_is_the_explicit_way_to_move_a_sentinel_that_never_started(self):
+        out = self.migrate('--allow-no-volume', STUB_VOLUMES='')
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertIn('--allow-no-volume', out.stdout)
 
     def test_a_project_name_already_in_env_is_kept_without_the_flag(self):
         old = self.make_old(os.path.join(self.tmp, 'oldhome', 'sentinel'))
@@ -442,32 +455,28 @@ class MigrateTests(ServiceUserBase):
 
 
 class ComposeProjectNameTests(unittest.TestCase):
-    def test_the_project_name_is_pinned_to_what_a_checkout_called_cvengine_sentinel_always_got(self):
-        self.assertRegex(read(os.path.join(ROOT, 'docker-compose.yml')), r'(?m)^name: cvengine-sentinel$')
+    def test_the_compose_file_does_not_pin_a_project_name(self):
+        """A pin would rename the volumes of every existing install whose directory is not called cvengine-sentinel."""
+        self.assertNotRegex(read(os.path.join(ROOT, 'docker-compose.yml')), r'(?m)^name:')
 
     @unittest.skipUnless(shutil.which('docker'), 'needs the docker CLI (compose config needs no daemon)')
-    def test_compose_resolves_that_name_whatever_the_directory_is_called_and_env_still_wins(self):
+    def test_compose_still_derives_the_name_from_the_directory_and_env_wins(self):
         import json
         tmp = tempfile.mkdtemp(prefix='sentinel-name-')
         self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
-        checkout = os.path.join(tmp, 'Some_Other.dir')
-        os.makedirs(os.path.join(checkout, 'config', 'seccomp'))
-        shutil.copy(os.path.join(ROOT, 'docker-compose.yml'), checkout)
-        put(os.path.join(checkout, 'config', 'seccomp', 'playwright-chromium.json'), '{}', 0o644)
 
-        def name(**env):
+        def name(directory, **env):
+            checkout = os.path.join(tmp, directory)
+            os.makedirs(os.path.join(checkout, 'config', 'seccomp'), exist_ok=True)
+            shutil.copy(os.path.join(ROOT, 'docker-compose.yml'), checkout)
+            put(os.path.join(checkout, 'config', 'seccomp', 'playwright-chromium.json'), '{}', 0o644)
             out = subprocess.run(['docker', 'compose', 'config', '--format', 'json'], cwd=checkout, capture_output=True, text=True, env={**os.environ, **env})
             if out.returncode:
                 self.skipTest('docker compose config is not usable here: ' + out.stderr[:200])
             return json.loads(out.stdout)['name']
-        self.assertEqual(name(), 'cvengine-sentinel')
-        self.assertEqual(name(COMPOSE_PROJECT_NAME='sentinel'), 'sentinel')
-        # a checkout in a directory of exactly the old default name got that name before the pin: the volumes keep matching
-        plain = os.path.join(tmp, 'cvengine-sentinel')
-        shutil.copytree(checkout, plain)
-        out = subprocess.run(['docker', 'compose', 'config', '--format', 'json'], cwd=plain, capture_output=True, text=True)
-        if out.returncode == 0:
-            self.assertEqual(json.loads(out.stdout)['name'], 'cvengine-sentinel')
+        self.assertEqual(name('cvengine-sentinel'), 'cvengine-sentinel')
+        self.assertEqual(name('Some_Other.dir'), 'some_otherdir')  # what install.sh and the migration compute (svc_project_name_of)
+        self.assertEqual(name('anything', COMPOSE_PROJECT_NAME='cvengine-sentinel'), 'cvengine-sentinel')
 
 
 if __name__ == '__main__':

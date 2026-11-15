@@ -31,8 +31,7 @@ SERVICE_USER=cvengine
 SERVICE_HOME="$PREFIX/home/$SERVICE_USER"
 DEFAULT_DIR="$PREFIX/opt/cvengine-sentinel"
 OFFICIAL_REPO=https://github.com/hevnsnt/cvengine-sentinel.git
-# shellcheck disable=SC2034  # used by scripts/migrate-to-service-user.sh, which sources this file
-PROJECT_NAME=cvengine-sentinel  # the compose project name docker-compose.yml pins; the volumes are called ${PROJECT_NAME}_sentinel-state and so on
+PROJECT_NAME=cvengine-sentinel  # what Compose names a checkout in a directory called cvengine-sentinel; the volumes are ${PROJECT_NAME}_sentinel-state and so on
 # Only a test may point the clone somewhere else: the updater later builds and runs whatever the origin remote holds.
 REPO="$OFFICIAL_REPO"
 if [ -n "$PREFIX" ] && [ -n "${CVENGINE_SENTINEL_TEST_REPO:-}" ]; then REPO="$CVENGINE_SENTINEL_TEST_REPO"; fi
@@ -182,6 +181,12 @@ main() {
     printf '%s\n' "$blob" | svc_run "$dir" ./setup.sh "${setup_args[@]}" --no-updater --blob -
   else
     svc_run "$dir" ./setup.sh "${setup_args[@]}" --no-updater
+  fi
+
+  # A directory with another name would give another Compose project name, and so other volumes than every cvengine-sentinel install has: say the name.
+  if [ "$(svc_project_name_of "$dir")" != "$PROJECT_NAME" ] && ! grep -q '^COMPOSE_PROJECT_NAME=' "$dir/.env" 2>/dev/null; then
+    svc_run "$dir" sh -c "echo COMPOSE_PROJECT_NAME=$PROJECT_NAME >> .env"  # appended in place: .env keeps its owner and mode 600
+    say "Wrote COMPOSE_PROJECT_NAME=$PROJECT_NAME to $dir/.env (the directory is not called $PROJECT_NAME)."
   fi
 
   if [ "$updater" = yes ]; then
