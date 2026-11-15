@@ -9,6 +9,7 @@ machine's own ceiling (``config.capped_self_update``). ``health`` is the contain
 built-in scanner a heartbeat reached the server within ``HEARTBEAT_MAX_AGE`` (or it is still waiting for its first enrollment). ``heartbeat`` answers
 only the second half: cvENGINE's updater asks it before it keeps a new built-in scanner image, and rolls back to the previous one otherwise.
 """
+import calendar
 import json
 import os
 import re
@@ -255,6 +256,43 @@ def updater_info(now=None):
 def read_update():
     data = _read_json('update.json')
     return data if data.get('status') in UPDATE_STATUSES else {}
+
+
+DAEMON_UPDATE_PHASES = ('draining', 'exiting')  # the phases only the daemon itself writes (daemon._drain_and_exit), so nothing else carries them on after it restarts
+
+
+def _same_build(version, target):
+    version, target = str(version or '').strip().lower(), str(target or '').strip().lower()
+    return bool(version and target) and (version.startswith(target) or target.startswith(version))
+
+
+def settle_update(version, now=None):
+    """Called at every daemon start. An update left ``updating`` or ``draining`` would show as "Updating" in cvENGINE for ever, because the process
+    that wrote it (this daemon leaving with ``UPDATE_EXIT``, or an updater that died) never writes how it ended. Record what can be told now: running
+    the target build is ``done``; otherwise ``failed`` with the reason, when the daemon itself wrote the status (phase ``draining``/``exiting``) or
+    the host-side updater has not moved it for ``DRAIN_TTL`` (it may still be running before that and writes the outcome itself). Returns the new
+    status, or None when nothing was written."""
+    data = read_update()
+    if data.get('status') not in ('updating', 'draining'):
+        return None
+    target, previous, phase = str(data.get('to') or ''), str(data.get('from') or ''), str(data.get('phase') or '')
+    running = str(version or '') or 'an unknown version'
+    if _same_build(version, target):
+        record_update('done', 'finished', f'running {running}', previous, target)
+        return 'done'
+    if phase in DAEMON_UPDATE_PHASES:
+        why = (f'restarted on {running}, not {target or "the requested build"}: the supervisor did not bring the new image' if phase == 'exiting'
+               else f'restarted while draining for the update to {target or "the requested build"}; still on {running}')
+    else:
+        try:
+            at = calendar.timegm(time.strptime(str(data.get('at') or ''), '%Y-%m-%dT%H:%M:%SZ'))
+        except ValueError:
+            at = 0
+        if (now or time.time()) - at < DRAIN_TTL:
+            return None
+        why = f'the update to {target or "the requested build"} did not finish (no progress for {DRAIN_TTL // 3600} h); still on {running}'
+    record_update('failed', phase, why, previous, target)
+    return 'failed'
 
 
 # --- command line ------------------------------------------------------------------------------------------------------------------------

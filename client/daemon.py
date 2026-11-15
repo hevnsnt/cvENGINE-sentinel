@@ -101,6 +101,10 @@ WAIT_LOG_AFTER_SECONDS = 30.0  # ... once it has waited this long
 THREAD_FAILURE_PAUSE = 5.0  # seconds to wait after a task thread could not be started (the container is out of threads)
 HELD_STATUSES = ('pending', 'suspended')  # cvENGINE holds the Sentinel (approval, or an administrator's decision): its poll answers 403, its token still works
 _TASK_ID = re.compile(r'[A-Za-z0-9_-]{1,64}')  # an id goes into URL paths, thread names and log lines
+BLOCKED_CODE = 'agent_blocked'  # 403 ``code``: an active agent whose user or token cannot be given work now (user disabled, read-only or expired token, MFA to set up)
+REVOKED_CODE = 'token_revoked'  # 403 ``code``: the token itself is revoked or invalid
+BLOCKED_TEXT = 'no work can be assigned'  # what a server that sends no ``code`` yet says for such a refusal
+_REVOKED_TEXT = re.compile(r'\b(revoked|invalid)\b', re.IGNORECASE)
 
 
 def _retryable(exc):
@@ -109,6 +113,26 @@ def _retryable(exc):
         return True
     status = getattr(exc, 'status', None)
     return isinstance(status, int) and (status >= 500 or status == 429)
+
+
+def _blocked_reason(exc):
+    """The server's reason when ``exc`` is a 403 for an agent cvENGINE cannot give work now while its token is still good (``code`` ``agent_blocked``,
+    or from a server that sends no code a message with "no work can be assigned" that does not say revoked or invalid), else None. Such a Sentinel
+    waits like a held one; only a 401, or a 403 with ``code`` ``token_revoked`` or a revoked/invalid message, means the token is gone."""
+    if getattr(exc, 'status', None) != 403:
+        return None
+    code, message = getattr(exc, 'code', None), str(getattr(exc, 'message', '') or '')
+    if code == BLOCKED_CODE:
+        return _clip(getattr(exc, 'reason', None) or message, 300)
+    if code or BLOCKED_TEXT not in message.lower() or _REVOKED_TEXT.search(message):
+        return None
+    return _clip(message, 300)
+
+
+def _token_refused(exc):
+    """Whether ``exc`` says the token itself is revoked or invalid: a 401, a 403 with ``code`` ``token_revoked``, or a 403 that says revoked/invalid."""
+    status = getattr(exc, 'status', None)
+    return status == 401 or (status == 403 and (getattr(exc, 'code', None) == REVOKED_CODE or bool(_REVOKED_TEXT.search(str(getattr(exc, 'message', '') or '')))))
 
 
 def _valid_task(task):
@@ -371,6 +395,10 @@ class Daemon:
 
     def run(self):
         control.set_draining(False)  # a fresh start is never drained, whatever an updater that died half way left behind
+        try:  # an update this Sentinel left for (or that died half way) ends as done or failed, not "updating" for ever
+            control.settle_update(config.version())
+        except (OSError, ValueError):
+            logger.warning('could not record how the last update ended', exc_info=True)
         bbot.sweep_stale()  # a key file a crashed run left in the temp directory goes before any task starts
         self._write_control()
         self._deliver_spool_at_start()  # held results go out before the first heartbeat: that heartbeat's list of running tasks must not make the server drop them
@@ -471,10 +499,14 @@ class Daemon:
         with self._lock:
             return len(self._in_flight)
 
-    def _auth_failed(self, exc):
+    def _auth_failed(self, exc, judged=False):
         """Stop for good when the server says this Sentinel's token is no longer valid: backing off and polling forever would hide it. The built-in
         scanner stops with ``REENROLL`` instead, and its entry point enrols it again with the next blob the server writes (no person is involved)."""
         if getattr(exc, 'status', None) not in AUTH_STATUSES:
+            return False
+        blocked = None if judged else _blocked_reason(exc)  # ``judged``: ``_wait_while_held`` already found it is neither held nor blocked
+        if blocked is not None:  # the agent is active and its token good, but its user or token cannot be given work now: wait, never re-enrol
+            self._note_blocked(blocked)
             return False
         if config.builtin():
             if not self.exit_code:
@@ -876,12 +908,12 @@ class Daemon:
         except (httpclient.ApiError, requests.RequestException) as exc:
             self._polling = False
             self._write_control()
-            if getattr(exc, 'status', None) == 403 and self._wait_while_held():
+            if getattr(exc, 'status', None) == 403 and self._wait_while_held(exc):
                 return
             if getattr(exc, 'status', None) == 429:
                 self._wait_rate_limited(exc)
                 return
-            if not self._auth_failed(exc):
+            if not self._auth_failed(exc, judged=getattr(exc, 'status', None) == 403):
                 self._quiet_warning('poll', 'poll failed: %s', exc)
                 self._sleep_backoff()
             return
@@ -908,23 +940,42 @@ class Daemon:
         self._start_task(task, kinds)
         self._write_control()
 
-    def _wait_while_held(self):
+    def _note_blocked(self, reason):
+        """Say once why cvENGINE gives this active Sentinel no work (its user is disabled, its token is read only or expired, MFA must be set up)."""
+        if self._held_logged != ('blocked', reason):
+            self._held_logged = ('blocked', reason)
+            logger.warning('cvENGINE gives this Sentinel no work (%s). Its token is kept: do not re-enroll. It keeps heartbeating and takes work again once '
+                           'this is fixed in cvENGINE', reason)
+
+    def _wait_while_held(self, exc=None):
         """The poll was refused with a 403. A Sentinel cvENGINE holds (``pending`` approval, or ``suspended`` by an administrator or by the rule that
         holds a new agent of a user whose other agent was suspended or revoked) is answered so ("no work can be assigned: ...") while its token is
         fine, and stopping then would only crash-loop the container and tell the operator to re-enroll, which a held user's new Sentinel inherits
         anyway. So ask the server where this Sentinel stands (``GET sentinel``): when it is held, say why once, keep heartbeating and ask again after a
         heartbeat interval. Returns False when it is not held (revoked, or a refusal of the token itself), so the caller stops as before; a check
-        that fails on the network or a server error backs off and is tried again, never read as revoked."""
+        that fails on the network or a server error backs off and is tried again, never read as revoked.
+
+        An active Sentinel whose user or token cannot be given work (``exc`` is a 403 with ``code`` ``agent_blocked``, or "no work can be assigned"
+        without a ``code``: ``_blocked_reason``) is held the same way, unless ``GET sentinel`` says its token or the agent is revoked."""
+        blocked = _blocked_reason(exc)
+        if getattr(exc, 'code', None) == BLOCKED_CODE:
+            return self._hold_blocked(blocked)
+        if getattr(exc, 'code', None) == REVOKED_CODE:
+            return False
         try:
             me = self.client.call('GET', 'sentinel')
-        except (httpclient.ApiError, requests.RequestException) as exc:
-            if _retryable(exc):
-                logger.warning('the poll was refused (403) and the server could not say why (%s); backing off', exc)
+        except (httpclient.ApiError, requests.RequestException) as check:
+            if _retryable(check):
+                logger.warning('the poll was refused (403) and the server could not say why (%s); backing off', check)
                 self._sleep_backoff()
                 return True
+            if blocked is not None and not _token_refused(check):
+                return self._hold_blocked(blocked)
             return False
         status = me.get('status') if isinstance(me, dict) else None
         if status not in HELD_STATUSES:
+            if blocked is not None and status != 'revoked':
+                return self._hold_blocked(blocked)
             return False
         note = _clip(me.get('status_note') or '', 300)
         if self._held_logged != (status, note):
@@ -932,6 +983,11 @@ class Daemon:
             what = 'waiting for an administrator to approve it' if status == 'pending' else 'suspended'
             logger.warning('cvENGINE has this Sentinel %s, so it is given no work%s. Its token is fine: do not re-enroll. It keeps heartbeating and '
                            'takes work again once an administrator approves or reinstates it in cvENGINE', what, f' ({note})' if note else '')
+        self.stop_event.wait(self.heartbeat_seconds)
+        return True
+
+    def _hold_blocked(self, reason):
+        self._note_blocked(reason)
         self.stop_event.wait(self.heartbeat_seconds)
         return True
 

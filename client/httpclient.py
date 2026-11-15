@@ -42,11 +42,13 @@ class ApiError(Exception):
     the server chose to show (or one this client wrote), never a raw response body (which could be arbitrarily large or
     not be JSON at all)."""
 
-    def __init__(self, status, message, retry_after=None):
+    def __init__(self, status, message, retry_after=None, code=None, reason=None):
         super().__init__(f'{status}: {message}')
         self.status = status
         self.message = message
         self.retry_after = retry_after  # seconds the server asked to wait (Retry-After on a 429 or 503), or None
+        self.code = code  # the machine-readable ``code`` of the error body (``agent_blocked``, ``token_revoked``, ...), or None from an older server
+        self.reason = reason  # the error body's human ``reason`` next to that code, or None
 
 
 class ServerURLError(ValueError):
@@ -126,8 +128,11 @@ class Client:
         except ValueError:
             payload = {}
         if response.status_code >= 400:
-            message = (payload.get('error') if isinstance(payload, dict) else None) or f'HTTP {response.status_code}'
-            raise ApiError(response.status_code, str(message)[:300], retry_after=parse_retry_after(response.headers.get('Retry-After')))
+            body = payload if isinstance(payload, dict) else {}
+            message = body.get('error') or f'HTTP {response.status_code}'
+            code, reason = body.get('code'), body.get('reason')
+            raise ApiError(response.status_code, str(message)[:300], retry_after=parse_retry_after(response.headers.get('Retry-After')),
+                           code=code[:64] if isinstance(code, str) and code else None, reason=reason[:300] if isinstance(reason, str) and reason else None)
         return payload if isinstance(payload, dict) else {}
 
     def download(self, path, destination, max_bytes, timeout=None):

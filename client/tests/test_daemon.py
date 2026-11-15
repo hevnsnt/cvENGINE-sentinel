@@ -1297,8 +1297,8 @@ class HeldSentinelTests(DaemonTestCase):
                 with mock.patch.object(d.stop_event, 'wait'), self.assertNoLogs('sentinel.daemon', level='WARNING'):
                     d._poll_once()  # the same hold is not logged again
 
-    def test_a_revoked_or_active_answer_still_stops_it(self):
-        for identity in ({'status': 'revoked'}, {'status': 'active'}, {}, 'x', httpclient.ApiError(401, 'invalid, expired or revoked token'),
+    def test_a_revoked_answer_still_stops_it(self):
+        for identity in ({'status': 'revoked'}, httpclient.ApiError(401, 'invalid, expired or revoked token'),
                          httpclient.ApiError(403, 'this agent was revoked by an administrator')):
             with self.subTest(identity=identity):
                 self.fc = FakeClient()
@@ -1330,6 +1330,84 @@ class HeldSentinelTests(DaemonTestCase):
             d._poll_once()
         self.assertTrue(any('no longer holds' in line for line in logs.output))
         self.assertIsNone(d._held_logged)
+
+
+class BlockedSentinelTests(DaemonTestCase):
+    """An active Sentinel whose user or token cannot be given work (user disabled, read-only or expired token, MFA to set up) is refused with a 403
+    "no work can be assigned: ..." (``code`` ``agent_blocked`` from a newer server). Its token is good: it waits like a held one, never stops or
+    forgets the token. Only a 401, or a 403 with ``code`` ``token_revoked`` or a revoked/invalid message, keeps the revoked behaviour."""
+
+    BLOCKED = httpclient.ApiError(403, 'no work can be assigned: its user is disabled', code='agent_blocked', reason='its user is disabled')
+
+    def poll(self, refusal, *identity):
+        self.fc.script[('POST', 'sentinel/tasks/next')] = [refusal]
+        self.fc.script[('GET', 'sentinel')] = list(identity)
+        d = self.make(heartbeat_seconds=7)
+        with mock.patch.object(d.stop_event, 'wait') as wait:
+            d._poll_once()
+        return d, wait
+
+    def test_an_agent_blocked_refusal_waits_a_heartbeat_keeps_the_token_and_says_why_once(self):
+        with self.assertLogs('sentinel.daemon', level='WARNING') as logs:
+            d, wait = self.poll(self.BLOCKED)
+        self.assertEqual((d.stop_event.is_set(), d.exit_code), (False, 0))
+        wait.assert_called_once_with(7)
+        self.assertEqual(self.fc.count('sentinel'), 0)  # the code says it all: no need to ask where it stands
+        text = '\n'.join(logs.output)
+        self.assertIn('its user is disabled', text)
+        self.assertIn('do not re-enroll', text)
+        self.assertNotIn('re-enroll it', text)
+        self.fc.script[('POST', 'sentinel/tasks/next')] = [self.BLOCKED]
+        with mock.patch.object(d.stop_event, 'wait'), self.assertNoLogs('sentinel.daemon', level='WARNING'):
+            d._poll_once()  # the same reason is not logged again
+
+    def test_a_server_without_codes_is_read_by_its_message(self):
+        older = httpclient.ApiError(403, 'no work can be assigned: its token is read only')
+        mfa = httpclient.ApiError(403, 'your organization requires multi-factor authentication: set up MFA in the web app')
+        for identity in ({'status': 'active'}, {}, 'x', mfa):
+            with self.subTest(identity=identity):
+                self.fc = FakeClient()
+                with self.assertLogs('sentinel.daemon', level='WARNING') as logs:
+                    d, wait = self.poll(older, identity)
+                self.assertEqual((d.stop_event.is_set(), d.exit_code), (False, 0))
+                wait.assert_called_once_with(7)
+                self.assertIn('read only', '\n'.join(logs.output))
+
+    def test_the_built_in_scanner_keeps_its_token(self):
+        with mock.patch.object(config, 'builtin', return_value=True):
+            d, _wait = self.poll(self.BLOCKED)
+            self.assertEqual((d.stop_event.is_set(), d.exit_code), (False, 0))
+            self.fc.script[('POST', 'sentinel/heartbeat')] = [self.BLOCKED]
+            d._heartbeat_once()
+        self.assertEqual((d.stop_event.is_set(), d.exit_code), (False, 0))
+
+    def test_a_blocked_heartbeat_does_not_stop_it(self):
+        self.fc.script[('POST', 'sentinel/heartbeat')] = [httpclient.ApiError(403, 'set up MFA', code='agent_blocked', reason='its user has to set up two-step sign-in first')]
+        d = self.make()
+        with self.assertLogs('sentinel.daemon', level='WARNING') as logs:
+            d._heartbeat_once()
+        self.assertEqual((d.stop_event.is_set(), d.exit_code), (False, 0))
+        self.assertIn('two-step sign-in', '\n'.join(logs.output))
+
+    def test_a_revoked_token_still_stops_it(self):
+        cases = ((httpclient.ApiError(403, 'no work can be assigned', code='token_revoked'), ()),
+                 (httpclient.ApiError(403, 'no work can be assigned: the agent is revoked'), ({'status': 'revoked'},)),
+                 (httpclient.ApiError(403, 'no work can be assigned: its token is revoked or expired'), ({'status': 'active'},)),
+                 (httpclient.ApiError(403, 'no work can be assigned: its user is disabled'), (httpclient.ApiError(401, 'invalid, expired or revoked token'),)),
+                 (httpclient.ApiError(401, 'invalid, expired or revoked token'), ()))
+        for refusal, identity in cases:
+            with self.subTest(refusal=refusal):
+                self.fc = FakeClient()
+                with self.assertLogs('sentinel.daemon', level='ERROR') as logs:
+                    d, _wait = self.poll(refusal, *identity)
+                self.assertEqual((d.stop_event.is_set(), d.exit_code), (True, 1))
+                self.assertIn('re-enroll', '\n'.join(logs.output))
+        self.fc = FakeClient()
+        self.fc.script[('POST', 'sentinel/heartbeat')] = [httpclient.ApiError(403, 'gone', code='token_revoked')]
+        d = self.make()
+        with self.assertLogs('sentinel.daemon', level='ERROR'):
+            d._heartbeat_once()
+        self.assertEqual((d.stop_event.is_set(), d.exit_code), (True, 1))
 
 
 class AtomicTokenTests(unittest.TestCase):
