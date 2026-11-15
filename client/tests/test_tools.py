@@ -46,6 +46,38 @@ def _read(name):
         return handle.read()
 
 
+class ToolProbeTests(unittest.TestCase):
+    """``detect_tools`` waits long enough for a loaded host and leaves out only a tool that never answered; ``unprobed_tools`` names what to try again."""
+
+    def test_a_probe_gets_the_configured_timeout_and_a_timed_out_tool_is_left_out(self):
+        def fake_run(argv, capture_output, timeout, check):
+            if argv[0] == tools.BBOT_BIN_FOR_TEST:
+                raise subprocess.TimeoutExpired(argv, timeout)
+            return mock.Mock(returncode=0, stdout=b'tool 1.2.3', stderr=b'')
+        tools.BBOT_BIN_FOR_TEST = tools.VERSION_ARGS['bbot'][0]
+        self.addCleanup(delattr, tools, 'BBOT_BIN_FOR_TEST')
+        with mock.patch('client.tools.subprocess.run', side_effect=fake_run) as run, mock.patch('client.tools.gvm_available', return_value=False):
+            found = tools.detect_tools()
+        self.assertNotIn('bbot', found)
+        self.assertIn('nmap', found)
+        self.assertGreaterEqual(tools.PROBE_TIMEOUT, 30)
+        self.assertTrue(all(call.kwargs['timeout'] == tools.PROBE_TIMEOUT for call in run.call_args_list))
+
+    def test_the_timeout_can_be_set_and_never_goes_below_five_seconds(self):
+        with mock.patch.dict(os.environ, {'CVENGINE_SENTINEL_PROBE_TIMEOUT': '120'}):
+            self.assertEqual(tools._probe_timeout(), 120.0)
+        with mock.patch.dict(os.environ, {'CVENGINE_SENTINEL_PROBE_TIMEOUT': '1'}):
+            self.assertEqual(tools._probe_timeout(), 5.0)
+        with mock.patch.dict(os.environ, {'CVENGINE_SENTINEL_PROBE_TIMEOUT': 'soon'}):
+            self.assertEqual(tools._probe_timeout(), 60.0)
+
+    def test_unprobed_tools_are_the_installed_ones_that_did_not_answer(self):
+        installed = {tools.VERSION_ARGS['bbot'][0], tools.VERSION_ARGS['testssl'][0], tools.VERSION_ARGS['nmap'][0]}
+        with mock.patch('shutil.which', side_effect=lambda name: '/bin/' + name if name in installed else None):
+            self.assertEqual(sorted(tools.unprobed_tools(['nmap'])), ['bbot', 'testssl'])
+            self.assertEqual(tools.unprobed_tools(['nmap', 'bbot', 'testssl']), [])
+
+
 class ValidateTargetsTests(unittest.TestCase):
     """The one gate every target list passes through before it ever reaches subprocess: a compromised or buggy server
     naming something other than a plain address, host name or host:port must never reach an argv list."""

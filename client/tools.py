@@ -2198,6 +2198,17 @@ RUNNERS['ssh_probe'] = run_ssh_probe
 
 # --- version probing, for the capabilities a bootstrapping Sentinel declares ------------------------------------------
 
+def _probe_timeout():
+    try:
+        return max(5.0, float(os.environ.get('CVENGINE_SENTINEL_PROBE_TIMEOUT', '60')))
+    except ValueError:
+        return 60.0
+
+
+# A host under load (a build, a GVM feed sync) can take half a minute to start a Python or Ruby tool: a probe that gave up at 10 s dropped bbot, testssl and
+# wpscan from a Sentinel's tools until its next restart.
+PROBE_TIMEOUT = _probe_timeout()
+
 VERSION_ARGS = {'nmap': [NMAP_BIN, '--version'], 'naabu': [NAABU_BIN, '-version'], 'nuclei': [NUCLEI_BIN, '-version'],
                 'testssl': [TESTSSL_BIN, '--version'], 'wpscan': [WPSCAN_BIN, '--version'], 'wafw00f': [WAFW00F_BIN, '--version'],
                 'kingfisher': [KINGFISHER_BIN, '--version'],
@@ -2284,7 +2295,7 @@ def detect_tools():
     found, versions = [], {}
     for name, argv in VERSION_ARGS.items():
         try:
-            ran = subprocess.run(argv, capture_output=True, timeout=10, check=False)
+            ran = subprocess.run(argv, capture_output=True, timeout=PROBE_TIMEOUT, check=False)
         except (OSError, subprocess.TimeoutExpired):
             continue
         if ran.returncode == 0:  # a binary that starts and then fails its own version probe is broken: declaring it would take tasks it cannot run (review L1)
@@ -2296,6 +2307,12 @@ def detect_tools():
     if gvm_available():
         found.append('gvm')
     return found
+
+
+def unprobed_tools(found):
+    """The tools installed here (their binary resolves) that are not in ``found``: a probe that timed out or failed on a loaded host, to be tried again."""
+    import shutil
+    return [name for name, argv in VERSION_ARGS.items() if name not in found and shutil.which(argv[0]) is not None]
 
 
 def tool_versions():
