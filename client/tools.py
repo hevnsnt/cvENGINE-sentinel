@@ -2253,16 +2253,27 @@ def gvm_ready():
 
 
 _VERSION = re.compile(r'v?(\d+(?:\.\d+){1,5}(?:[-+.~]?[0-9A-Za-z]{1,12})?)')
+# The line that names the tool's own version, for the tools that print other version-shaped text first. nuclei and naabu built with a Go newer than
+# their JSON library (bytedance/sonic) supports print "WARNING: sonic/ast only supports (go1.17~1.26 and amd64 CPU) ..." before it, and the first
+# version-shaped text in that is "1.17~1": every Sentinel reported nuclei 1.17~1 and showed "tools behind". Without the line, the first version is used.
+_VERSION_LINE = {
+    'nuclei': re.compile(r'(?i)engine version:\s*v?(\d+(?:\.\d+){1,5})'),
+    'naabu': re.compile(r'(?i)current version:\s*v?(\d+(?:\.\d+){1,5})'),
+}
 _PROBED = {'versions': None}  # {tool: version} of the last ``detect_tools`` probe: the same runs, so reporting the versions costs no second probe
 
 
-def _version_in(ran):
-    """The first version number in what a version probe printed (nuclei and naabu print it on stderr), clipped and printable: tool output is text, never trusted."""
-    for stream in (getattr(ran, 'stdout', None), getattr(ran, 'stderr', None)):
-        text = stream.decode('utf-8', 'replace') if isinstance(stream, bytes) else stream if isinstance(stream, str) else ''
-        found = _VERSION.search(text)
-        if found:
-            return ''.join(c for c in found.group(1) if c.isprintable())[:40]
+def _version_in(ran, name=None):
+    """The version a probe printed (nuclei and naabu print it on stderr): from the tool's own version line when it has one (``_VERSION_LINE``),
+    else the first version number, clipped and printable: tool output is text, never trusted."""
+    texts = [stream.decode('utf-8', 'replace') if isinstance(stream, bytes) else stream if isinstance(stream, str) else ''
+             for stream in (getattr(ran, 'stdout', None), getattr(ran, 'stderr', None))]
+    patterns = ([_VERSION_LINE[name]] if name in _VERSION_LINE else []) + [_VERSION]
+    for pattern in patterns:
+        for text in texts:
+            found = pattern.search(text)
+            if found:
+                return ''.join(c for c in found.group(1) if c.isprintable())[:40]
     return ''
 
 
@@ -2278,7 +2289,7 @@ def detect_tools():
             continue
         if ran.returncode == 0:  # a binary that starts and then fails its own version probe is broken: declaring it would take tasks it cannot run (review L1)
             found.append(name)
-            version = _version_in(ran)
+            version = _version_in(ran, name)
             if version:
                 versions[name] = version
     _PROBED['versions'] = versions
