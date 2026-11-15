@@ -119,6 +119,8 @@ class InstallUpdaterTests(unittest.TestCase):
         out = self.install()
         self.assertEqual(out.returncode, 1)
         self.assertIn('--allow-root', out.stderr)
+        self.assertIn('scripts/migrate-to-service-user.sh', out.stderr)  # the way out, not a chown a non-root user could not use under /root
+        self.assertNotIn('chown', out.stderr)
         self.assertEqual(os.listdir(os.path.join(self.prefix, 'etc/systemd/system')), [])
         out = self.install('--allow-root')
         self.assertEqual(out.returncode, 0, out.stdout + out.stderr)

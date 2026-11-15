@@ -12,6 +12,12 @@
 # Machine-specific changes (host networking, for one) go in docker-compose.override.yml, never in this tracked file: the updater fast-forwards
 # this checkout and refuses to when a tracked file was edited. See docker-compose.override.yml.example.
 
+# The Compose project name is pinned. Named volumes are prefixed with it (cvengine-sentinel_sentinel-state holds the Sentinel's token), so the name must not
+# depend on what the checkout's directory is called: install.sh puts the checkout in /opt/cvengine-sentinel, and a checkout cloned by hand into a directory
+# called cvengine-sentinel got this very name from Docker anyway, so existing installs keep their volumes. A checkout in a directory of another name
+# (before this line existed it got that directory's name) must say so in .env with COMPOSE_PROJECT_NAME=<that name>, which wins over this line.
+name: cvengine-sentinel
+
 # Every service's container log is capped (json-file, 3 files of 10 MB).
 x-logging: &logging
   driver: json-file

@@ -206,11 +206,11 @@ jobs:
       - name: Scripts parse
         run: |
           for f in scripts/*.sh docker-entrypoint.sh; do sh -n "$f"; done
-          bash -n setup.sh
+          bash -n setup.sh install.sh scripts/migrate-to-service-user.sh
       - name: shellcheck
         run: |
           command -v shellcheck >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q shellcheck; }
-          shellcheck --severity=warning scripts/*.sh docker-entrypoint.sh setup.sh
+          shellcheck --severity=warning scripts/*.sh docker-entrypoint.sh setup.sh install.sh
 
   compose:
     name: Compose file

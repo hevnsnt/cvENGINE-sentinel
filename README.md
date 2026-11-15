@@ -41,28 +41,85 @@ takes only the provisioning blob from the server.
 | Requirement                                                                                                  | Why                                                                                                                                      |
 | ------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
 | Docker Engine (or Docker Desktop) with Docker Compose v2 (`docker compose`, not `docker-compose`)            | Runs the stack. The updater uses `docker compose pull --ignore-buildable` and `pull_policy: build`, so use a current Compose v2 release. |
-| Permission to run `docker`: membership in the `docker` group, or `sudo`                                      | Every command below. Membership in the `docker` group is equivalent to root on that machine (see [Security model](#security-model)).     |
+| Permission to run `docker`: membership in the `docker` group, or `sudo`                                      | Every command below. `install.sh` gives its `cvengine` user that membership. Membership in the `docker` group is equivalent to root on that machine (see [Security model](#security-model)).     |
 | `git`                                                                                                        | Cloning, and the updater (it fast-forwards this checkout).                                                                               |
-| `bash`                                                                                                       | `./setup.sh`. On Windows run it from WSL or Git Bash, or write `.env` by hand.                                                           |
+| `bash`                                                                                                       | `install.sh`, `./setup.sh`. On Windows run it from WSL or Git Bash, or write `.env` by hand.                                                           |
 | For the updater only: Linux, systemd or cron, `flock` (util-linux), and `sudo` or a root shell to install it | See [Updates](#updates). The user who owns the checkout must be in the `docker` group, because the updater runs as that user.            |
 | For the full profile: disk space for tens of GB of OpenVAS feed data                                         | See [Full or light](#full-or-light).                                                                                                     |
 
 ## Set up
 
-1. Clone this repository onto the machine that will do the scanning:
+On a Linux machine with Docker, install as a service user: `install.sh` creates a `cvengine` system user, puts the
+checkout in `/opt/cvengine-sentinel` owned by that user, and runs `setup.sh`, `docker compose up -d` and the updater as
+that user. Nothing is owned by root and nothing runs as root by default, so you do not clone into `/root` and run a
+Sentinel from there (a checkout under `/root` can never be handed to another user: a non-root user cannot enter `/root`).
+
+1. On your CVEngine instance's **Sentinels** page (`/cve/sentinels/`), pick the project and click **Provision**. Copy
+   the one-time blob (or the command the page shows, which already holds it). It is single-use and expires in 30
+   minutes. You need the admin role in the project or its organization (see
+   [docs/FRONTEND.md](https://github.com/hevnsnt/CVEngine/blob/develop/docs/FRONTEND.md#sentinels) in the main
+   repository).
+
+2. On the machine that will scan, download `install.sh` and run it with `sudo`. The blob goes in on standard input, so
+   it never appears in the process list:
+
+   ```bash
+   f=$(mktemp) && curl -fsSL https://raw.githubusercontent.com/hevnsnt/cvengine-sentinel/main/install.sh -o "$f"
+   sudo bash "$f" --light --internal --name office-lan --yes --blob - <<'EOF'
+   PASTE_THE_BLOB_VALUE_HERE
+   EOF
+   rm -f "$f"
+   ```
+
+   (Or clone the repository anywhere and run `sudo ./install.sh ...` from it; it makes its own clone in
+   `/opt/cvengine-sentinel` either way.) Read `install.sh` first if you like: it is one file.
+
+   It takes the same options as `setup.sh` (`--full`/`--light`, `--external`/`--internal`, `--name`, `--blob`,
+   `--host-network`, `--yes`, `--updater`/`--no-updater`) plus `--dir DIR` (default `/opt/cvengine-sentinel`; not under
+   `/root`). Run again, it reuses the user, the checkout and the `.env`. In order, it:
+
+   - checks that Docker, Compose v2 and the `docker` group exist (and stops before changing anything if not);
+   - creates the user and group `cvengine` if missing (`useradd --system --user-group --create-home --home-dir
+     /home/cvengine --shell /usr/sbin/nologin`, or the `nologin` path your distribution has) and adds it to `docker`;
+   - clones this repository into the directory as `cvengine`, or reuses a checkout there that `cvengine` owns and whose
+     `origin` is this repository;
+   - runs `setup.sh` as `cvengine` (with `--no-updater`), then installs the updater, which runs as `cvengine`;
+   - runs `docker compose up -d` as `cvengine`, and prints the user, the directory and what is and is not unprivileged.
+
+   Expected output ends like this (abridged):
+
+   ```
+   cvENGINE Sentinel installed.
+     User:       cvengine (uid 998), a system account with no login shell
+     Directory:  /opt/cvengine-sentinel, owned by cvengine:cvengine
+     Updater:    installed, runs as cvengine
+   ```
+
+3. From then on, run every `docker compose` command for this Sentinel as that user, in its directory:
+
+   ```bash
+   cd /opt/cvengine-sentinel && sudo -u cvengine docker compose ps
+   ```
+
+   (`.env` is mode 600 and owned by `cvengine`, so another user cannot read it.)
+
+**Already running a Sentinel from `/root/cvengine-sentinel` (or any root-owned checkout)?** It keeps working as it is
+(the updater refuses a root-owned checkout unless you pass `--allow-root`). To move it to the service user without
+losing its enrollment, see [Moving an existing install to the service user](#moving-an-existing-install-to-the-service-user).
+
+### Installing by hand, as a normal user
+
+`install.sh` is the supported way on Linux. On macOS and Windows (Docker Desktop), or if you want to own the checkout
+yourself, set it up as an ordinary user who can run `docker`:
+
+1. Clone this repository:
 
    ```bash
    git clone https://github.com/hevnsnt/cvengine-sentinel.git
    cd cvengine-sentinel
    ```
 
-2. On your CVEngine instance's **Sentinels** page (`/cve/sentinels/`), pick the project and click **Provision**. Copy
-   the one-time blob it shows. It is single-use and expires in 30 minutes. You need the admin role in the project or
-   its organization (see
-   [docs/FRONTEND.md](https://github.com/hevnsnt/CVEngine/blob/develop/docs/FRONTEND.md#sentinels) in the main
-   repository).
-
-3. Create `.env`. The easy way is `./setup.sh`, which asks for the profile, the network, a name and the blob. To skip
+2. Create `.env`. The easy way is `./setup.sh`, which asks for the profile, the network, a name and the blob. To skip
    the questions, pass everything as options and give the blob on standard input, so it never appears in your shell
    history or the process list:
 
@@ -86,11 +143,14 @@ takes only the provisioning blob from the server.
    # then edit .env: set CVENGINE_SENTINEL_BLOB=..., and COMPOSE_PROFILES / CVENGINE_SENTINEL_PROFILE (see "Full or light")
    ```
 
-4. Start it:
+3. Start it:
 
    ```bash
    docker compose up -d
    ```
+
+Do not do this as root in root's home: the updater would refuse the checkout, and a checkout under `/root` cannot be
+given to another user. Run it as a normal user, or use `install.sh`.
 
 The first start decodes the blob, trades its one-time secret for this Sentinel's own token, and saves that token in the
 `sentinel-state` Docker volume. Every later start uses the saved token, so the blob is read only once. You can then
@@ -130,7 +190,8 @@ What it does, in order:
 
 ## Everyday commands
 
-Run these in the checkout directory.
+Run these in the checkout directory (`/opt/cvengine-sentinel` after `install.sh`), as the user that owns it: put `sudo -u cvengine` in front
+of `docker compose` there.
 
 | Command                                                         | What it does                                                                                                                               |
 | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -146,6 +207,42 @@ Check that it registered: open the **Sentinels** page on your CVEngine instance.
 (`CVENGINE_SENTINEL_NAME`, else the container's host name), `pending` until an administrator approves it, then
 `active`, and `live` once it heartbeats. It is administered like any other agent there (**Suspend**, **Revoke**), or
 over the API and MCP tools (`GET /api/v1/agents?kind=scanner`, `list_sentinels`, `get_sentinel`).
+
+## Moving an existing install to the service user
+
+An install made by running `git clone` and `setup.sh` as root (typically `/root/cvengine-sentinel`) works as it always
+did. To stop it running as root, move it. The script keeps the Sentinel's enrollment: the token lives in the Docker
+volume `sentinel-state` (and `sentinel-badkeys` and the OpenVAS volumes), and volumes are found by the Compose project
+name, which the move keeps the same.
+
+```bash
+sudo /root/cvengine-sentinel/scripts/migrate-to-service-user.sh --dry-run   # print the plan, change nothing
+sudo /root/cvengine-sentinel/scripts/migrate-to-service-user.sh             # do it
+```
+
+In order, it: checks the project name against your Docker volumes; creates the `cvengine` user (the same code as
+`install.sh`); runs `docker compose down` in the old directory (never `-v`); moves the checkout to
+`/opt/cvengine-sentinel`, keeping `.env`, `docker-compose.override.yml` and every untracked file; runs
+`chown -R cvengine:cvengine` on it; runs `docker compose up -d` as `cvengine`; reinstalls the updater for the new path
+(`User=cvengine`; a cron entry for the old path is removed) if one was installed; waits up to 5 minutes for the
+container to report healthy; and prints a before and after summary. Options: `--from DIR`, `--dir DIR`, `--updater`
+(add an updater even if there was none), `--wait SECONDS`, `--old-project-name NAME`. Run again after an interruption
+it carries on (a checkout already moved is not moved twice).
+
+**The project name.** `docker-compose.yml` now pins `name: cvengine-sentinel`. That is what Docker already called a
+checkout in a directory named `cvengine-sentinel`, so those installs keep their volumes. A checkout in a directory
+with another name (say `/root/sentinel`) has volumes named `sentinel_sentinel-state`; the script refuses to move it
+(before changing anything) unless you pass the name, which it then writes to `.env` as `COMPOSE_PROJECT_NAME=sentinel`
+so the volumes still match:
+
+```bash
+docker volume ls | grep sentinel-state                  # shows sentinel_sentinel-state
+sudo /root/sentinel/scripts/migrate-to-service-user.sh --old-project-name sentinel
+```
+
+If you update such an install (without moving it) to a version that has the pin, add `COMPOSE_PROJECT_NAME=<directory
+name>` to its `.env` first: it wins over the pin, and without it the stack would start under the new name and enroll
+again from scratch.
 
 ## Stop, restart and remove
 
@@ -249,7 +346,7 @@ container. "Not passed by compose" below means a value in `.env` has no effect; 
 | `CVENGINE_SENTINEL_SHOT_MAX_RSS_MB` | No | `1500` | The memory the screenshot browser and everything it started may hold together (300 to 16384) before the whole tree is killed and the page in flight is recorded `too_big`. Not passed by compose. | `web_screenshot` (`client/shot.py`) |
 | `CVENGINE_SCRIPT_BODY_READ` | No | on | `0` (or `false`, `no`, `off`) stops the reading of a page's scripts for library versions (`http_probe`, `route_probe` and `page_read`): a script's name stays a hint and nothing is fetched. Not passed by compose. | `cvengine_scanner/probes/js_libraries.py` |
 | `CVENGINE_SCRIPT_READ_MAX_REQUESTS`, `CVENGINE_SCRIPT_READ_MAX_SECONDS` | No | `300`, `600` | Most script requests, and seconds of reading, one scan of a host spends on that. Not passed by compose. | `cvengine_scanner/probes/js_libraries.py` |
-| `CVENGINE_SENTINEL_INSTALL_PREFIX`                                                                              | No               | empty                                                 | Tests only: where `install-updater.sh` writes `/etc`, `/run` and `/var/log`. `sudo` drops it.                                                                                                     | `scripts/install-updater.sh`                                              |
+| `CVENGINE_SENTINEL_INSTALL_PREFIX`                                                                              | No               | empty                                                 | Tests only: where `install-updater.sh` writes `/etc`, `/run` and `/var/log`, and where `install.sh` and `migrate-to-service-user.sh` put `/opt` and `/home` (and skip the root and Linux checks). `sudo` drops it.                                                                                                     | `scripts/install-updater.sh`                                              |
 
 ### Full or light
 
@@ -587,7 +684,7 @@ and that it is trusted only as far as the repository is. `scripts/update.sh --to
 ### The updater
 
 `scripts/update.sh` acts on the setting. It runs on the Docker host (Linux only), hourly, as the user who owns the
-checkout. `./setup.sh` installs it by default; `./setup.sh --no-updater` leaves it out; `sudo ./scripts/install-updater.sh`
+checkout. `install.sh` and `./setup.sh` install it by default; `--no-updater` leaves it out; `sudo ./scripts/install-updater.sh`
 installs it later; `sudo ./scripts/install-updater.sh --remove` takes it away. On macOS and Windows, update by hand:
 `git pull --ff-only && docker compose build && docker compose up -d`.
 
@@ -654,7 +751,9 @@ sudo ./scripts/install-updater.sh --allow-root  # install although root owns the
 - Linux only. The checkout path may contain only letters, digits and `/ . _ -`.
 - The jobs run as the checkout's owner, who must be in the `docker` group (it warns when not:
   `usermod -aG docker USER`). A root-owned checkout is refused unless you pass `--allow-root`, because the updater
-  would then run as root every hour. Run as a normal user, it re-runs itself with `sudo`.
+  would then run as root every hour; the message points at `scripts/migrate-to-service-user.sh`, which moves the install
+  to the `cvengine` user ([Moving an existing install](#moving-an-existing-install-to-the-service-user)). `--allow-root`
+  stays as the escape hatch. Run as a normal user, it re-runs itself with `sudo`.
 - With systemd it installs `cvengine-sentinel-update.timer` (10 minutes after boot, then hourly, with up to 5 minutes
   of random delay; each run may take up to 3 hours) and `cvengine-sentinel-feeds.timer` (daily). The services run
   with `NoNewPrivileges`, `PrivateTmp` and `ProtectSystem=full`. Logs:
@@ -960,7 +1059,13 @@ again when they run, so a DNS answer that changes in between is not caught (nmap
 
 ### What the operator must do
 
-- **Treat the `docker` group as root.** Anyone in it, including the updater's user, controls the machine.
+- **Treat the `docker` group as root.** Anyone in it, including the updater's user, controls the machine. `install.sh` puts
+  its `cvengine` user in that group, so that user is root-equivalent on this machine: someone who gets code running as
+  `cvengine` (or who can write to its checkout, which the updater builds and runs) can become root through Docker.
+  What the service user changes is narrower: the checkout, git, `setup.sh`, the updater and your own `docker compose`
+  commands for this Sentinel are an unprivileged account's, nothing is owned by or runs as root by default, `.env` is not
+  in root's home, and the account has no password or login shell. It is not a sandbox against that account; the
+  container (uid 10001, `cap_drop: [ALL]` plus two capabilities) is the boundary for scan tools.
 - **Protect the code source.** Updates are not signature-checked in 1.4.0: the updater builds and runs the commit cvENGINE
   names, which must be on `origin/main` (or the configured branch) of this checkout's `origin` remote
   ([What Automatic trusts](#what-automatic-trusts)). Anyone who can push there reaches every
