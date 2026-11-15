@@ -239,14 +239,41 @@ def declared_kinds():
 
 
 _detected = {}
+_reprobe = {'thread': None}
+DETECT_RECHECK_SECONDS = 300  # a tool that is installed but did not answer its version probe is probed again this often, off the poll thread
 
 
 def detected_tools():
     """``tools.detect_tools()``, probed once per process: the tools only change with the image, and probing runs five subprocesses that would
-    otherwise delay a heartbeat at every re-registration."""
+    otherwise delay a heartbeat at every re-registration. A tool that is installed but did not answer (a probe that timed out on a loaded host) is
+    probed again in the background, so a slow start never drops it until the next restart; the registration check then notices the new capabilities."""
     if 'tools' not in _detected:
         _detected['tools'] = tools.detect_tools()
+        _detected['probed_at'] = time.monotonic()
+    else:
+        _maybe_reprobe()
     return _detected['tools']
+
+
+def _maybe_reprobe():
+    if 'probed_at' not in _detected or time.monotonic() - _detected['probed_at'] < DETECT_RECHECK_SECONDS:
+        return
+    thread = _reprobe['thread']
+    if (thread is not None and thread.is_alive()) or not tools.unprobed_tools(_detected['tools']):
+        return
+
+    def probe():
+        try:
+            found = tools.detect_tools()
+            _detected['versions'] = tools.tool_versions()
+            _detected['tools'] = found
+        except Exception:  # noqa: BLE001 - a probe must never stop the poll that started it
+            logger.exception('the tool probe failed')
+        finally:
+            _detected['probed_at'] = time.monotonic()
+    _detected['probed_at'] = time.monotonic()
+    _reprobe['thread'] = threading.Thread(target=probe, name='tool-probe', daemon=True)
+    _reprobe['thread'].start()
 
 
 def detected_versions():

@@ -1587,5 +1587,64 @@ class OpenvasSlotTests(DaemonTestCase):
         self.assertEqual(self.fc.body_for('sentinel/tasks/73/result')['outcome'], 'error')
 
 
+class ToolReprobeTests(unittest.TestCase):
+    """A tool that is installed but did not answer its probe (a timeout on a loaded host) is probed again in the background, so ``bbot_discovery``
+    comes back without a restart."""
+
+    def setUp(self):
+        fresh_tool_probe(self)
+        self.addCleanup(daemon._reprobe.__setitem__, 'thread', None)
+
+    def _first_probe(self, found):
+        with mock.patch('client.tools.detect_tools', return_value=found):
+            daemon.detected_tools()
+
+    def _join(self):
+        thread = daemon._reprobe['thread']
+        self.assertIsNotNone(thread)
+        thread.join(5)
+        self.assertFalse(thread.is_alive())
+
+    def test_a_slow_tool_is_found_by_the_next_probe(self):
+        self._first_probe(['nmap'])
+        daemon._detected['probed_at'] -= daemon.DETECT_RECHECK_SECONDS + 1
+        release = threading.Event()
+
+        def slow_probe():
+            release.wait(5)
+            return ['nmap', 'bbot']
+        with mock.patch('client.tools.unprobed_tools', return_value=['bbot']), mock.patch('client.tools.detect_tools', side_effect=slow_probe), \
+                mock.patch('client.tools.tool_versions', return_value={'bbot': '3.1.0'}):
+            self.assertEqual(daemon.detected_tools(), ['nmap'])  # the caller is never kept waiting for the probe
+            release.set()
+            self._join()
+        self.assertEqual(daemon.detected_tools(), ['nmap', 'bbot'])
+        self.assertEqual(daemon.detected_versions(), {'bbot': '3.1.0'})
+
+    def test_nothing_is_probed_again_when_every_installed_tool_answered(self):
+        self._first_probe(['nmap'])
+        daemon._detected['probed_at'] -= daemon.DETECT_RECHECK_SECONDS + 1
+        with mock.patch('client.tools.unprobed_tools', return_value=[]), mock.patch('client.tools.detect_tools') as probe:
+            daemon.detected_tools()
+        probe.assert_not_called()
+        self.assertIsNone(daemon._reprobe['thread'])
+
+    def test_nothing_is_probed_again_before_the_interval(self):
+        self._first_probe(['nmap'])
+        with mock.patch('client.tools.unprobed_tools', return_value=['bbot']), mock.patch('client.tools.detect_tools') as probe:
+            daemon.detected_tools()
+        probe.assert_not_called()
+        self.assertIsNone(daemon._reprobe['thread'])
+
+    def test_a_probe_that_raises_leaves_the_known_tools_and_is_tried_again_later(self):
+        self._first_probe(['nmap'])
+        daemon._detected['probed_at'] -= daemon.DETECT_RECHECK_SECONDS + 1
+        with mock.patch('client.tools.unprobed_tools', return_value=['bbot']), mock.patch('client.tools.detect_tools', side_effect=RuntimeError('boom')), \
+                self.assertLogs('sentinel.daemon', 'ERROR'):
+            daemon.detected_tools()
+            self._join()
+        self.assertEqual(daemon.detected_tools(), ['nmap'])
+
+
 if __name__ == '__main__':
     unittest.main()
