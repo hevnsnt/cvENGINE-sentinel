@@ -22,7 +22,7 @@ logger = logging.getLogger('sentinel.selfupdate')
 UPDATE_EXIT = 76  # exit code: drained, wants a newer image (documented in README "Updates"); compose restarts the container, a puller swaps the image first
 RETRY_AFTER = 6 * 3600  # seconds before the same target may stop this Sentinel again
 HEX = re.compile(r'^[0-9a-f]{7,40}$')
-DEFAULT_DRAIN_SECONDS = 1800
+DEFAULT_DRAIN_SECONDS = 4200  # longer than the longest task budget (an hour): a drain waits out a deep scan instead of giving up on it
 
 
 def enabled():
