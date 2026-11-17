@@ -35,7 +35,7 @@ def normalize_version(text):
 
     ``version`` is the one spelling cvENGINE stores: ``8u392`` for Java 8 and older (``1.8.0_392``, ``8u392-b08``), the dotted feature release for
     9 and later (``17.0.9``, ``11.0.20.1``, the ``+build`` and any vendor suffix left out). ``build`` keeps what followed (``9-LTS``,
-    ``9-Ubuntu-0ubuntu122.04``). ``line_only`` is true when only the major line is known (``17``, ``1.8``, ``21+35``): such a reading names the
+    ``9-Ubuntu-0ubuntu122.04``). ``21+35`` is the GA release ``21.0.0``. ``line_only`` is true when only the major line is known (``17``, ``1.8``): such a reading names the
     line, never a release inside it, and must not be compared with an advisory's bounds as if it were ``17.0.0``."""
     if not isinstance(text, str):
         return None
@@ -68,6 +68,8 @@ def normalize_version(text):
     while len(parts) > 1 and parts[-1] == 0 and len(parts) > 2:
         parts.pop()  # 17.0.9.0 is 17.0.9
     build = _rest(value, found.end(), found.group(3))
+    if not parts and found.group(3):
+        parts = [0, 0]  # "21+35" is the GA build of 21 (JEP 322 drops the trailing zeros of 21.0.0): a release, not the line
     if not parts:
         return {'version': str(major), 'major': major, 'build': build, 'line_only': True}
     if len(parts) == 1:
