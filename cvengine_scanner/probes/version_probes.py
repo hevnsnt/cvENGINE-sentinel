@@ -360,6 +360,8 @@ def technology_names(observations):
         library = (o.get('evidence') or {}).get('library') if isinstance(o.get('evidence'), dict) else None
         if o['kind'] == 'version' and isinstance(library, dict) and library.get('tech_names'):
             names += [str(n)[:500] for n in library['tech_names'] if ':' in str(n)]  # the effective copy, or each copy of an unresolved set
+        elif o['kind'] == 'version' and o['product'] == JAVA_RUNTIME:
+            continue  # the JVM is a Java runtime reading of its own (cveFeed.java_runtime), not a technology
         elif o['kind'] == 'version' and o['outcome'] == 'found' and o['version']:
             names.append(f"{o['product']}:{o['version']}")
         elif o['kind'] == 'wordpress' and o['outcome'] == 'found':
@@ -409,9 +411,32 @@ def run_http_probe(probe_id, base, allowed, policy=None, get=None, sleep=time.sl
     elif handler == 'libraries' and first:
         out += _library_observations(first, script_get or get, sleep, policy, reader=reader)
     out += apply_rules(probe, responses)
+    if probe_id in JAVA_PAGE_PROBES and first and not first.get('challenge'):
+        out += java_observations(first, 'header' if probe_id == 'headers-root' else 'error_page', probe['requests'][0][1])
     if first and first.get('challenge') and not any(o['kind'] == 'edge' for o in out):
         out.append(_observation('edge', first['challenge'], outcome='challenged', confidence=0.8, source='edge-challenge', url=probe['requests'][0][1]))
     return out
+
+
+JAVA_RUNTIME = 'Java runtime'  # the product of an observation that states the JVM (cvENGINE stores it as a Java runtime reading, not a technology)
+JAVA_PAGE_PROBES = ('headers-root', 'error-page')  # the pages already fetched whose headers and body are read for the JVM: nothing is asked for it
+
+
+def java_observations(response, source, path):
+    """The Java runtime a page this probe already fetched states (``cvengine_scanner.java``: X-Powered-By and Server, and a JVM banner or
+    ``java.version`` in the body), as ``version`` observations of the product ``Java runtime``: the vendor in ``variant``, the reading in
+    ``evidence['java']``. Nothing is asked to make a page fail: these are the answers the probe had anyway."""
+    from .. import java
+    headers = response.get('raw_headers') or response.get('headers') or {}
+    readings = java.from_headers(headers, url=path) + java.from_body(response.get('body') or '', source='error_page', url=path)
+    out, seen = [], set()
+    for r in readings:
+        if r['version'] in seen:
+            continue
+        seen.add(r['version'])
+        out.append(_observation('version', JAVA_RUNTIME, r['version'], r['vendor'][:60], 'found', 0.9,
+                                f"{'header' if r['source'] == 'header' else 'body'}:java", url=path, evidence={'java': r}))
+    return out[:3]
 
 
 def own_answer(response, base):
