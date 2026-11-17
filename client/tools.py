@@ -2209,6 +2209,20 @@ def run_java_runtime(target, register=None):
 RUNNERS['java_runtime'] = run_java_runtime
 
 
+def run_version_read(target, register=None):
+    """The ``version_read`` kind (contract 7, ``cvengine_scanner.probes.version_read``): the anonymous GETs the server's version source catalogue
+    names for each host, under the task's scope policy, each answer handed back only in the part the request names (JSON fields, an excerpt, the
+    ``*_info`` metric samples, named headers)."""
+    from cvengine_scanner.probes import version_read
+    try:
+        return version_read.run_batch(target)
+    except ValueError as exc:
+        raise TargetError(f'not a usable version_read task ({exc})') from None
+
+
+RUNNERS['version_read'] = run_version_read
+
+
 # --- version probing, for the capabilities a bootstrapping Sentinel declares ------------------------------------------
 
 def _probe_timeout():
