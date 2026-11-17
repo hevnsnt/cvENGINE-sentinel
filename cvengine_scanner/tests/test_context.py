@@ -193,8 +193,9 @@ class ContractTests(unittest.TestCase):
     def test_the_contract_version_is_not_bumped_for_an_optional_field(self):
         doc = contract.load()
         # 4 since the AI-written checks' template hash (a required target field of nuclei_validate), not for this optional field; 5 since the nmap detail,
-        # the cuts and the bbot finding port (every field of it optional, so the minimum a server still takes stays 1); 6 since the java_runtime kind
-        self.assertEqual((doc['contract_version'], doc['min_supported_contract_version']), (6, 1))
+        # the cuts and the bbot finding port (every field of it optional, so the minimum a server still takes stays 1); 6 since the java_runtime kind,
+        # 7 since the version_read kind
+        self.assertEqual((doc['contract_version'], doc['min_supported_contract_version']), (7, 1))
 
 
 if __name__ == '__main__':

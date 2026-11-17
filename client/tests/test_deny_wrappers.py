@@ -191,6 +191,7 @@ CASES = {
     'web_screenshot': lambda: screenshot_connection(fixture('web_screenshot')),
     'ssh_probe': lambda: tools.RUNNERS['ssh_probe'](fixture('ssh_probe')),
     'java_runtime': lambda: tools.RUNNERS['java_runtime'](fixture('java_runtime')),
+    'version_read': lambda: tools.RUNNERS['version_read'](fixture('version_read')),
     'secrets_scan': lambda: tools.RUNNERS['secrets_scan'](fixture('secrets_scan')),
 }
 # bbot is not a connection of this process: it is a program that connects by itself, held by the blacklist it is started with (BbotTests below).
