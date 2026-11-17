@@ -1,5 +1,5 @@
-"""The ``version_read`` kind (contract version 7): fetch the anonymous GETs cvENGINE's version source catalogue names, and hand back only the
-parts of each answer it asked for.
+"""The ``version_read`` kind (contract version 7) and the ``version_digest`` kind (contract version 8): fetch the anonymous GETs cvENGINE's version
+source catalogue names, and hand back only the parts of each answer it asked for.
 
 Why it is generic. The catalogue of version sources (which product states its version where, and how to read it) lives on the server
 (``cveFeed.version_catalogue``): adding a product there is one entry and a test, and no Sentinel release. This module knows no product. It runs
@@ -16,6 +16,15 @@ What a task asks (``target['reads']``): per web base of a host, up to ``MAX_REQU
            ``nodejs_version_info``, ``*_build_info`` ...), each rebuilt with only its version-like labels (``LABELS``, or a name ending in
            ``_version``); every other sample, label and value is dropped here.
   headers  nothing of the body.
+  digest   (``version_digest`` only, contract 8) a digest of the body instead of the body: its SHA-256 (only when the whole body was read, at
+           most ``MAX_DIGEST_BYTES``) and its first ``transport.WIRE_HEAD`` bytes as they came over the wire, in hex (a static asset's magic
+           number and header: a gzip file's own timestamp). Nothing else of the body. An answer another path served after a redirect (a
+           catch-all sending every unknown path to a login page) is ``redirected`` and carries no digest: the hash of a page the server did
+           not ask for is never handed back as the asset's.
+
+Why a second kind. A Sentinel of contract 7 refuses a request it does not know (a malformed task fails whole), and cvENGINE's queue cannot
+tell which Sentinel will claim a task. So the digest read is its own kind, ``version_digest`` (``kind_since`` 8): the same targets and
+answers, with ``digest`` allowed, offered only to a Sentinel that declares contract 8. A ``version_read`` task never carries a digest read.
 
 Every answer also carries its status, content type, size and the response headers the request names (never a cookie or an authorization
 header). Every request is a GET (there is no method field: nothing else can be asked), anonymous (no cookie, no credential), through
@@ -53,7 +62,10 @@ MAX_METRICS_BYTES = http.MAX_READ_BYTES
 REQUEST_GAP = 0.5     # seconds between two requests to one host
 WORKERS = 4           # hosts asked side by side
 BATCH_SECONDS = 900   # no host starts after this; the rest are reported as not run
-READS = ('json', 'text', 'metrics', 'headers')
+READS = ('json', 'text', 'metrics', 'headers', 'digest')
+DIGEST_KIND = 'version_digest'  # contract 8: version_read with the digest read
+MAX_DIGEST_BYTES = http.MAX_READ_BYTES  # the most of an asset a digest read hashes
+_HEX = re.compile(r'^[0-9a-f]{0,64}$')
 REQUEST_KEYS = frozenset({'path', 'read', 'fields', 'find', 'headers'})
 NEVER_HEADERS = frozenset({'set-cookie', 'cookie', 'authorization', 'proxy-authorization', 'www-authenticate', 'proxy-authenticate'})
 LABELS = frozenset({'version', 'vendor', 'runtime', 'revision', 'goversion', 'implementation'})  # and any label named *_version
@@ -74,12 +86,14 @@ def clean(text, limit):
 
 # ----------------------------------------------------------------------------- the task
 
-def _clean_request(raw):
+def _clean_request(raw, digest=False):
     if not isinstance(raw, dict) or set(raw) - REQUEST_KEYS:  # a method, a body or a header to send is not a field: nothing but a GET exists
         return None
     path, read = raw.get('path'), raw.get('read')
     if not isinstance(path, str) or not _PATH.match(path) or path.startswith('//') or read not in READS:
         return None
+    if read == 'digest' and not digest:
+        return None  # a digest read is the version_digest kind's (contract 8), never version_read's
     if any(part in ('..', '.') for part in path.split('?', 1)[0].split('/')):
         return None
     fields = raw.get('fields') or []
@@ -100,7 +114,7 @@ def _clean_request(raw):
     return {'path': path, 'read': read, 'fields': list(dict.fromkeys(fields)), 'headers': list(dict.fromkeys(headers)), 'find': find}
 
 
-def _clean_read(raw):
+def _clean_read(raw, digest=False):
     if not isinstance(raw, dict):
         return None
     ident, host, base, requests = raw.get('id'), raw.get('host'), raw.get('base'), raw.get('requests')
@@ -108,7 +122,7 @@ def _clean_read(raw):
         return None
     if not 0 < len(requests) <= MAX_REQUESTS:
         return None
-    cleaned = [_clean_request(r) for r in requests]
+    cleaned = [_clean_request(r, digest=digest) for r in requests]
     if any(r is None for r in cleaned):
         return None
     try:
@@ -257,11 +271,19 @@ def answer_of(request, got):
         out['text'] = text_excerpt(body, request['find'])
     elif request['read'] == 'metrics':
         out['lines'] = info_lines(body)
+    elif request['read'] == 'digest':
+        if got.get('redirected_from'):
+            out['redirected'] = True  # another path's answer (a login page a catch-all sent this one to): its hash is not the asset's
+        else:
+            head = str(got.get('wire_head') or '')[:2 * 16].lower()
+            sha = str(got.get('sha256') or '').lower()
+            out['digest'] = {**({'sha256': sha} if not out['truncated'] and len(sha) == 64 and _HEX.match(sha) else {}),
+                             'head': head if _HEX.match(head) and len(head) % 2 == 0 else ''}
     return out
 
 
 def _max_bytes(read):
-    return {'json': MAX_JSON_BYTES, 'metrics': MAX_METRICS_BYTES}.get(read, MAX_TEXT_BYTES)
+    return {'json': MAX_JSON_BYTES, 'metrics': MAX_METRICS_BYTES, 'digest': MAX_DIGEST_BYTES}.get(read, MAX_TEXT_BYTES)
 
 
 # ----------------------------------------------------------------------------- running
@@ -287,10 +309,12 @@ def run_read(entry, get, sleep=time.sleep, first=True):
     return {'id': entry['id'], 'answers': answers}
 
 
-def run_batch(target, probe=None, sleep=time.sleep, clock=time.monotonic, workers=WORKERS, max_seconds=BATCH_SECONDS):
-    """Run a ``version_read`` task: ``{'reads': [...], 'scope': {...}}``. Returns ``{'reads': [...], 'touched', 'refused'}``. A malformed entry
-    fails the task (the server sent something it should not have); one host failing never stops the others. ``probe`` replaces
-    ``http.probe_url`` (tests)."""
+def run_batch(target, probe=None, sleep=time.sleep, clock=time.monotonic, workers=WORKERS, max_seconds=BATCH_SECONDS, kind=KIND):
+    """Run a ``version_read`` task, or a ``version_digest`` one (``kind``: the digest read allowed): ``{'reads': [...], 'scope': {...}}``.
+    Returns ``{'reads': [...], 'touched', 'refused'}``. A malformed entry fails the task (the server sent something it should not have); one
+    host failing never stops the others. ``probe`` replaces ``http.probe_url`` (tests)."""
+    if kind not in (KIND, DIGEST_KIND):
+        raise ValueError(f'not a version read kind: {kind}')
     from .policy import ScopePolicy
     if not isinstance(target, dict):
         raise ValueError('a version_read target is an object')
@@ -298,7 +322,7 @@ def run_batch(target, probe=None, sleep=time.sleep, clock=time.monotonic, worker
     raw = target.get('reads') if isinstance(target.get('reads'), list) else []
     if not 0 < len(raw) <= MAX_READS:
         raise ValueError(f'a version_read task names 1 to {MAX_READS} reads')
-    reads = [_clean_read(item) for item in raw]
+    reads = [_clean_read(item, digest=kind == DIGEST_KIND) for item in raw]
     if any(e is None for e in reads):
         raise ValueError('a planned version_read entry is malformed')
     if len({e['id'] for e in reads}) != len(reads):

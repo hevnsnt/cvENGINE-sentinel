@@ -4,6 +4,7 @@ Every request is bounded (bytes, per-read timeouts and a total time budget), rea
 Host override or a cached script's ETag may be added) and goes to a numeric address the task's scope policy accepted (``transport``). The one exception is
 the signed-in route check (``routes_signed``): it passes ``signed`` (the stored sign-in's header pairs, already checked) and then the server certificate is
 verified unless that sign-in's owner switched verification off for it."""
+import hashlib
 import http.client
 import re
 import socket
@@ -134,7 +135,8 @@ def probe_url(url, policy, timeout=(CONNECT_TIMEOUT, READ_TIMEOUT), max_bytes=RO
         connection.sock.settimeout(timeout[1])
         connection.request(method, path, headers=request_headers)
         response = connection.getresponse()
-        raw = transport.read_body(response, max_bytes)  # gzip and deflate from a device that ignores identity are decoded, capped after decoding
+        wire = {}
+        raw = transport.read_body(response, max_bytes, wire=wire)  # gzip and deflate from a device that ignores identity are decoded, capped after decoding
         if expired.is_set():
             raise TimeoutError('probe exceeded its total time budget')
         encoding = response.headers.get_content_charset() or 'utf-8'
@@ -153,6 +155,9 @@ def probe_url(url, policy, timeout=(CONNECT_TIMEOUT, READ_TIMEOUT), max_bytes=RO
                 'www_authenticate': response.getheader('WWW-Authenticate', ''), 'cookies': list(cookies.keys()),
                 'content_type': (response.getheader('Content-Type') or '').split(';')[0].strip().lower(),
                 'body': text, 'title': title, 'bytes': len(raw), 'read_limit': max_bytes, 'truncated': len(raw) >= max_bytes,
+                # the exact bytes of the body as digests (``version_read``'s digest read: a static asset's hash, never the asset): the SHA-256 of
+                # the decoded body, and the first bytes as they came over the wire (a gzip file's own header and timestamp)
+                'sha256': hashlib.sha256(raw).hexdigest(), 'wire_head': (wire.get('head') or b'').hex(),
                 'server': response.getheader('Server', ''),
                 'powered_by': response.getheader('X-Powered-By', ''), 'headers': versions.keep_headers(response.headers.items()),
                 'raw_headers': {k.lower(): ' '.join(v.split())[:200] for k, v in list(response.headers.items())[:60]
