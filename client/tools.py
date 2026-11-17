@@ -2196,6 +2196,19 @@ def run_ssh_probe(target, register=None, badkeys_dir=None):
 RUNNERS['ssh_probe'] = run_ssh_probe
 
 
+def run_java_runtime(target, register=None):
+    """The ``java_runtime`` kind (contract 6, ``cvengine_scanner.probes.java_runtime``): the fixed read-only GETs that make a host's own status pages
+    state its Java runtime, and the JDWP handshake plus the one VirtualMachine.Version command on a debug port, all under the task's scope policy."""
+    from cvengine_scanner.probes import java_runtime
+    try:
+        return java_runtime.run_batch(target)
+    except ValueError as exc:
+        raise TargetError(f'not a usable java_runtime task ({exc})') from None
+
+
+RUNNERS['java_runtime'] = run_java_runtime
+
+
 # --- version probing, for the capabilities a bootstrapping Sentinel declares ------------------------------------------
 
 def _probe_timeout():

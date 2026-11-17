@@ -305,7 +305,16 @@ EXTRA_PORTS = (
     9042, 9092, 9100, 9200, 9300,     # Cassandra, Kafka, node exporter, Elasticsearch HTTP and transport
     9443, 10250, 10255, 11211, 15672,  # alternate HTTPS, kubelet, kubelet read-only, Memcached, RabbitMQ console
     16686, 27017, 27018, 50070, 61616, 1883, 8883,  # Jaeger, MongoDB, Hadoop, ActiveMQ, MQTT (plain and TLS)
+    5005, 5006, 5007, 5008, 5009, 5010, 8787, 9009,  # Java debug (JDWP) ports: an open one runs any code it is sent (see JDWP_VERSION_SCRIPT)
 )
+# nmap's jdwp-version is a "version" category script: it cannot be named in --script, and -sV runs it by itself, at intensity 7 or more, on a port
+# that closed on nmap's NULL probe (a JDWP debuggee hangs up after two seconds without a handshake, so the port reads as tcpwrapped). Reviewed as
+# read-only: it sends the 14-byte "JDWP-Handshake" and then the one command VirtualMachine.Version (command set 1, command 1), and stores what it
+# read as the port's service ("jdwp"), product and version. Both the fingerprint pass (--version-intensity 7) and the version probe (--version-all)
+# run it. Its result is the port row itself, never script output, so ``reviewed_scripts`` has nothing of it to drop. cvENGINE reads that port as a Java
+# runtime and as an open debug port (cveFeed.java_runtime); the java_runtime kind asks the same two questions of a debug port nmap left unidentified.
+JDWP_VERSION_SCRIPT = 'jdwp-version'
+JDWP_PORTS = (5005, 5006, 5007, 5008, 5009, 5010, 8000, 8787, 9009)  # the debug ports the java_runtime kind may be asked to try
 # nmap's OS detection (-O --osscan-limit) needs one open and one CLOSED TCP port, and a pass over naabu's open ports alone has no closed one, so
 # the host was never OS-fingerprinted. These unassigned ports are nearly always answered with a reset when the host answers at all: one is
 # enough, two tolerate a firewall that drops one of them.
