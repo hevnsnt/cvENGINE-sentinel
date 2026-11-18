@@ -1,0 +1,39 @@
+www.example.com
+ServerVersion: Apache/2.4.57 (Debian) OpenSSL/3.0.11
+ServerMPM: event
+Server Built: 2023-04-13T03:26:51
+CurrentTime: Wednesday, 15-Nov-2023 10:12:45 UTC
+RestartTime: Monday, 13-Nov-2023 06:01:02 UTC
+ParentServerConfigGeneration: 3
+ParentServerMPMGeneration: 2
+ServerUptimeSeconds: 187303
+ServerUptime: 2 days 4 hours 1 minute 43 seconds
+Load1: 0.08
+Load5: 0.05
+Load15: 0.01
+Total Accesses: 48211
+Total kBytes: 912377
+Total Duration: 3922876
+CPUUser: 61.45
+CPUSystem: 30.12
+CPUChildrenUser: 0
+CPUChildrenSystem: 0
+CPULoad: .0488893
+Uptime: 187303
+ReqPerSec: .257396
+BytesPerSec: 4988.11
+BytesPerReq: 19378.9
+DurationPerReq: 81.3689
+BusyWorkers: 1
+GracefulWorkers: 0
+IdleWorkers: 74
+Processes: 3
+Stopping: 0
+ConnsTotal: 1
+ConnsAsyncWriting: 0
+ConnsAsyncKeepAlive: 0
+ConnsAsyncClosing: 0
+Scoreboard: ________________________________________________________W__________________..................................................
+TLSSessionCacheStatus
+CacheType: SHMCB
+CacheSharedMemory: 512000

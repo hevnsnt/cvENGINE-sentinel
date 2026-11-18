@@ -19,6 +19,12 @@ SERVER_PRODUCTS = {
     "netlify": "Netlify", "vercel": "Vercel", "cloudflare": "Cloudflare", "cloudfront": "Amazon CloudFront",
     "amazons3": "Amazon S3", "github.com": "GitHub Pages", "akamaighost": "Akamai", "fastly": "Fastly",
     "varnish": "Varnish", "gws": "Google Web Server", "awselb": "AWS Elastic Load Balancing", "heroku": "Heroku",
+    # servers whose own Server header states their own release (each project's source sets it from its version constant): Werkzeug's
+    # BaseWSGIServer ("Werkzeug/3.0.1 Python/3.12.1"), Tornado ("TornadoServer/6.4"), CherryPy, Apache CouchDB ("CouchDB/3.3.3 (Erlang OTP/25)"),
+    # Squid's error pages, Allegro RomPager, ACME thttpd and mini_httpd, Boa, WEBrick, Caucho Resin, Tengine and Cherokee
+    "werkzeug": "Werkzeug", "tornadoserver": "Tornado", "cherrypy": "CherryPy", "couchdb": "Apache CouchDB", "squid": "Squid",
+    "allegro-software-rompager": "RomPager", "rompager": "RomPager", "thttpd": "thttpd", "mini_httpd": "mini_httpd", "boa": "Boa",
+    "webrick": "WEBrick", "resin": "Resin", "tengine": "Tengine", "cherokee": "Cherokee",
 }
 POWERED_BY_PRODUCTS = {
     "php": "PHP", "asp.net": "ASP.NET", "express": "Express", "next.js": "Next.js", "craft cms": "Craft CMS",
@@ -220,10 +226,35 @@ _PLUGIN_COMMENT = re.compile(r"<!--[^>]{0,200}?\b(Yoast SEO|All in One SEO(?: Pr
 MAX_GENERATORS = 8
 
 
+# MkDocs writes "mkdocs-1.5.3, mkdocs-material-9.4.8" (its own release, then the theme's: mkdocs/themes/*/base.html and Material's
+# partials, "mkdocs-{{ mkdocs_version }}, mkdocs-material-{{ version }}"): one tag, two products, no space before the version
+_MKDOCS = re.compile(r"^mkdocs-(\d+\.\d+(?:\.\d+)?)(?:,\s{0,4}mkdocs-material-(\d+\.\d+\.\d+))?(?=[,\s]|$)", re.IGNORECASE)
+# generators that state a release LINE, never the release: Ghost prints its "safe" version (major.minor: ghost/core's
+# ghostVersion.safe), Joomla 1.5 printed "Joomla! 1.5", TYPO3 4.x "TYPO3 4.5 CMS". A line inside an advisory's range ("before 5.75.1")
+# would read as the vulnerable release, so the product is kept with no version (a lead for the probes)
+LINE_ONLY_GENERATORS = frozenset({'ghost', 'joomla', 'typo3'})
+
+
 def parse_generator(value):
     """``(product, version)`` of one generator value ("WordPress 6.4.2", "Elementor 3.18.3; features: ...", "Joomla! - Open Source ..."), or None."""
     parsed = _GENERATOR_VALUE.match(str(value or '').strip() + ' ')
-    return (parsed.group(1).rstrip(' .!-'), parsed.group(2) or '') if parsed else None
+    if not parsed:
+        return None
+    product = parsed.group(1).rstrip(' .!-')
+    version = parsed.group(2) or ''
+    if product.lower() in LINE_ONLY_GENERATORS:
+        version = ''  # a line, not a release (LINE_ONLY_GENERATORS)
+    return product, version
+
+
+def generator_values(value):
+    """``[(product, version)]`` one generator value names: two for MkDocs with the Material theme, else what ``parse_generator`` reads."""
+    text = str(value or '').strip()
+    mkdocs = _MKDOCS.match(text)
+    if mkdocs:
+        return [('MkDocs', mkdocs.group(1))] + ([('Material for MkDocs', mkdocs.group(2))] if mkdocs.group(2) else [])
+    parsed = parse_generator(text)
+    return [parsed] if parsed else []
 
 
 def generator_tags(html):
@@ -234,9 +265,7 @@ def generator_tags(html):
         if not _NAME_GEN.search(tag):
             continue
         content = _CONTENT.search(tag)
-        parsed = parse_generator(content.group(1)) if content else None
-        if parsed:
-            found.append(parsed)
+        found += generator_values(content.group(1)) if content else []
         if len(found) >= MAX_GENERATORS:
             break
     for match in _PLUGIN_COMMENT.finditer((html or '')[:200_000]):

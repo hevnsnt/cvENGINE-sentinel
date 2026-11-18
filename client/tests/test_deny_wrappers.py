@@ -193,6 +193,7 @@ CASES = {
     'java_runtime': lambda: tools.RUNNERS['java_runtime'](fixture('java_runtime')),
     'version_read': lambda: tools.RUNNERS['version_read'](fixture('version_read')),
     'version_digest': lambda: tools.RUNNERS['version_digest'](fixture('version_digest')),
+    'version_rows': lambda: tools.RUNNERS['version_rows'](fixture('version_rows')),
     'secrets_scan': lambda: tools.RUNNERS['secrets_scan'](fixture('secrets_scan')),
 }
 # bbot is not a connection of this process: it is a program that connects by itself, held by the blacklist it is started with (BbotTests below).

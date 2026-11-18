@@ -217,5 +217,93 @@ class DigestTests(unittest.TestCase):
         self.assertEqual(list(Draft202012Validator(contract.target_schema('version_digest')).iter_errors({'reads': reads, 'scope': SCOPE})), [])
 
 
+PAGES = __import__('pathlib').Path(__file__).with_name('pages')
+PHPINFO_ROWS = ['PHP Version', 'OpenSSL Library Version', 'cURL Information', 'libXML Loaded Version', 'libXML Compiled Version',
+                'PCRE Library Version', 'SQLite Library', 'Apache Version']
+STATUS_ROWS = ['ServerVersion', 'ServerMPM', 'Server Built']  # the last two state no version: never returned
+
+
+def rows_request(path, *names):
+    return {'path': path, 'read': 'rows', 'fields': list(names), 'headers': ['server']}
+
+
+class RowsTests(unittest.TestCase):
+    """The rows read (contract 9, kind version_rows): only the named version rows of a status page, never the page."""
+
+    def run_task(self, reads, table, kind=version_read.ROWS_KIND):
+        fake = FakeWeb(table)
+        return version_read.run_batch({'reads': reads, 'scope': SCOPE}, probe=fake, sleep=lambda s: None, kind=kind), fake
+
+    def test_server_status_auto_gives_only_its_version_lines(self):
+        body = (PAGES / 'server_status_auto.txt').read_text()
+        result, fake = self.run_task([entry([rows_request('/server-status?auto', *STATUS_ROWS)])],
+                                     {'/server-status?auto': answer(200, body, {'Content-Type': 'text/plain; charset=ISO-8859-1'})})
+        got = result['reads'][0]['answers'][0]
+        self.assertEqual(got['rows'], {'ServerVersion': 'Apache/2.4.57 (Debian) OpenSSL/3.0.11'})
+        text = json.dumps(result)
+        for other in ('48211', 'Scoreboard', 'www.example.com', 'SHMCB'):
+            self.assertNotIn(other, text)
+        self.assertNotIn('text', got)
+        self.assertEqual(len(fake.asked), 1)
+
+    def test_phpinfo_gives_its_version_rows_and_no_secret(self):
+        body = (PAGES / 'phpinfo.html').read_text()
+        result, _fake = self.run_task([entry([rows_request('/info.php', *PHPINFO_ROWS)])], {'/info.php': answer(200, body)})
+        rows = result['reads'][0]['answers'][0]['rows']
+        self.assertEqual(rows, {'PHP Version': '8.2.12', 'OpenSSL Library Version': 'OpenSSL 3.0.11 19 Sep 2023', 'cURL Information': '7.88.1',
+                                'libXML Loaded Version': '20914', 'libXML Compiled Version': '2.9.14', 'PCRE Library Version': '10.42 2022-12-11',
+                                'SQLite Library': '3.40.1', 'Apache Version': 'Apache/2.4.57 (Debian)'})
+        text = json.dumps(result)
+        for secret in ('hunter2', 'wJalrXUt', 'PHPSESSID', 'db-prod-7', 'configure', '5.15.0-91'):
+            self.assertNotIn(secret, text)
+
+    def test_a_named_row_whose_value_states_no_version_stays_here(self):
+        body = (PAGES / 'phpinfo.html').read_text()
+        result, _fake = self.run_task([entry([rows_request('/info.php', 'DB_PASSWORD', 'AWS_SECRET_ACCESS_KEY', 'HTTP_COOKIE')])],
+                                      {'/info.php': answer(200, body)})
+        # the server never names these; were one named, a value with no version in it (a password, a key, a cookie) is not returned all the same
+        self.assertEqual(result['reads'][0]['answers'][0]['rows'], {})
+        for secret in ('hunter2', 'wJalrXUt', 'PHPSESSID'):
+            self.assertNotIn(secret, json.dumps(result))
+
+    def test_a_value_with_markup_or_quotes_is_dropped(self):
+        body = ('<table><tr><td class="e">PHP Version </td><td class="v"><i>8.2.12</i></td></tr>'
+                '<tr><td class="e">SQLite Library </td><td class="v">3.40.1"; DROP</td></tr></table>')
+        result, _fake = self.run_task([entry([rows_request('/info.php', 'PHP Version', 'SQLite Library')])], {'/info.php': answer(200, body)})
+        self.assertEqual(result['reads'][0]['answers'][0]['rows'], {})
+
+    def test_a_hostile_page_never_costs_time(self):
+        body = '<tr>' * 200000 + '<td>' * 200000 + '\n' + ('ServerVersion' + ' ' * 5000 + ':') * 50
+        result, _fake = self.run_task([entry([rows_request('/server-status?auto', 'ServerVersion')])], {'/server-status?auto': answer(200, body)})
+        self.assertEqual(result['reads'][0]['answers'][0]['rows'], {})
+
+    def test_version_read_and_version_digest_never_run_a_rows_read(self):
+        for kind in (version_read.KIND, version_read.DIGEST_KIND):
+            with self.subTest(kind=kind), self.assertRaises(ValueError):
+                self.run_task([entry([rows_request('/server-status?auto', 'ServerVersion')])], {}, kind=kind)
+        with self.assertRaises(ValueError):  # and the rows kind never runs a digest read
+            self.run_task([entry([{'path': '/a.js', 'read': 'digest'}])], {})
+
+    def test_a_rows_read_names_its_rows_and_only_row_names(self):
+        for bad in ({'path': '/s', 'read': 'rows'}, {'path': '/s', 'read': 'rows', 'fields': ['<b>']}, {'path': '/s', 'read': 'rows', 'fields': ['x'] * 13},
+                    {'path': '/s', 'read': 'rows', 'fields': ['ServerVersion'], 'find': 'x'}):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                self.run_task([entry([bad])], {})
+        result, _fake = self.run_task([entry([rows_request('/s', 'ServerVersion'), json_request('/v', 'version')])],
+                                      {'/v': answer(200, '{"version": "1.2.3"}')})
+        self.assertEqual(result['reads'][0]['answers'][1]['json'], {'version': '1.2.3'})  # the version_read reads still run in this kind
+
+    def test_the_result_is_in_contract(self):
+        if Draft202012Validator is None:
+            self.skipTest('jsonschema is not installed')
+        reads = [entry([rows_request('/server-status?auto', *STATUS_ROWS)]),
+                 entry([rows_request('/info.php', *PHPINFO_ROWS)], host='search.example.com', base='https://search.example.com')]
+        result, _fake = self.run_task(reads, {'/server-status?auto': answer(200, (PAGES / 'server_status_auto.txt').read_text()),
+                                              '/info.php': answer(200, (PAGES / 'phpinfo.html').read_text())})
+        errors = list(Draft202012Validator(contract.result_schema('version_rows')).iter_errors({'outcome': 'done', **result}))
+        self.assertEqual(errors, [])
+        self.assertEqual(list(Draft202012Validator(contract.target_schema('version_rows')).iter_errors({'reads': reads, 'scope': SCOPE})), [])
+
+
 if __name__ == '__main__':
     unittest.main()
