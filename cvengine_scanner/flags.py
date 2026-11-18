@@ -103,6 +103,43 @@ NUCLEI_SERVICE_MAX_PORTS = 6  # the most non-web ports the server puts in one ta
 NUCLEI_WEB_HOST_RATE = 25
 
 
+# --- nuclei: the network detection pass (contract 10) ---------------------------------------------------------------------
+# The light pass's ``-tags tech`` reaches the http technology templates only: a non-web port gets nothing from it (no network template is tagged tech), so
+# RDP, Redis, MongoDB, RabbitMQ, ActiveMQ, VNC and the SSH and FTP variants were never named by nuclei. A ``nuclei_light`` task that carries
+# ``network_detection: true`` (contract 10) runs the network detection templates instead, on its non-web host:port targets only: each port gets the
+# templates of its class that are on the service-port allowlist (``nuclei_allowlist``) AND whose reviewed path is under ``network/detection/``, through the same
+# paced, one-template-at-a-time service run as every other non-web port (``NUCLEI_SERVICE_BUDGET``, ``NUCLEI_SERVICE_EXCLUDED_TAGS``, the content rule). Never
+# ``network/cves``, ``network/misconfig``, a javascript or an ssl template, a web target or a tag the task names. The server sends the field only to a Sentinel
+# that declared contract ``NUCLEI_DETECTION_SINCE`` or later: an older one would ignore it and run the light pass's tech filter, which checks nothing there.
+NUCLEI_DETECTION_DIR = 'network/detection/'
+NUCLEI_DETECTION_SINCE = 10
+NUCLEI_DETECTION_TYPES = ('tcp',)  # every template under network/ is nuclei's raw tcp type
+# the per-port budget the server asks for (a task may only make it gentler: ``nuclei_service_budget``) and how many ports one task carries, so a light task's
+# own time (``TASK_LIMITS['nuclei_light']``: 840 s at least) covers each port's whole budget: 3 x 240 s. The FTP class has the most templates (79 in v10.5.2).
+NUCLEI_DETECTION_BUDGET = {'pause_ms': 500, 'seconds': 240, 'web_rate': 25}
+NUCLEI_DETECTION_MAX_PORTS = 3
+
+
+def nuclei_detection_selection(service):
+    """``{'types', 'tags', 'etags'}`` of the network detection pass on a port of class ``service``: the class's own templates (``nuclei_service_selection``
+    with no task tags: a task's tags never widen or narrow it), of nuclei's raw tcp type only, with ``NUCLEI_SERVICE_EXCLUDED_TAGS`` always excluded.
+    ``None`` for web (the pass never sends an http template) and for a class with no tcp templates of its own (``tls``: ssl templates only)."""
+    if service == NUCLEI_WEB or (service != NUCLEI_UNKNOWN and service not in NUCLEI_SERVICES):
+        return None
+    if service != NUCLEI_UNKNOWN and not set(NUCLEI_SERVICES[service][1]) & set(NUCLEI_DETECTION_TYPES):
+        return None
+    selection = nuclei_service_selection(service, ())
+    return {**selection, 'types': list(NUCLEI_DETECTION_TYPES)}
+
+
+def is_detection_path(path):
+    """Whether a template's reviewed library path (``nuclei_allowlist``'s ``path``) is under ``network/detection/``: a relative path, no ``..``."""
+    if not isinstance(path, str) or path.startswith(('/', '\\')) or '\\' in path:
+        return False
+    parts = path.split('/')
+    return path.startswith(NUCLEI_DETECTION_DIR) and '..' not in parts and '.' not in parts and path.endswith('.yaml')
+
+
 def nuclei_service_budget(requested=None):
     """The per-service budget a run uses: what the task asked for (``{'pause_ms', 'seconds', 'web_rate'}``) held to this library's bounds. A task can
     lower ``seconds`` and ``web_rate`` and raise ``pause_ms`` (a gentler run), never the other way, so no server can make a Sentinel hit a service harder

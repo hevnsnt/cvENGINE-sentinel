@@ -417,3 +417,28 @@ class NmapFingerprintDetailTests(unittest.TestCase):
         from cvengine_scanner import contract
         errors = list(Draft202012Validator(contract.result_schema('nmap')).iter_errors({'outcome': 'done', **self.result}))
         self.assertEqual(errors, [])
+
+
+class NetworkDetectionLineTests(unittest.TestCase):
+    """The lines the network detection templates print (``fixtures/nuclei/network_detection.jsonl``: openssh, dropbear, redis, rdp, mssql, vnc, mongodb,
+    rabbitmq, activemq, proftpd, exim, rsyncd, jdwp) come back with what the server reads a product and a version from."""
+
+    def test_each_line_keeps_its_template_port_matcher_and_extracted_values(self):
+        import json
+        from pathlib import Path
+        text = (Path(__file__).resolve().parent.parent / 'fixtures' / 'nuclei' / 'network_detection.jsonl').read_text(encoding='utf-8')
+        found = {f['template_id']: f for f in parsers.parse_nuclei_jsonl(text)}
+        self.assertEqual(len(found), len([line for line in text.splitlines() if line.strip()]))
+        for row in map(json.loads, text.splitlines()):
+            got = found[row['template-id']]
+            with self.subTest(template=row['template-id']):
+                self.assertEqual(got['host'], 'svc.example.com')
+                self.assertEqual(got['matched_at'], row['matched-at'])
+                self.assertEqual(got['extracted_results'], row.get('extracted-results') or [])
+                self.assertEqual(got['matcher_name'], row.get('matcher-name') or '')
+                self.assertEqual(got['type'], row['type'])
+                self.assertEqual(got['severity'], 'info')
+        self.assertEqual(found['openssh-detect']['extracted_results'], ['SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.6'])
+        self.assertEqual(found['rdp-detection']['matcher_name'], 'win2016')
+        self.assertEqual(found['mssql-detect']['type'], 'javascript')
+        self.assertEqual(found['redis-detect']['name'], 'Redis Service - Detect')

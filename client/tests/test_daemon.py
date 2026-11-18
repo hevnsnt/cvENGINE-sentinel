@@ -1099,6 +1099,16 @@ class KindPolicyTests(DaemonTestCase):
                     d._execute({'id': 46, 'kind': kind, 'target': {'targets': ['www.example.test'], 'tags': [], **field}}, None)
                     self.assertIs(runner.call_args.kwargs.get('allow_credential_checks', False), expected)
 
+    def test_only_a_light_task_whose_field_is_true_is_the_network_detection_pass(self):
+        """Contract 10: ``network_detection: true`` on a nuclei_light task, and nothing else (another kind, a truthy non-boolean), makes the run the detection pass."""
+        d = self.make()
+        for kind in ('nuclei_light', 'nuclei_targeted', 'nuclei_deep'):
+            for field in ({}, {'network_detection': False}, {'network_detection': 'yes'}, {'network_detection': 1}, {'network_detection': True}):
+                runner = mock.Mock(return_value={'findings': [], 'unreachable': []})
+                with self.subTest(kind=kind, field=field), mock.patch.dict(tools.RUNNERS, {kind: runner}), mock.patch.object(d, '_approved_templates', return_value=None):
+                    d._execute({'id': 47, 'kind': kind, 'target': {'targets': ['www.example.test:6379'], 'tags': [], **field}}, None)
+                    self.assertIs(runner.call_args.kwargs.get('network_detection', False), kind == 'nuclei_light' and field.get('network_detection') is True)
+
     def test_a_nuclei_task_hands_its_service_labels_and_budget_to_the_tool(self):
         """The server's label of each host:port and the per-service budget reach run_nuclei, which enforces them."""
         d = self.make()

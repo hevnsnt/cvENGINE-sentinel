@@ -3,7 +3,7 @@
   "$id": "https://github.com/hevnsnt/CVEngine/agentapi/sentinel_contract.json",
   "title": "cvENGINE Sentinel result contract",
   "description": "Both halves of the exchange between cvENGINE and a Sentinel. $defs/targets is what the server hands a Sentinel for each task kind (the task's target); $defs/results is what a Sentinel sends to POST /api/v1/sentinel/tasks/{id}/result; $defs/partials is what a streamed kind (bbot_discovery) sends to POST /api/v1/sentinel/tasks/{id}/partial while it runs, before the result that closes it. The server clips and validates every result anyway (agentapi.sentinel_broker.clean_result); this file is what a correct client keeps to, so the server never has to. Bounds are asserted equal to the server's own limits, and every target the server builds is validated against it, by tests/test_sentinel_contract.py. Bump contract_version (and say so in CHANGELOG) for any change a client must follow.",
-  "contract_version": 9,
+  "contract_version": 10,
   "min_supported_contract_version": 1,
   "kind_since": {"nmap": 1, "naabu": 1, "nuclei_light": 1, "nuclei_targeted": 1, "nuclei_deep": 1, "testssl": 1, "nmap_udp": 1, "wpscan": 1, "discover": 1, "openvas": 1, "waf": 2, "bbot_discovery": 3, "http_probe": 3, "dns_resolve": 3, "bucket_check": 3, "vhost_probe": 3, "subdir_probe": 3, "alive_check": 3, "supplier_check": 3, "secrets_scan": 3, "nmap_full": 3, "nmap_verify": 3, "node2shell": 3, "rdp_shot": 3, "db_probe": 3, "path_probe": 3, "nuclei_validate": 3, "hygiene_check": 3, "dangling_dns_check": 3, "route_probe": 3, "wpscan_thorough": 3, "identity_check": 3, "web_screenshot": 3, "route_probe_signed": 3, "page_read": 3, "ssh_probe": 3, "java_runtime": 6, "version_read": 7, "version_digest": 8, "version_rows": 9},
   "external_since": {"nuclei_validate": 4, "path_probe": 3},
@@ -5998,6 +5998,10 @@
           "allow_credential_checks": {
             "type": "boolean",
             "description": "optional, additive: true only when a person turned on \"Allow checks that send credentials\" at the server. Without it (absent or false) the web pass leaves out the default-login and bruteforce templates and never takes either as a tag; a Sentinel that does not know the field never runs them. It never reaches the service ports, which send no credentials."
+          },
+          "network_detection": {
+            "type": "boolean",
+            "description": "optional (contract 10): true makes this light task the network detection pass. Only the targets that are not web (a host:port whose service label, or else its port number, is not web) are run, each with the nuclei templates of its class that are on the Sentinel's service-port allowlist AND whose reviewed library path is under network/detection/ (nuclei's raw tcp type only), one template at a time under the service budget, with dos, default-login, bruteforce, fuzz and intrusive always excluded; tags are not used for those ports. A web target is not run and is named in not_checked. The server sends it only to a Sentinel that declared contract 10 or later (cvengine_scanner.flags.NUCLEI_DETECTION_SINCE): an older one ignores the field and its light pass checks nothing on these ports. The result is a nuclei_light result like any other."
           },
           "budget": {
             "type": "object",
