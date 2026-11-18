@@ -139,5 +139,83 @@ class ReadTests(unittest.TestCase):
         self.assertEqual(list(Draft202012Validator(contract.target_schema('version_read')).iter_errors(target)), [])
 
 
+GZIP_HEAD = '1f8b080856ed7a6400037264785f656e'  # a gzip file named rdx_en... with its timestamp, as a NetScaler serves rdx_en.json.gz
+
+
+def digest_answer(status=200, body='', headers=None, sha='ab' * 32, head=GZIP_HEAD, **extra):
+    return {**answer(status, body, headers), 'sha256': sha, 'wire_head': head, 'bytes': len(body), **extra}
+
+
+class DigestTests(unittest.TestCase):
+    """The digest read (contract 8, kind version_digest): a static asset's SHA-256 and first bytes, never the asset."""
+
+    def run_task(self, reads, table, kind=version_read.DIGEST_KIND):
+        fake = FakeWeb(table)
+        return version_read.run_batch({'reads': reads, 'scope': SCOPE}, probe=fake, sleep=lambda s: None, kind=kind), fake
+
+    def test_a_digest_comes_back_and_the_body_never_does(self):
+        req = {'path': '/vpn/js/rdx/core/lang/rdx_en.json.gz', 'read': 'digest', 'headers': ['etag', 'last-modified']}
+        result, fake = self.run_task([entry([req])], {req['path']: digest_answer(200, 'SECRET-BODY', {'ETag': '"5a1-6493"', 'Last-Modified': 'x'})})
+        got = result['reads'][0]['answers'][0]
+        self.assertEqual(got['digest'], {'sha256': 'ab' * 32, 'head': GZIP_HEAD})
+        self.assertEqual(got['headers'], {'etag': '"5a1-6493"', 'last-modified': 'x'})
+        self.assertNotIn('SECRET-BODY', json.dumps(result))
+        self.assertEqual(len(fake.asked), 1)
+
+    def test_a_truncated_body_has_no_hash(self):
+        req = {'path': '/a.js', 'read': 'digest'}
+        result, _fake = self.run_task([entry([req])], {'/a.js': digest_answer(200, 'x', truncated=True)})
+        self.assertEqual(result['reads'][0]['answers'][0]['digest'], {'head': GZIP_HEAD})
+
+    def test_a_redirected_answer_carries_no_digest(self):
+        req = {'path': '/a.js', 'read': 'digest'}
+        table = {'/a.js': {**answer(302, ''), 'location': '/login'}, '/login': digest_answer(200, '<html>Sign in</html>')}
+        result, fake = self.run_task([entry([req])], table)
+        got = result['reads'][0]['answers'][0]
+        self.assertTrue(got['redirected'])
+        self.assertNotIn('digest', got)
+
+    def test_version_read_never_runs_a_digest_read(self):
+        with self.assertRaises(ValueError):
+            self.run_task([entry([{'path': '/a.js', 'read': 'digest'}])], {}, kind=version_read.KIND)
+        with self.assertRaises(ValueError):
+            self.run_task([entry([{'path': '/a.js', 'read': 'digest'}])], {}, kind='nmap')
+
+    def test_the_wire_head_is_read_before_decoding(self):
+        import gzip
+        import io
+
+        from cvengine_scanner.probes import transport
+
+        class Response:
+            def __init__(self, raw, encoding):
+                self.stream, self.encoding = io.BytesIO(raw), encoding
+
+            def getheader(self, name, default=None):
+                return self.encoding if name == 'Content-Encoding' else default
+
+            def read(self, size=-1):
+                return self.stream.read(size)
+
+        raw = gzip.compress(b'{}', mtime=1685777750)
+        wire = {}
+        self.assertEqual(transport.read_body(Response(raw, 'gzip'), 1000, wire=wire), b'{}')
+        self.assertEqual(wire['head'], raw[:16])
+        wire = {}
+        self.assertEqual(transport.read_body(Response(raw, None), 1000, wire=wire), raw)
+        self.assertEqual(int.from_bytes(wire['head'][4:8], 'little'), 1685777750)
+
+    def test_the_result_is_in_contract(self):
+        if Draft202012Validator is None:
+            self.skipTest('jsonschema is not installed')
+        reads = [entry([{'path': '/vpn/js/rdx/core/lang/rdx_en.json.gz', 'read': 'digest', 'headers': ['etag']},
+                        {'path': '/vpn/index.html', 'read': 'text', 'find': '?v='}, {'path': '/x.css', 'read': 'headers', 'headers': ['etag']}])]
+        result, _fake = self.run_task(reads, {'/vpn/js/rdx/core/lang/rdx_en.json.gz': digest_answer(200, 'x'),
+                                              '/vpn/index.html': answer(200, '<link href="/vpn/js/rdx/core/css/rdx.css?v=' + 'a' * 32 + '">')})
+        errors = list(Draft202012Validator(contract.result_schema('version_digest')).iter_errors({'outcome': 'done', **result}))
+        self.assertEqual(errors, [])
+        self.assertEqual(list(Draft202012Validator(contract.target_schema('version_digest')).iter_errors({'reads': reads, 'scope': SCOPE})), [])
+
+
 if __name__ == '__main__':
     unittest.main()

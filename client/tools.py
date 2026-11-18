@@ -2223,6 +2223,19 @@ def run_version_read(target, register=None):
 RUNNERS['version_read'] = run_version_read
 
 
+def run_version_digest(target, register=None):
+    """The ``version_digest`` kind (contract 8): ``version_read`` whose requests may also ask for a digest of a static asset (its SHA-256 and
+    first bytes, never the asset), for the build of an edge appliance (cvENGINE's ``cveFeed.edge_builds``)."""
+    from cvengine_scanner.probes import version_read
+    try:
+        return version_read.run_batch(target, kind=version_read.DIGEST_KIND)
+    except ValueError as exc:
+        raise TargetError(f'not a usable version_digest task ({exc})') from None
+
+
+RUNNERS['version_digest'] = run_version_digest
+
+
 # --- version probing, for the capabilities a bootstrapping Sentinel declares ------------------------------------------
 
 def _probe_timeout():
