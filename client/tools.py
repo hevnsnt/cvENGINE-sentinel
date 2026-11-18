@@ -2236,6 +2236,19 @@ def run_version_digest(target, register=None):
 RUNNERS['version_digest'] = run_version_digest
 
 
+def run_version_rows(target, register=None):
+    """The ``version_rows`` kind (contract 9): ``version_read`` whose requests may also ask for only the named version rows of a status page
+    (Apache's ``/server-status?auto``, a phpinfo page cvENGINE already found), never the page (cvENGINE's ``cveFeed.version_catalogue``)."""
+    from cvengine_scanner.probes import version_read
+    try:
+        return version_read.run_batch(target, kind=version_read.ROWS_KIND)
+    except ValueError as exc:
+        raise TargetError(f'not a usable version_rows task ({exc})') from None
+
+
+RUNNERS['version_rows'] = run_version_rows
+
+
 # --- version probing, for the capabilities a bootstrapping Sentinel declares ------------------------------------------
 
 def _probe_timeout():

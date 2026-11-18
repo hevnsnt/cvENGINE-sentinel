@@ -1,5 +1,5 @@
-"""The ``version_read`` kind (contract version 7) and the ``version_digest`` kind (contract version 8): fetch the anonymous GETs cvENGINE's version
-source catalogue names, and hand back only the parts of each answer it asked for.
+"""The ``version_read`` kind (contract version 7), the ``version_digest`` kind (contract version 8) and the ``version_rows`` kind (contract
+version 9): fetch the anonymous GETs cvENGINE's version source catalogue names, and hand back only the parts of each answer it asked for.
 
 Why it is generic. The catalogue of version sources (which product states its version where, and how to read it) lives on the server
 (``cveFeed.version_catalogue``): adding a product there is one entry and a test, and no Sentinel release. This module knows no product. It runs
@@ -21,10 +21,17 @@ What a task asks (``target['reads']``): per web base of a host, up to ``MAX_REQU
            number and header: a gzip file's own timestamp). Nothing else of the body. An answer another path served after a redirect (a
            catch-all sending every unknown path to a login page) is ``redirected`` and carries no digest: the hash of a page the server did
            not ask for is never handed back as the asset's.
+  rows     (``version_rows`` only, contract 9) only the named rows of a status page, each a short version-like value: a ``Name: value`` line
+           of a plain-text page (Apache's ``/server-status?auto``: ``ServerVersion: Apache/2.4.57 (Debian) OpenSSL/3.0.11``) or the first two
+           cells of an HTML table row (a phpinfo page: ``<tr><td class="e">OpenSSL Library Version </td><td class="v">OpenSSL 3.0.11 ...``).
+           ``fields`` names the rows (at most ``MAX_FIELDS``); a row not named, a value that is not version-like text (``ROW_VALUE``, with a
+           dotted number or a bare build number in it) and every other byte of the body stay here. A phpinfo page carries the environment, cookies and credentials: only the version rows
+           the server names leave the Sentinel.
 
-Why a second kind. A Sentinel of contract 7 refuses a request it does not know (a malformed task fails whole), and cvENGINE's queue cannot
+Why a second (and a third) kind. A Sentinel of contract 7 refuses a request it does not know (a malformed task fails whole), and cvENGINE's queue cannot
 tell which Sentinel will claim a task. So the digest read is its own kind, ``version_digest`` (``kind_since`` 8): the same targets and
 answers, with ``digest`` allowed, offered only to a Sentinel that declares contract 8. A ``version_read`` task never carries a digest read.
+The rows read is the ``version_rows`` kind (``kind_since`` 9) for the same reason: the ``version_read`` reads and ``rows``, never ``digest``.
 
 Every answer also carries its status, content type, size and the response headers the request names (never a cookie or an authorization
 header). Every request is a GET (there is no method field: nothing else can be asked), anonymous (no cookie, no credential), through
@@ -62,10 +69,23 @@ MAX_METRICS_BYTES = http.MAX_READ_BYTES
 REQUEST_GAP = 0.5     # seconds between two requests to one host
 WORKERS = 4           # hosts asked side by side
 BATCH_SECONDS = 900   # no host starts after this; the rest are reported as not run
-READS = ('json', 'text', 'metrics', 'headers', 'digest')
+READS = ('json', 'text', 'metrics', 'headers', 'digest', 'rows')
 DIGEST_KIND = 'version_digest'  # contract 8: version_read with the digest read
+ROWS_KIND = 'version_rows'      # contract 9: version_read with the rows read
+KIND_READS = {KIND: ('json', 'text', 'metrics', 'headers'), DIGEST_KIND: ('json', 'text', 'metrics', 'headers', 'digest'),
+              ROWS_KIND: ('json', 'text', 'metrics', 'headers', 'rows')}
+MAX_ROWS_BYTES = http.MAX_READ_BYTES  # the most of a status page a rows read looks at (a phpinfo page is 60 to 200 KB)
+MAX_ROW_VALUE = 120
+MAX_ROW_SCAN = 5000   # table rows or lines of a page looked at
 MAX_DIGEST_BYTES = http.MAX_READ_BYTES  # the most of an asset a digest read hashes
 _HEX = re.compile(r'^[0-9a-f]{0,64}$')
+_ROW_NAME = re.compile(r'^[A-Za-z][A-Za-z0-9 ._()/-]{0,59}$')
+ROW_VALUE = re.compile(r'^[A-Za-z0-9 ._+~:()/,#-]{1,120}$')  # what a version row's value may be: a release, a build date, a module list
+_ROW_VERSION = re.compile(r'\d\.\d|^\d{1,6}$')  # and it states a version: a dotted number, or a bare build number (libxml's 20914)
+# the first two cells of a table row, neither holding markup (bounded: the scanned host controls the page)
+_TABLE_ROW = re.compile(r'<tr\b[^<>]{0,100}>\s{0,20}<t[dh]\b[^<>]{0,100}>([^<>]{1,80})</t[dh]>\s{0,20}<t[dh]\b[^<>]{0,100}>([^<>]{0,300})</t[dh]>',
+                        re.IGNORECASE)
+_TEXT_ROW = re.compile(r'^[ \t]{0,8}([A-Za-z][A-Za-z0-9 ._()/-]{0,59}?)[ \t]{0,8}(?::|=>)[ \t]{0,8}(.{0,300}?)[ \t\r]*$')
 REQUEST_KEYS = frozenset({'path', 'read', 'fields', 'find', 'headers'})
 NEVER_HEADERS = frozenset({'set-cookie', 'cookie', 'authorization', 'proxy-authorization', 'www-authenticate', 'proxy-authenticate'})
 LABELS = frozenset({'version', 'vendor', 'runtime', 'revision', 'goversion', 'implementation'})  # and any label named *_version
@@ -86,14 +106,15 @@ def clean(text, limit):
 
 # ----------------------------------------------------------------------------- the task
 
-def _clean_request(raw, digest=False):
+def _clean_request(raw, digest=False, kind=None):
     if not isinstance(raw, dict) or set(raw) - REQUEST_KEYS:  # a method, a body or a header to send is not a field: nothing but a GET exists
         return None
+    kind = kind or (DIGEST_KIND if digest else KIND)
     path, read = raw.get('path'), raw.get('read')
     if not isinstance(path, str) or not _PATH.match(path) or path.startswith('//') or read not in READS:
         return None
-    if read == 'digest' and not digest:
-        return None  # a digest read is the version_digest kind's (contract 8), never version_read's
+    if read not in KIND_READS.get(kind, ()):
+        return None  # a digest read is the version_digest kind's (contract 8), a rows read the version_rows kind's (contract 9), never version_read's
     if any(part in ('..', '.') for part in path.split('?', 1)[0].split('/')):
         return None
     fields = raw.get('fields') or []
@@ -101,20 +122,20 @@ def _clean_request(raw, digest=False):
     find = raw.get('find')
     if not isinstance(fields, list) or not isinstance(headers, list) or len(fields) > MAX_FIELDS or len(headers) > MAX_HEADERS:
         return None
-    if any(not isinstance(f, str) or not _FIELD.match(f) for f in fields):
+    if any(not isinstance(f, str) or not (_ROW_NAME if read == 'rows' else _FIELD).match(f) for f in fields):
         return None
     if any(not isinstance(h, str) or not _HEADER.match(h) or h in NEVER_HEADERS for h in headers):
         return None
-    if read == 'json' and not fields:
+    if read in ('json', 'rows') and not fields:
         return None
-    if read != 'json' and fields:
+    if read not in ('json', 'rows') and fields:
         return None
     if find is not None and (read != 'text' or not isinstance(find, str) or not 0 < len(find) <= MAX_FIND or _CONTROL.search(find)):
         return None
     return {'path': path, 'read': read, 'fields': list(dict.fromkeys(fields)), 'headers': list(dict.fromkeys(headers)), 'find': find}
 
 
-def _clean_read(raw, digest=False):
+def _clean_read(raw, digest=False, kind=None):
     if not isinstance(raw, dict):
         return None
     ident, host, base, requests = raw.get('id'), raw.get('host'), raw.get('base'), raw.get('requests')
@@ -122,7 +143,7 @@ def _clean_read(raw, digest=False):
         return None
     if not 0 < len(requests) <= MAX_REQUESTS:
         return None
-    cleaned = [_clean_request(r, digest=digest) for r in requests]
+    cleaned = [_clean_request(r, digest=digest, kind=kind) for r in requests]
     if any(r is None for r in cleaned):
         return None
     try:
@@ -190,6 +211,40 @@ def text_excerpt(body, find=None):
             return ''
         text = text[at:at + MAX_TEXT * 2]
     return clean(text, MAX_TEXT)
+
+
+def page_rows(body, names):
+    """``{name: value}`` of the rows ``names`` of a status page: the first ``Name: value`` (or ``Name => value``) line or the first HTML table row
+    whose first cell is the name (entities decoded, trailing blanks dropped), and whose value is version-like text (``ROW_VALUE``) that states a
+    version (a dotted number, or a bare build number: ``_ROW_VERSION``), so even a named row holding a password or a token stays here. Nothing
+    else of the body: a row not named, or one whose value is anything else (markup, a path with quotes, a long string), is never returned."""
+    import html as html_lib
+    wanted = {n: n for n in names}
+    out = {}
+    text = (body or '')[:MAX_ROWS_BYTES]
+
+    def keep(name, value):
+        name = clean(html_lib.unescape(name), 60)
+        if name not in wanted or name in out:
+            return
+        value = clean(html_lib.unescape(value), MAX_ROW_VALUE + 1)
+        if value and len(value) <= MAX_ROW_VALUE and ROW_VALUE.match(value) and _ROW_VERSION.search(value):
+            out[name] = value
+
+    for count, found in enumerate(_TABLE_ROW.finditer(text)):
+        if count >= MAX_ROW_SCAN or len(out) == len(wanted):
+            break
+        keep(found.group(1), found.group(2))
+    if len(out) < len(wanted) and '<tr' not in text[:4096].lower():  # a plain-text page: its lines (an HTML page's lines are markup)
+        for count, line in enumerate(text.split('\n')):
+            if count >= MAX_ROW_SCAN or len(out) == len(wanted):
+                break
+            if len(line) > 400:
+                continue
+            found = _TEXT_ROW.match(line)
+            if found:
+                keep(found.group(1), found.group(2))
+    return out
 
 
 def _labels(text):
@@ -271,6 +326,8 @@ def answer_of(request, got):
         out['text'] = text_excerpt(body, request['find'])
     elif request['read'] == 'metrics':
         out['lines'] = info_lines(body)
+    elif request['read'] == 'rows':
+        out['rows'] = page_rows(body, request['fields'])
     elif request['read'] == 'digest':
         if got.get('redirected_from'):
             out['redirected'] = True  # another path's answer (a login page a catch-all sent this one to): its hash is not the asset's
@@ -283,7 +340,7 @@ def answer_of(request, got):
 
 
 def _max_bytes(read):
-    return {'json': MAX_JSON_BYTES, 'metrics': MAX_METRICS_BYTES, 'digest': MAX_DIGEST_BYTES}.get(read, MAX_TEXT_BYTES)
+    return {'json': MAX_JSON_BYTES, 'metrics': MAX_METRICS_BYTES, 'digest': MAX_DIGEST_BYTES, 'rows': MAX_ROWS_BYTES}.get(read, MAX_TEXT_BYTES)
 
 
 # ----------------------------------------------------------------------------- running
@@ -310,10 +367,11 @@ def run_read(entry, get, sleep=time.sleep, first=True):
 
 
 def run_batch(target, probe=None, sleep=time.sleep, clock=time.monotonic, workers=WORKERS, max_seconds=BATCH_SECONDS, kind=KIND):
-    """Run a ``version_read`` task, or a ``version_digest`` one (``kind``: the digest read allowed): ``{'reads': [...], 'scope': {...}}``.
+    """Run a ``version_read`` task, a ``version_digest`` one (``kind``: the digest read allowed) or a ``version_rows`` one (the rows read
+    allowed): ``{'reads': [...], 'scope': {...}}``.
     Returns ``{'reads': [...], 'touched', 'refused'}``. A malformed entry fails the task (the server sent something it should not have); one
     host failing never stops the others. ``probe`` replaces ``http.probe_url`` (tests)."""
-    if kind not in (KIND, DIGEST_KIND):
+    if kind not in KIND_READS:
         raise ValueError(f'not a version read kind: {kind}')
     from .policy import ScopePolicy
     if not isinstance(target, dict):
@@ -322,7 +380,7 @@ def run_batch(target, probe=None, sleep=time.sleep, clock=time.monotonic, worker
     raw = target.get('reads') if isinstance(target.get('reads'), list) else []
     if not 0 < len(raw) <= MAX_READS:
         raise ValueError(f'a version_read task names 1 to {MAX_READS} reads')
-    reads = [_clean_read(item, digest=kind == DIGEST_KIND) for item in raw]
+    reads = [_clean_read(item, kind=kind) for item in raw]
     if any(e is None for e in reads):
         raise ValueError('a planned version_read entry is malformed')
     if len({e['id'] for e in reads}) != len(reads):
