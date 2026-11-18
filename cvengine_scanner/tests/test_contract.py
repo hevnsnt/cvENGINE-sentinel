@@ -82,7 +82,7 @@ class ContractFixtureTests(unittest.TestCase):
 FROZEN = {'v1': contract.FIXTURES / 'results' / 'v1', 'v2': contract.FIXTURES / 'results' / 'v2', 'v3': contract.FIXTURES / 'results' / 'v3',
           'v4': contract.FIXTURES / 'results' / 'v4', 'v5': contract.FIXTURES / 'results' / 'v5',
           'v6': contract.FIXTURES / 'results' / 'v6', 'v7': contract.FIXTURES / 'results' / 'v7',
-          'v8': contract.FIXTURES / 'results' / 'v8'}
+          'v8': contract.FIXTURES / 'results' / 'v8', 'v9': contract.FIXTURES / 'results' / 'v9'}
 KIND_OF = {'nmap': 'nmap', 'naabu': 'naabu', 'nuclei_light': 'nuclei_light', 'testssl': 'testssl', 'nmap_udp': 'nmap_udp', 'wpscan': 'wpscan',
            'discover': 'discover', 'openvas': 'openvas', 'waf': 'waf', 'bbot_discovery': 'bbot_discovery', 'error': 'nmap', 'nmap_full': 'nmap_full', 'nmap_verify': 'nmap_verify',
            'node2shell': 'node2shell', 'rdp_shot': 'rdp_shot', 'db_probe': 'db_probe', 'path_probe': 'path_probe',
@@ -351,6 +351,47 @@ V8_SHA256 = {  # every result fixture of contract version 8, copied when version
     'wpscan_thorough.json': '548ae1d7ad40e9c5a81bf183a39fba3b3b7a270d92380da8602384db0d53b736',
 }
 
+V9_SHA256 = {  # every result fixture of contract version 9, copied when version 10 added the network detection pass (nuclei_light network_detection)
+    'alive_check.json': '4a0f573792e25b1a3a11bb69975ec739479140733c4f5caad135d9a1743c2774',
+    'bbot_discovery.json': '52e06dac5583e2980b367a4c286cb1687dd50f9e3d2716d517788371f6f32a72',
+    'bucket_check.json': '4cfb30682f23402e37e43f2db93cfd051dcede5d0105830c7a75208f355377ae',
+    'dangling_dns_check.json': 'b5365b04c46ba82f10d188b869c08837277cc93a66a737958a284b24718ed20e',
+    'db_probe.json': '65706f26bb86e87d5663edacaedbf67e015b9bee7a12e93d448cc5a23fb04cc5',
+    'discover.json': '6f9825383a3efbf69724ee168a07935d965b7b57add1605a79660d269cf8f5a6',
+    'dns_resolve.json': 'd12186d5aff1986da8fb6520954b9a42223c7e72eea6f1e1603ff2d5d820d5c0',
+    'error.json': 'f38516e7aecb480a2f749c9ee7fff22d0926d2056c82665754059ae05815f340',
+    'http_probe.json': '87699372dff1cee946e0af5034996fd20bbff2c46188b9b669c2fb971a9a997c',
+    'hygiene_check.json': '9a6b5f6fdbdf1c488ba46317e9e6d1a6e7262ab4eccacf95769d5a40375f387b',
+    'identity_check.json': '07480dc1114d98efd8de3817b46c5a827db603c2115eb1d761c8d4c6798ec3b7',
+    'java_runtime.json': '06d985aafa1868ec16c5888ef29f889cb28d97bff36cdfbe6d31914bc5999c72',
+    'naabu.json': '91d1b7acdaeecedb10b027daf27dccac6cb1f833cfa58455264df3e7e846593d',
+    'nmap.json': 'b68884c15e2fa12b6bc3bd7de551d02212d849f92cbcc58a22286c60e7ac6723',
+    'nmap_full.json': '5239a81e847e9aef50931071469881e80feab7bdfc686b9e790a1b7e82b0b887',
+    'nmap_udp.json': '517342dcf5e5c585cbd69aefd6a3f4849b9a4a26a9c9861d1f0a4f8eea4f666d',
+    'nmap_verify.json': '32ce7fa875d4621b35aa744a0b738a21aa1100f84cbc81c15680af2579218254',
+    'node2shell.json': 'a1e8bf54e04797a3a0db740d883b6b2d1ef61fd975bb9a15d5321a9dd9c2794c',
+    'nuclei_light.json': '67c100dde7fa5b9a4782e64fc76008bf08508fe12ac4f5db5c85aad89c6a64c7',
+    'nuclei_validate.json': 'c8cd0ec81b1f123c52aa4b623b2a399841168f3abd41ebffd723400e3c8b10d9',
+    'openvas.json': '1f6166c56867cd631e6789455e5d83a2d47be7a5a3fdfb5b4e8988413862b224',
+    'path_probe.json': 'fd7b7fd3666397df8a8f95a169912f30cf45d91ae9525ac90e507779a950d567',
+    'rdp_shot.json': '3feabbb8d560f648ac6b72a4dff61c7370f2d66fee706e32e9608c63cc577f7d',
+    'route_probe.json': '97473d76c5c39c8a82cdfd4225de9c3607ea7a029526ef998be5862d2afbb604',
+    'route_probe_signed.json': '1f678106e041d5bf49d30a840e365d42ebd70274910e64d086f8c3ec4a186391',
+    'secrets_scan.json': '32fc5c3af721579c63852774a4121d3e760b236c4cc3df3309954b707409fde3',
+    'ssh_probe.json': '2e9a21973309044357eec19664b7c74e01e03d53b25fdf5e183bae4eee62dfd8',
+    'subdir_probe.json': 'dbdbdb8319ff6136f819a1bc4db7b2da0d3b9564403fa6e4a332674cafffefba',
+    'supplier_check.json': '2a7247d93165eec72b8ff2aef5f8722d92f5978254d04ae4c5f87dcf8f6f32d1',
+    'testssl.json': '0c3e9354aa1432420761aece78877e727bfca1b760dd22e26dac1769c0ba5d80',
+    'version_digest.json': 'e9ca44bf76d392ec297934bfcf439767cf3fb55c40737284f53b069aaad9efd9',
+    'version_read.json': 'd3fa5932a93bb31678b6cf47b6cec1e21dcc1e7a907e24eff9de546218c3a84b',
+    'version_rows.json': '27688bea93b1fdfef2e0547e09a42659bbca75a8017bd8dd10f1d2b5b7909c36',
+    'vhost_probe.json': 'acbe876c4ac3ca04b4660ebb2b021f362c7010384079f3c1ea591305d5eec8ad',
+    'waf.json': '109fd92d329180c9ee7ba2e64337de0bd677023c6a85532e3154dd60aa69bcec',
+    'web_screenshot.json': 'dc0992e6f2842f93e765e2f1b42d85379afbeb8fc5521e6e3ea4501b2d330bfb',
+    'wpscan.json': '548ae1d7ad40e9c5a81bf183a39fba3b3b7a270d92380da8602384db0d53b736',
+    'wpscan_thorough.json': '548ae1d7ad40e9c5a81bf183a39fba3b3b7a270d92380da8602384db0d53b736',
+}
+
 
 class FrozenFixtureTests(unittest.TestCase):
     def test_every_frozen_set_is_complete_for_its_version(self):
@@ -363,7 +404,7 @@ class FrozenFixtureTests(unittest.TestCase):
         self.assertIn(f'v{contract.min_supported()}', FROZEN)
 
     def test_a_frozen_set_is_never_edited(self):
-        for v, want in (('v1', V1_SHA256), ('v2', V2_SHA256), ('v3', V3_SHA256), ('v4', V4_SHA256), ('v5', V5_SHA256), ('v6', V6_SHA256), ('v7', V7_SHA256), ('v8', V8_SHA256)):
+        for v, want in (('v1', V1_SHA256), ('v2', V2_SHA256), ('v3', V3_SHA256), ('v4', V4_SHA256), ('v5', V5_SHA256), ('v6', V6_SHA256), ('v7', V7_SHA256), ('v8', V8_SHA256), ('v9', V9_SHA256)):
             digests = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in FROZEN[v].glob('*.json')}
             self.assertEqual(digests, want, v)
 
@@ -383,7 +424,7 @@ class ContractVersionFourTests(unittest.TestCase):
     says from which version a Sentinel other than the built-in scanner may be offered a kind the built-in scanner used to keep to itself."""
 
     def test_version_four_rules_hold_and_old_sentinels_are_still_served(self):
-        self.assertEqual(contract.version(), 9)  # 9 since version_rows (class ContractVersionNineTests); the version-4 rules below still hold
+        self.assertEqual(contract.version(), 10)  # 10 since the network detection pass (class ContractVersionTenTests); the version-4 rules below still hold
         self.assertEqual(contract.min_supported(), 1)
 
     def test_external_since_names_the_two_kinds_and_never_predates_a_kind(self):
@@ -536,7 +577,7 @@ class ContractVersionSixTests(unittest.TestCase):
 
     def test_the_kind_is_new_in_six(self):
         self.assertEqual(contract.kind_since('java_runtime'), 6)
-        self.assertEqual(contract.version(), 9)  # 9 since version_rows (ContractVersionNineTests); java_runtime is unchanged
+        self.assertEqual(contract.version(), 10)  # 10 since the network detection pass (ContractVersionTenTests); java_runtime is unchanged
         self.assertEqual(contract.min_supported(), 1)
 
     def test_the_target_names_only_the_fixed_checks_and_needs_a_scope(self):
@@ -573,7 +614,7 @@ class ContractVersionSevenTests(unittest.TestCase):
 
     def test_the_kind_is_new_in_seven(self):
         self.assertEqual(contract.kind_since('version_read'), 7)
-        self.assertEqual(contract.version(), 9)  # 9 since version_rows (ContractVersionNineTests); version_read is unchanged
+        self.assertEqual(contract.version(), 10)  # 10 since the network detection pass (ContractVersionTenTests); version_read is unchanged
         self.assertEqual(contract.min_supported(), 1)
 
     def test_the_target_is_get_only_bounded_and_needs_a_scope(self):
@@ -616,7 +657,7 @@ class ContractVersionEightTests(unittest.TestCase):
 
     def test_the_kind_is_new_in_eight(self):
         self.assertEqual(contract.kind_since('version_digest'), 8)
-        self.assertEqual(contract.version(), 9)  # 9 since version_rows (ContractVersionNineTests); version_digest is unchanged
+        self.assertEqual(contract.version(), 10)  # 10 since the network detection pass (ContractVersionTenTests); version_digest is unchanged
         self.assertEqual(contract.min_supported(), 1)
 
     def test_version_read_never_takes_a_digest_read(self):
@@ -660,7 +701,7 @@ class ContractVersionNineTests(unittest.TestCase):
 
     def test_the_kind_is_new_in_nine(self):
         self.assertEqual(contract.kind_since('version_rows'), 9)
-        self.assertEqual(contract.version(), 9)
+        self.assertEqual(contract.version(), 10)  # 10 since the network detection pass (ContractVersionTenTests); version_rows is unchanged
         self.assertEqual(contract.min_supported(), 1)
 
     def test_version_read_and_version_digest_never_take_a_rows_read(self):
@@ -699,3 +740,37 @@ class ContractVersionNineTests(unittest.TestCase):
                 self.assertFalse(check.is_valid({**good, 'reads': [{**good['reads'][1], 'answers': [bad]}]}))
         self.assertTrue(check.is_valid({'outcome': 'error', 'error': 'refused'}))
         self.assertFalse(check.is_valid({'outcome': 'done', 'touched': []}))
+
+
+class ContractVersionTenTests(unittest.TestCase):
+    """Version 10 adds no kind and changes no result: a ``nuclei_light`` target may carry ``network_detection: true``, which makes the task the network detection
+    pass (the ``network/detection/`` templates of each non-web port's class, ``client.tools.run_nuclei``). The server sends it only to a Sentinel that declared 10
+    or later (``flags.NUCLEI_DETECTION_SINCE``); the result is a nuclei_light result as before, so the frozen v9 set still validates."""
+
+    def test_the_version_is_ten_and_no_kind_is_new(self):
+        self.assertEqual(contract.version(), 10)
+        self.assertEqual(contract.min_supported(), 1)
+        self.assertEqual(max(contract.load()['kind_since'].values()), 9)
+        from cvengine_scanner import flags
+        self.assertEqual(flags.NUCLEI_DETECTION_SINCE, contract.version())
+
+    def test_only_a_light_target_takes_the_field_and_only_as_a_boolean(self):
+        good = fixture('targets', 'nuclei_light')
+        light = validator(contract.target_schema('nuclei_light'))
+        self.assertTrue(light.is_valid(good))  # a target without it is the light pass as before
+        detection = {**good, 'targets': ['example.com:6379', 'example.com:3389'], 'tags': [], 'services': {'example.com:6379': 'redis', 'example.com:3389': 'rdp'},
+                     'budget': {'pause_ms': 500, 'seconds': 240, 'web_rate': 25}, 'network_detection': True}
+        self.assertTrue(light.is_valid(detection))
+        for bad in ('yes', 1, None, {'on': True}):
+            with self.subTest(bad=bad):
+                self.assertFalse(light.is_valid({**detection, 'network_detection': bad}))
+        for kind in ('nuclei_targeted', 'nuclei_deep'):
+            with self.subTest(kind=kind):
+                self.assertFalse(validator(contract.target_schema(kind)).is_valid({**fixture('targets', 'nuclei_light'), 'network_detection': True}))
+
+    def test_a_light_result_of_the_pass_is_an_ordinary_light_result(self):
+        check = validator(contract.result_schema('nuclei_light'))
+        found = {'template_id': 'openssh-detect', 'name': 'OpenSSH Service - Detect', 'severity': 'info', 'host': 'example.com', 'matched_at': 'example.com:22',
+                 'description': 'OpenSSH service was detected.', 'matcher_name': '', 'extracted_results': ['SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.6'],
+                 'tags': ['network', 'ssh', 'openssh', 'detect'], 'type': 'tcp'}
+        self.assertTrue(check.is_valid({'outcome': 'done', 'findings': [found], 'not_checked': [{'target': 'example.com:993', 'reason': 'no check exists for this service'}]}))

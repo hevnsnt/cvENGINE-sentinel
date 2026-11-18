@@ -292,3 +292,41 @@ class NucleiServiceBudgetTests(unittest.TestCase):
         self.assertEqual(key('b\u00fccher.example:22'), ('xn--bcher-kva.example', 22))
         for not_a_port in ('example.com', 'https://example.com:22', '2001:db8::1', 'example.com:x', ':22', 5):
             self.assertIsNone(key(not_a_port))
+
+
+class NucleiNetworkDetectionTests(unittest.TestCase):
+    """Contract 10: the network detection pass (a light task's ``network_detection``) takes only the raw tcp templates of a non-web class, with the service
+    exclusion floor, and fits a light task's own time."""
+
+    def test_a_service_class_takes_its_own_tcp_templates_with_every_intrusive_tag_excluded(self):
+        for klass in ('ssh', 'ftp', 'redis', 'rdp', 'vnc', 'mongodb', 'mssql', 'smb', flags.NUCLEI_UNKNOWN):
+            with self.subTest(klass=klass):
+                selection = flags.nuclei_detection_selection(klass)
+                self.assertEqual(selection['types'], ['tcp'])
+                self.assertTrue({'dos', 'default-login', 'bruteforce', 'fuzz', 'intrusive'} <= set(selection['etags']))
+                self.assertNotIn('tech', selection['tags'])
+        self.assertEqual(flags.nuclei_detection_selection('ssh')['tags'], ['openssh', 'ssh'])
+        self.assertEqual(flags.nuclei_detection_selection(flags.NUCLEI_UNKNOWN)['tags'], [])  # every network template no class owns, then the path decides
+        self.assertIn('redis', flags.nuclei_detection_selection(flags.NUCLEI_UNKNOWN)['etags'])
+
+    def test_web_tls_and_an_unknown_label_take_nothing(self):
+        for klass in (flags.NUCLEI_WEB, 'tls', 'a-class-from-the-future', '', None):
+            with self.subTest(klass=klass):
+                self.assertIsNone(flags.nuclei_detection_selection(klass))
+
+    def test_only_a_plain_path_under_network_detection_is_a_detection_template(self):
+        for path, ok in (('network/detection/openssh-detect.yaml', True), ('network/detection/ftp/vsftpd-detect.yaml', True), ('network/cves/2001/CVE-2001-1473.yaml', False),
+                         ('network/misconfig/erlang-daemon.yaml', False), ('javascript/detection/mssql-detect.yaml', False), ('network/detection/../cves/x.yaml', False),
+                         ('/network/detection/x.yaml', False), ('network\\detection\\x.yaml', False), ('network/detection/./x.yaml', False),
+                         ('network/detections/x.yaml', False), ('network/detection/x.yml', False), (None, False), (3, False)):
+            with self.subTest(path=path):
+                self.assertIs(flags.is_detection_path(path), ok)
+
+    def test_the_budget_is_within_the_service_bounds_and_a_task_fits_the_light_time(self):
+        self.assertEqual(flags.nuclei_service_budget(flags.NUCLEI_DETECTION_BUDGET), flags.NUCLEI_DETECTION_BUDGET)  # gentler than the cap, never harsher
+        self.assertLessEqual(flags.NUCLEI_DETECTION_BUDGET['seconds'], flags.NUCLEI_SERVICE_BUDGET['seconds'])
+        self.assertLessEqual(flags.NUCLEI_DETECTION_MAX_PORTS, flags.NUCLEI_SERVICE_MAX_PORTS)
+        smallest = flags.TASK_LIMITS['nuclei_light'][0]
+        self.assertLessEqual(flags.NUCLEI_DETECTION_MAX_PORTS * flags.NUCLEI_DETECTION_BUDGET['seconds'], smallest)
+        self.assertLessEqual(flags.NUCLEI_DETECTION_MAX_PORTS * flags.NUCLEI_DETECTION_BUDGET['seconds'],
+                             flags.task_seconds('nuclei_light', flags.NUCLEI_DETECTION_MAX_PORTS))

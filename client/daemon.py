@@ -1302,7 +1302,9 @@ class Daemon:
                 return runner(targets, tags=target.get('tags'), severities=target.get('severities'), register=register,
                               templates=self._approved_templates(target), secret_file=secret_file, timeout=seconds,
                               services=target.get('services'), budget=target.get('budget'),
-                              **({'allow_credential_checks': True} if target.get('allow_credential_checks') is True else {}))  # off unless the task says so
+                              **({'allow_credential_checks': True} if target.get('allow_credential_checks') is True else {}),  # off unless the task says so
+                              # contract 10: the light pass as the network detection pass (network/detection templates on the non-web ports only)
+                              **({'network_detection': True} if kind == 'nuclei_light' and target.get('network_detection') is True else {}))
             if task.get('signed_in'):
                 # a signed-in pass names a stored sign-in: only the built-in scanner reads it (signed_in.py), and nothing ever runs it signed out
                 if not config.builtin():

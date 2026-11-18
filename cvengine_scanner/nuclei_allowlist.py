@@ -67,6 +67,22 @@ def covers(klass, allowlist=None):
     return any(isinstance(e, dict) and klass in (e.get('classes') or ()) for e in allowlist['templates'].values())
 
 
+def is_detection(template_id, allowlist=None):
+    """Whether the allowlisted template ``template_id`` is a network detection template: its reviewed path (``path``, as the list records it for the pinned
+    release) is under ``network/detection/`` (``flags.is_detection_path``). One the list does not know, or that records no path, is not."""
+    from cvengine_scanner import flags
+    allowlist = allowlist if allowlist is not None else load_allowlist()
+    entry = allowlist['templates'].get(template_id) if template_id else None
+    return isinstance(entry, dict) and flags.is_detection_path(entry.get('path'))
+
+
+def detection_classes(allowlist=None):
+    """The service classes the network detection pass has at least one allowlisted ``network/detection/`` template for (``covers`` for that pass): the server
+    sends the pass only ports of these classes, and a Sentinel answers a port of any other class that no check exists for it."""
+    allowlist = allowlist if allowlist is not None else load_allowlist()
+    return frozenset(k for tid, e in allowlist['templates'].items() if isinstance(e, dict) and is_detection(tid, allowlist) for k in (e.get('classes') or ()))
+
+
 def check_bytes(raw, allowlist=None):
     """``(allowed, reason, template_id)`` for the bytes of a template file: allowed only when its id is on the list and the sha256 of the bytes is the one
     recorded. The reason says which of the two failed."""
