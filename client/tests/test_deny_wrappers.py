@@ -273,7 +273,7 @@ class RefusedNotFailedTests(unittest.TestCase):
 
     def test_the_address_tools_raise_refused(self):
         for name, call in {'nmap': lambda: tools.run_nmap([PUBLIC]), 'naabu': lambda: tools.run_naabu(['www.example.com']),
-                           'nuclei': lambda: tools.run_nuclei(['https://www.example.com/']), 'nmap_full': lambda: tools.run_nmap_full(PUBLIC),
+                           'nmap_full': lambda: tools.run_nmap_full(PUBLIC),
                            'testssl': lambda: tools.run_testssl('www.example.com', PUBLIC, 443), 'waf': lambda: tools.run_waf('www.example.com', PUBLIC, 80, 'http'),
                            'wpscan': lambda: tools.run_wpscan('https://www.example.com/'), 'node2shell': lambda: tools.run_node2shell('https://www.example.com/'),
                            'db_probe': lambda: tools.run_db_probe(PUBLIC, 6379, 'redis'), 'rdp_shot': lambda: tools.run_rdp_shot(PUBLIC, 3389),
@@ -281,6 +281,23 @@ class RefusedNotFailedTests(unittest.TestCase):
             with self.subTest(tool=name):
                 with mock.patch.object(config, '_local_internal', return_value=True):
                     self.run_case(call, '93.184.215.0/24,10.0.0.0/24')
+
+    def test_a_nuclei_target_the_deny_list_refuses_is_named_with_the_refusal_and_never_contacted(self):
+        # contract 11: a refused nuclei target is left out of the run and named, so the task's other targets still run
+        rec = Recorder()
+        patches = recording(rec)
+        with mock.patch.dict(os.environ, {'CVENGINE_SENTINEL_DENY_RANGES': '93.184.215.0/24,10.0.0.0/24'}), \
+                mock.patch.object(config, '_local_internal', return_value=True):
+            for patcher in patches:
+                patcher.start()
+            try:
+                out = tools.run_nuclei(['https://www.example.com/'])
+            finally:
+                for patcher in reversed(patches):
+                    patcher.stop()
+        self.assertEqual(rec.contact, [])
+        self.assertEqual(out['unreachable'], ['https://www.example.com/'])
+        self.assertTrue(out['not_checked'][0]['reason'].startswith(tools.flags.NUCLEI_REFUSED_PREFIX + 'refused: '), out)
 
     def test_a_refused_task_is_reported_as_an_error_with_the_refusal_in_its_text(self):
         d = daemon.Daemon.__new__(daemon.Daemon)
