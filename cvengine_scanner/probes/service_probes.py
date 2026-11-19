@@ -10,7 +10,8 @@ Where each reading comes from, and what it costs the scanned host:
   Request per security protocol (standard RDP, TLS, CredSSP, RDSTLS, CredSSP with early user authorization), nothing after the answer. A server
   that accepts standard RDP security or TLS without CredSSP does not require Network Level Authentication; one that accepts only CredSSP does.
 - **SMTP** (``smtp_*``): one connection to each cleartext SMTP port the fingerprint pass found open: read the greeting, send one ``EHLO``, read the
-  reply, send ``QUIT``. Never MAIL FROM, never AUTH, never STARTTLS (so an AUTH list a server shows only after STARTTLS is no reading, not "none").
+  reply, send ``QUIT``. Never MAIL FROM, never AUTH, never STARTTLS (so when STARTTLS is listed the AUTH reading carries ``tls_unread``: the list after
+  STARTTLS may hold more, and such a reading never rules a mechanism out).
 - **SMB** (``smb_*``, ``smbv1``): two connections to port 445 when the fingerprint pass found it open: one SMB2 NEGOTIATE offering 2.0.2 to 3.1.1
   with the pre-authentication integrity, encryption and compression contexts (the dialect chosen, whether signing is required, the compression
   algorithms), and one SMB1 NEGOTIATE naming only the NT LM 0.12 dialect (whether SMBv1 is accepted). Nothing is sent after NEGOTIATE: no session
@@ -220,6 +221,7 @@ def _auth_tokens(mechanisms):
     for word in mechanisms:
         word = word.lower()
         token = word if word in AUTH_TOKENS and word not in ('other', 'none') else 'other'
+        token = 'tls_unread' if word == 'tls_unread' else token
         if token not in names:
             names.append(token)
     ordered = [t for t in AUTH_TOKENS if t in names]
@@ -238,12 +240,15 @@ def ehlo_readings(host, port, lines):
     out = [_item(host, port, feature, 'yes' if keyword in names else 'no', f'EHLO {"lists" if keyword in names else "does not list"} {keyword}')
            for keyword, feature in SMTP_FLAGS]
     auth = [k for k in keywords if re.match(r'(?i)^AUTH[ =]', k)]
+    starttls = 'STARTTLS' in names  # a server may list more mechanisms (or AUTH at all) only after STARTTLS, which is never sent
     if auth:
         mechanisms = [m for k in auth for m in re.split(r'\s+', k[5:].strip()) if m][:20]
-        value = _auth_tokens(mechanisms)
+        value = _auth_tokens(mechanisms + (['tls_unread'] if starttls else []))
         if value:
-            out.append(_item(host, port, 'smtp_auth', value, 'AUTH ' + ' '.join(mechanisms)))
-    elif 'STARTTLS' not in names:
+            out.append(_item(host, port, 'smtp_auth', value, 'AUTH ' + ' '.join(mechanisms) + ('; more may follow STARTTLS' if starttls else '')))
+    elif starttls:
+        out.append(_item(host, port, 'smtp_auth', 'tls_unread', 'EHLO lists no AUTH before STARTTLS; the list after STARTTLS is not read'))
+    else:
         out.append(_item(host, port, 'smtp_auth', 'none', 'EHLO lists no AUTH and no STARTTLS'))
     return [i for i in out if i]
 

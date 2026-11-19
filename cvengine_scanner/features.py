@@ -47,10 +47,10 @@ FEATURES = {
     'smtp_smtputf8': {'values': ('yes', 'no'), 'transport': 'tcp', 'about': 'whether the EHLO reply lists SMTPUTF8'},
     'smtp_8bitmime': {'values': ('yes', 'no'), 'transport': 'tcp', 'about': 'whether the EHLO reply lists 8BITMIME'},
     'smtp_pipelining': {'values': ('yes', 'no'), 'transport': 'tcp', 'about': 'whether the EHLO reply lists PIPELINING'},
-    'smtp_auth': {'values': ('external', 'ntlm', 'gssapi', 'cram-md5', 'digest-md5', 'plain', 'login', 'xoauth2', 'oauthbearer', 'scram-sha-1',
-                             'scram-sha-256', 'other', 'none'), 'transport': 'tcp',
-                  'about': 'the AUTH mechanisms the cleartext EHLO reply lists (none: no AUTH and no STARTTLS; no reading when AUTH may be offered '
-                           'only after STARTTLS, which is never sent)'},
+    'smtp_auth': {'values': ('external', 'ntlm', 'tls_unread', 'gssapi', 'cram-md5', 'digest-md5', 'plain', 'login', 'xoauth2', 'oauthbearer',
+                             'scram-sha-1', 'scram-sha-256', 'other', 'none'), 'transport': 'tcp',
+                  'about': 'the AUTH mechanisms the cleartext EHLO reply lists; tls_unread: STARTTLS is listed too, and the list after STARTTLS '
+                           '(never sent) may hold more; none: no AUTH and no STARTTLS'},
     # SMB, read from one SMB2 NEGOTIATE (with a compression context) and one SMB1 NEGOTIATE on port 445: nothing after NEGOTIATE, no session
     'smb_dialect': {'values': ('2.0.2', '2.1', '3.0', '3.0.2', '3.1.1'), 'transport': 'tcp',
                     'about': 'the SMB2 dialect the server chose from 2.0.2, 2.1, 3.0, 3.0.2 and 3.1.1 (its highest)'},

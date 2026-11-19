@@ -125,8 +125,8 @@ class SmtpTests(unittest.TestCase):
         self.assertEqual(code, 250)
         got = by_feature(sp.ehlo_readings('mx', 25, lines))
         self.assertEqual({k[2]: v for k, v in got.items()}, {'smtp_chunking': 'yes', 'smtp_starttls': 'yes', 'smtp_smtputf8': 'yes',
-                                                            'smtp_8bitmime': 'yes', 'smtp_pipelining': 'yes'})
-        self.assertNotIn(('mx', 25, 'smtp_auth'), got)  # AUTH may be offered after STARTTLS, which is never sent: unknown
+                                                            'smtp_8bitmime': 'yes', 'smtp_pipelining': 'yes', 'smtp_auth': 'tls_unread'})
+        self.assertEqual(got[('mx', 25, 'smtp_auth')], 'tls_unread')  # AUTH may be offered after STARTTLS, which is never sent
 
     def test_exim_lists_auth_ntlm_in_cleartext(self):
         got = by_feature(sp.ehlo_readings('mx', 587, sp.parse_reply(EXIM_EHLO)[1]))
@@ -136,7 +136,7 @@ class SmtpTests(unittest.TestCase):
 
     def test_exchange_and_a_bare_relay(self):
         got = by_feature(sp.ehlo_readings('ex', 25, sp.parse_reply(EXCHANGE_EHLO)[1]))
-        self.assertEqual(got[('ex', 25, 'smtp_auth')], 'ntlm')
+        self.assertEqual(got[('ex', 25, 'smtp_auth')], 'ntlm,tls_unread')  # NTLM before TLS, and STARTTLS may add more
         self.assertEqual(got[('ex', 25, 'smtp_smtputf8')], 'no')
         got = by_feature(sp.ehlo_readings('relay', 25, sp.parse_reply(BARE_EHLO)[1]))
         self.assertEqual(got[('relay', 25, 'smtp_auth')], 'none')  # no AUTH and no STARTTLS: none at all
