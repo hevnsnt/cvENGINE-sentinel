@@ -389,7 +389,9 @@ class PollAndExecuteTests(unittest.TestCase):
         with mock.patch('client.tools.subprocess.Popen') as popen:
             d._poll_once()
             self._wait_idle(d)
-        popen.assert_not_called()  # the bad target never reached a subprocess call
+        # the bad target never reached a subprocess call (the background template warm-up an earlier Daemon started may call Popen with its own
+        # arguments while this patch is in place, in an image that carries a template directory: only a call naming the target counts)
+        self.assertFalse([c for c in popen.call_args_list if '192.0.2.10' in repr(c)])
         body = fc.body_for('sentinel/tasks/9/result')
         self.assertEqual(body['outcome'], 'error')
 

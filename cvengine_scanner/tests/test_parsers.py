@@ -360,6 +360,35 @@ class NmapFingerprintDetailTests(unittest.TestCase):
         self.assertEqual(tls['fingerprint_sha1'], 'fedcba9876543210fedcba9876543210fedcba98')
         self.assertEqual(tls['fingerprint_md5'], 'fedcba9876543210fedcba9876543210')
 
+    def test_a_script_a_version_scan_ran_on_its_own_is_kept_apart_as_text(self):
+        # never among the reviewed scripts; its text (no request of ours) is what the server reads for a version (vmware-version and the like)
+        self.assertEqual(self.ports[443]['version_scripts'], {'smuggled-version-script': 'rpcinfo output nobody reviewed'})
+        self.assertNotIn('version_scripts', self.ports[80])
+        xml = ('<nmaprun><host><address addr="192.0.2.1" addrtype="ipv4"/><ports><port protocol="tcp" portid="902"><state state="open"/>'
+               '<service name="vmware-auth" method="probed"/>'
+               + ''.join(f'<script id="v{i}-version" output="{"y" * 900}"/>' for i in range(9)) + '<script id="big-version" output="' + 'z' * 3000 + '"/>'  +
+               '</port></ports></host><runstats><finished exit="success"/></runstats></nmaprun>')
+        out = parsers.parse_nmap_xml(xml, strict=True)
+        kept = out['hosts'][0]['ports'][0]['version_scripts']
+        self.assertEqual(len(kept), parsers.MAX_VERSION_SCRIPTS)
+        self.assertTrue(all(len(v) <= parsers.VERSION_SCRIPT_CAP for v in kept.values()))
+        self.assertLessEqual(sum(map(len, kept.values())), parsers.VERSION_SCRIPT_TOTAL)
+        self.assertEqual({c['what'] for c in out['cuts']} >= {'version_scripts'}, True)  # the ninth and tenth are counted, never silent
+        one = parsers.parse_nmap_xml(xml.replace('v0-version', 'zz').replace('v1-version" output="' + 'y' * 900, 'big2" output="' + 'q' * 2500), strict=True)
+        self.assertEqual(len(one['hosts'][0]['ports'][0]['version_scripts']['big2']), parsers.VERSION_SCRIPT_CAP)
+        self.assertIn('version_script_output', {c['what'] for c in one['cuts']})
+
+    def test_a_service_fingerprint_is_kept_to_4096_characters_and_a_banner_script_to_1024(self):
+        fp = 'SF-Port8088-TCP:V=7.94SVN%I=7%r(GetRequest,1000,&quot;HTTP/1\\.0\\x20200\\x20OK\\r\\n' + 'Server:\\x20nginx' * 400 + '&quot;)'
+        xml = ('<nmaprun><host><address addr="192.0.2.1" addrtype="ipv4"/><ports>'
+               f'<port protocol="tcp" portid="8088"><state state="open"/><service name="unknown" servicefp="{fp}"/></port>'
+               '<port protocol="tcp" portid="21"><state state="open"/><service name="ftp"/><script id="banner" output="' + '2' * 3000 + '"/></port>'
+               '</ports></host><runstats><finished exit="success"/></runstats></nmaprun>')
+        ports = {p['number']: p for p in parsers.parse_nmap_xml(xml, strict=True)['hosts'][0]['ports']}
+        self.assertEqual(len(ports[8088]['banner']), parsers.SERVICEFP_CAP)
+        self.assertTrue(ports[8088]['banner'].startswith('SF-Port8088-TCP'))
+        self.assertEqual(len(ports[21]['banner']), parsers.BANNER_CAP)
+
     def test_only_reviewed_scripts_are_kept_and_the_port_text_is_bounded(self):
         scripts = self.ports[443]['scripts']
         self.assertEqual(sorted(scripts), ['http-title', 'ssl-cert'])  # the script a version scan smuggled in is not one the server stores
