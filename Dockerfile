@@ -68,8 +68,9 @@ ARG PYSOCKS_VERSION=1.7.1
 # cveFeed/testssl_scan.py's own invocation. Pinned tarball with its checksum, never a branch.
 ARG TESTSSL_VERSION=3.2.5
 ARG TESTSSL_SHA256=23bb53d50ae093b89631e9fff547c087f632bf35f7a3d7dc78dd4ffff56cd779
-# The nuclei templates baked into the image: a pinned community release with its checksum, used only for a task that names no approved bundle
-# (an older server). Tasks under the server's template policy run on the server's own verified bundle instead (client/templates.py).
+# The nuclei templates baked into the image: a pinned community release with its checksum. From contract 11 a task's approved set is built from
+# these and the library's template index (cvengine_scanner/data/nuclei_template_index.json, made for this same release: scripts/check_tool_versions.py
+# fails when the two differ); the server keeps no copy of the templates. An older server's task runs on its own verified bundle (client/templates.py).
 # Kingfisher (Apache-2.0, MongoDB; run as a separate program) finds secrets in the pages and scripts of the secrets_scan kind. The release tarball per
 # architecture, pinned by sha256 (its build attestation is verified in CI, .github/workflows/tests.yml); never the PyPI kingfisher-bin. The library's
 # cvengine_scanner/secrets.py KINGFISHER_VERSION is the same pin (a test holds them together), and so is the server's validation allow-list.
@@ -157,8 +158,8 @@ RUN export GOROOT=/usr/local/go GOPATH=/root/go PATH="/usr/local/go/bin:${PATH}"
     && go clean -cache -modcache \
     && rm -rf "${GOROOT}" "${GOPATH}/pkg" /root/.cache/go-build
 
-# The fallback templates: a pinned release, checksum verified, in the run-time user's home where nuclei looks by default. They are not refreshed at
-# start (docker-entrypoint.sh); a newer set arrives with a rebuilt image, or, for a task under the server's policy, as the server's own bundle.
+# The templates: a pinned release, checksum verified, in the run-time user's home where nuclei looks by default. They are not refreshed at start
+# (docker-entrypoint.sh); a newer set arrives with a rebuilt image and a regenerated template index. Only a file the index records with its sha256 runs.
 RUN curl -fsSLo /tmp/nuclei-templates.tgz "https://github.com/projectdiscovery/nuclei-templates/archive/refs/tags/${NUCLEI_TEMPLATES_VERSION}.tar.gz" \
     && echo "${NUCLEI_TEMPLATES_SHA256}  /tmp/nuclei-templates.tgz" | sha256sum -c - \
     && mkdir -p /home/sentinel/nuclei-templates \

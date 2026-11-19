@@ -152,22 +152,23 @@ def _port_text(port, value):
     return str(int(port))
 
 
-def _endpoint(text, resolve):
-    """An http(s) URL, ``host``, ``host:port`` or ``[ipv6]:port``: what nuclei takes. The host part is judged by scope either way."""
+def _endpoint(text, resolve, internal=None):
+    """An http(s) URL, ``host``, ``host:port`` or ``[ipv6]:port``: what nuclei takes. The host part is judged by scope either way (``internal``: as
+    ``scope.check_target`` takes it, ``None`` for this Sentinel's own setting)."""
     if '://' in text:
         if not text.lower().startswith(('http://', 'https://')):
             raise _refused(text, 'only http and https URLs')
-        return scope.check_url(text, resolve=True, resolver=resolve)
+        return scope.check_url(text, internal=internal, resolve=True, resolver=resolve)
     bracketed = _BRACKETED.fullmatch(text)
     if bracketed:
-        return f'[{scope.check_ip(bracketed.group(1))}]:{_port_text(bracketed.group(2), text)}'
+        return f'[{scope.check_ip(bracketed.group(1), internal)}]:{_port_text(bracketed.group(2), text)}'
     if text.count(':') == 1:
         host, port = text.split(':')
-        return f'{scope.check_target(host, resolve=True, resolver=resolve)}:{_port_text(port, text)}'
-    return scope.check_target(text, resolve=True, resolver=resolve)
+        return f'{scope.check_target(host, internal=internal, resolve=True, resolver=resolve)}:{_port_text(port, text)}'
+    return scope.check_target(text, internal=internal, resolve=True, resolver=resolve)
 
 
-def _validate_one(value, endpoint, resolve):
+def _validate_one(value, endpoint, resolve, internal=None):
     if not isinstance(value, str) or not value or len(value) > 260:
         raise _refused(value, 'not a string of a usable length')
     text = value.strip()
@@ -175,10 +176,10 @@ def _validate_one(value, endpoint, resolve):
         raise _refused(value, 'empty, or it contains whitespace or shell characters')
     try:
         if endpoint:
-            return _endpoint(text, resolve)
+            return _endpoint(text, resolve, internal)
         if '://' in text:
             raise _refused(value, 'a bare address or host name, not a URL')
-        return scope.check_target(text, resolve=True, resolver=resolve)  # a name that does not resolve is allowed: there is nothing to reach
+        return scope.check_target(text, internal=internal, resolve=True, resolver=resolve)  # a name that does not resolve is allowed: there is nothing to reach
     except scope.ScopeError as exc:
         raise _refused(value, str(exc), exc) from None
 
@@ -901,7 +902,7 @@ def warm_credential_templates():
 
 @_reports_cuts
 def run_nuclei(targets, tags=None, severities=None, timeout=3600, register=None, templates=None, secret_file=None, services=None, budget=None, allow_credential_checks=False,
-               network_detection=False):
+               network_detection=False, external=False):
     """Host names are passed to nuclei as names, because each finding reports the host it was given. They were judged by scope (and by
     every address they resolved to) just before; nuclei resolves them again, so a name whose DNS answer changes in between is the one gap.
     ``templates`` is a directory of approved templates (the server's verified bundle, ``client.templates``): nuclei then runs exactly that set and
@@ -918,13 +919,16 @@ def run_nuclei(targets, tags=None, severities=None, timeout=3600, register=None,
     ``allow_credential_checks`` is the task's own field, true only when a person turned credential checks on at the server: only then may the web pass
     run default-login and brute-force templates (a credential tag of the task's filter is otherwise left out). It never reaches the service ports.
 
+    ``external`` (a task's field, contract 11): the targets are outside any private network, so each is judged as a Sentinel that is not internal judges
+    it (``_judged_targets``), whatever this machine's own setting.
+
     ``network_detection`` (a ``nuclei_light`` task's field, contract 10) makes the task the network detection pass: only its non-web host:port targets are run,
     each with the ``network/detection/`` templates of its class (``_run_service_port``'s ``detection``), and the task's tags are not used for them. A web target
     is not run (named in ``not_checked``): the pass never sends an http template."""
     allow_credentials = allow_credential_checks is True  # anything but a real true is off
     detection = network_detection is True
     resolve = _resolver()  # one resolver for the task: the names are resolved once, for the scope judgment, and the banner probe connects to what was judged
-    targets = validate_targets(targets, endpoint=True, resolver=resolve)
+    targets, refused = _judged_targets(targets, resolve, external=external is True)
     web, service_runs = _split_by_service(targets, services)
     skipped_web = []
     if detection:  # the detection pass sends no http template: a web target the server should not have sent is named, never run
@@ -946,7 +950,7 @@ def run_nuclei(targets, tags=None, severities=None, timeout=3600, register=None,
     if clean_severities:
         extra += ['-severity', ','.join(clean_severities)]
     # the release a run used: the approved bundle is stored under its sha256 (client.templates.bundle_path), the baked set is the image's
-    release = f'approved:{os.path.basename(os.path.normpath(templates))}' if templates is not None else f'image:{IMAGE_TEMPLATES_VERSION}'
+    release = _release_of(templates)
     spend = flags.nuclei_service_budget(budget)
     started = _clock()
     deadline = started + timeout
@@ -957,6 +961,8 @@ def run_nuclei(targets, tags=None, severities=None, timeout=3600, register=None,
     last_error = None
     listing_failed = {}  # class -> why its template listing failed: tried once per class in a task
     not_checked.extend({'target': t, 'reason': DETECTION_WEB_REASON} for t in skipped_web)
+    # contract 11: a target scope refuses is not run and is named, never the whole task failed for it (the server resolves no target name itself)
+    not_checked.extend({'target': t, 'reason': (flags.NUCLEI_REFUSED_PREFIX + why)[:200]} for t, why in refused.items())
 
     def stop_for(pass_targets, reason):
         nonlocal incomplete
@@ -1039,15 +1045,53 @@ def run_nuclei(targets, tags=None, severities=None, timeout=3600, register=None,
             failures += 1
     if attempts and failures == attempts and not findings:
         raise last_error or ToolExitError('every nuclei run of this task failed')  # nothing ran: that is an error, not an answer
-    if quiet and all(quiet) and not findings and not incomplete and not unreachable and not no_check and not skipped_web:
+    if quiet and all(quiet) and not findings and not incomplete and not unreachable and not no_check and not skipped_web and not refused:
         # the filter this task asked for matches no template in this set: there is nothing to check on these targets, which is an answer, not a failure
         return {'findings': [], 'templates_release': release, 'unreachable': [], 'no_templates': True}
-    out = {'findings': findings, 'templates_release': release, 'unreachable': [t for t in targets if t in set(unreachable)]}
+    out = {'findings': findings, 'templates_release': release, 'unreachable': [t for t in targets if t in set(unreachable)] + list(refused)}
     if incomplete:
         out['incomplete'] = True
     if not_checked:
         out['not_checked'] = not_checked[:MAX_TARGETS]
     return out
+
+
+def _judged_targets(values, resolve, external=False):
+    """``(allowed, refused)`` of a nuclei task's targets: ``validate_targets``'s rules for the list (one to ``MAX_TARGETS`` entries), then each entry judged
+    by itself (``_validate_one``: scope, and every address a name resolves to). An entry scope refuses (a name that now resolves somewhere no Sentinel may
+    scan, a malformed one) is left out with its reason, ``{value: reason}``, instead of failing the whole task (contract 11): the server no longer looks the
+    names up before it sends them, so this Sentinel's own judgement is the only one, and the other targets still run. ``external`` (the task's own field,
+    contract 11) judges every target as a Sentinel that is not internal does, whatever this machine's setting: a name of an outside target that now
+    points into a private network is refused here, as the server used to refuse it before it sent the task."""
+    if not isinstance(values, list) or not values:
+        raise TargetError('target has no usable addresses')
+    if len(values) > MAX_TARGETS:
+        raise TargetError(f'target names {len(values)} entries; the most one task may name is {MAX_TARGETS}')
+    allowed, refused = [], {}
+    internal = False if external is True else None
+    for value in values:
+        try:
+            clean = _validate_one(value, True, resolve, internal)
+        except TargetError as exc:
+            refused[str(value)[:260]] = str(exc)[:200]
+            continue
+        if clean not in allowed:
+            allowed.append(clean)
+    return allowed, refused
+
+
+def _release_of(templates):
+    """The template release a run used, for its result's ``templates_release``: ``index:<release>:<policy>`` for a set built from the template index
+    (``client.templates.ensure_index_set``), ``approved:<sha256>`` for an older server's bundle, ``image:<release>`` for the baked set used whole."""
+    if templates is None:
+        return f'image:{IMAGE_TEMPLATES_VERSION}'
+    from cvengine_scanner import template_index
+
+    from . import templates as template_sets
+    name = os.path.basename(os.path.normpath(templates))
+    if name.startswith(template_sets.INDEX_PREFIX):
+        return f'index:{template_index.release() or "unknown"}:{name.split("-", 2)[2] if name.count("-") >= 2 else ""}'
+    return f'approved:{name}'
 
 
 def _nuclei_pass(targets, argv_flags, timeout, register, secret_file, filtered):

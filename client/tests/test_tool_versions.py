@@ -276,8 +276,9 @@ class FailClosedTests(unittest.TestCase):
 class AllowlistGateTests(unittest.TestCase):
     """The service-port allowlist is made for one nuclei-templates release: when the pin moves, the release gate says to regenerate it."""
     ALLOWLIST = 'cvengine_scanner/data/nuclei_service_allowlist.json'
+    INDEX = 'cvengine_scanner/data/nuclei_template_index.json'
 
-    def checkout(self, version='v10.5.2', pin='v10.5.2', text=None):
+    def checkout(self, version='v10.5.2', pin='v10.5.2', text=None, index=None):
         c = Checkout()
         c.__enter__()
         self.addCleanup(c.__exit__)
@@ -285,6 +286,8 @@ class AllowlistGateTests(unittest.TestCase):
         (c.root / 'cvengine_scanner' / 'data').mkdir(parents=True)
         if text is not False:
             c.write(self.ALLOWLIST, text if text is not None else json.dumps({'nuclei_templates': version, 'templates': {}}))
+        if index is not False:
+            c.write(self.INDEX, index if index is not None else json.dumps({'nuclei_templates': version, 'templates': {}, 'reasons': []}))
         return c
 
     def gate(self, c, *flags):
@@ -324,6 +327,12 @@ class AllowlistGateTests(unittest.TestCase):
             c = self.checkout(text=text)
             self.assertIn('regenerate the service-port allowlist', tools.allowlist_problem(c.root) or '', text)
             self.assertEqual(self.gate(c, '--fail-if-behind')[0], 1, text)
+
+    def test_a_template_index_for_another_release_or_none_fails_the_gate_closed(self):
+        for index in (False, '{', json.dumps({'nuclei_templates': 'v10.4.0', 'templates': {}, 'reasons': []})):
+            c = self.checkout(index=index)
+            self.assertIn('regenerate the template index', tools.allowlist_problem(c.root) or '', index)
+            self.assertEqual(self.gate(c, '--fail-if-behind')[0], 1, index)
 
     def test_json_output_stays_json_and_the_line_goes_to_stderr(self):
         c = self.checkout(version='v10.5.2', pin='v10.6.0')

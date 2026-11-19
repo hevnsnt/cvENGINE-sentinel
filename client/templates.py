@@ -1,4 +1,12 @@
-"""The nuclei template set the server approved, fetched as a verified bundle.
+"""The nuclei template set a task may run: built here from the template index (contract 11), or, for an older server, fetched as a verified bundle.
+
+From contract 11 the server keeps no copy of the template library: a task's ``template_policy`` says ``source: "index"`` and names the policy (read-only or
+every template, credentials allowed or not). ``ensure_index_set`` then builds the approved set from the templates baked into this image and the template
+index this library ships (``cvengine_scanner.template_index``): a file is copied in only when the index records its path with exactly its sha256 and the
+recorded verdict passes the policy. A file that is missing or differs is left out, never run unjudged. The set is built once per index and policy into the
+state volume and reused. ``installed_text`` reads one template of the same baked set for a ``nuclei_validate`` test that names it by ``template_path``.
+
+The rest of this module is the older path, for a server before contract 11:
 
 The cvENGINE server decides which nuclei templates a project may run (its read-only approved set) and publishes that set as one deterministic
 tar.gz. A nuclei task names the bundle it must run on (``bundle_sha256``); this module downloads it from the Sentinel's own server, checks the
@@ -44,6 +52,109 @@ class TemplateError(RuntimeError):
 class BundlePending(TemplateError):
     """The server has not packed the approved bundle yet (its ``bundle_sha256`` is still null). That is not a fault of this Sentinel and
     not a final answer about the task: the task is given back to the server, which hands it out again once the bundle exists."""
+
+
+INDEX_PREFIX = 'index-'  # an index set's directory: ``index-<index sha256 prefix>-<policy name>`` (``index_set_path``)
+
+
+def image_templates_dir():
+    """Where the templates baked into this image are (the Dockerfile puts the pinned release in the run-time user's home, where nuclei looks)."""
+    return os.environ.get('CVENGINE_NUCLEI_TEMPLATES_DIR') or os.path.join(os.path.expanduser('~'), 'nuclei-templates')
+
+
+def index_set_path(read_only, allow_credentials, index=None):
+    from cvengine_scanner import template_index
+    return os.path.join(bundles_dir(), f'{INDEX_PREFIX}{template_index.digest(index)[:16]}-{template_index.policy_name(read_only, allow_credentials)}')
+
+
+def _baked_file(source, relative):
+    """The bytes of ``relative`` under ``source`` when it is a regular file inside it (no link anywhere on the way) and not over the size limit, else ``None``."""
+    from cvengine_scanner import template_index
+    parts = relative.split('/')
+    if not relative or relative.startswith('/') or '\\' in relative or '\x00' in relative or any(p in ('', '.', '..') for p in parts):
+        return None
+    path = os.path.join(source, *parts)
+    real = os.path.realpath(path)
+    if real != os.path.join(os.path.realpath(source), *parts) or os.path.islink(path) or not os.path.isfile(path):
+        return None
+    try:
+        with open(path, 'rb') as handle:
+            raw = handle.read(template_index.MAX_TEMPLATE_BYTES + 1)
+    except OSError:
+        return None
+    return raw if len(raw) <= template_index.MAX_TEMPLATE_BYTES else None
+
+
+def ensure_index_set(read_only=True, allow_credentials=False, source=None, index=None):
+    """The directory of the templates the policy approves, from the baked set and the template index (contract 11), built once and reused. Only a file whose
+    path the index records with exactly its sha256, and whose verdicts pass the policy, is in it. Raises ``TemplateError`` when the index is missing or empty,
+    or when none of the approved templates is in this image as the index recorded it (the image holds another release than the index describes)."""
+    from cvengine_scanner import template_index
+    index = index or template_index.load()
+    if not index['templates'] or not index['sha256']:
+        raise TemplateError('this Sentinel has no template index, so it has no approved template set; nothing was run')
+    read_only, allow_credentials = read_only is not False, allow_credentials is True  # anything but a plain false is read-only; only a real true allows credentials
+    source = source or image_templates_dir()
+    path = index_set_path(read_only, allow_credentials, index)
+    marker = f'{index["sha256"]}:{template_index.policy_name(read_only, allow_credentials)}'
+    with _lock:
+        if _complete(path, marker):
+            _touch(path)
+            return path
+        if not os.path.isdir(source):
+            raise TemplateError('this Sentinel has no baked nuclei templates, so it has no approved template set; nothing was run')
+        root = bundles_dir()
+        os.makedirs(root, exist_ok=True)
+        scratch = tempfile.mkdtemp(prefix='.unpack-', dir=root)
+        copied = missing = differs = 0
+        try:
+            for relative, entry in template_index.approved(read_only, allow_credentials, index).items():
+                raw = _baked_file(source, relative)
+                if raw is None:
+                    missing += 1
+                    continue
+                if hashlib.sha256(raw).hexdigest() != entry.get('sha256'):
+                    differs += 1
+                    continue
+                destination = os.path.join(scratch, *relative.split('/'))
+                os.makedirs(os.path.dirname(destination), mode=0o755, exist_ok=True)
+                with open(destination, 'wb') as handle:
+                    handle.write(raw)
+                os.chmod(destination, 0o644)
+                copied += 1
+            if not copied:
+                raise TemplateError(f'none of the templates the index approves is in this image as the index recorded it (index {template_index.release(index)}); '
+                                    'nothing was run')
+            with open(os.path.join(scratch, VERIFIED), 'w', encoding='utf-8') as handle:
+                handle.write(marker + '\n')
+            os.chmod(scratch, 0o755)
+            if os.path.exists(path):
+                shutil.rmtree(path, ignore_errors=True)
+            os.rename(scratch, path)
+            scratch = None
+        finally:
+            if scratch:
+                shutil.rmtree(scratch, ignore_errors=True)
+        (logger.warning if missing or differs else logger.info)(
+            'approved template set %s ready: %s template(s); %s missing from the image, %s differing from the index', os.path.basename(path), copied, missing, differs)
+        _prune(keep={os.path.basename(path)})
+    return path
+
+
+def installed_text(relative, sha256, source=None, index=None):
+    """The text of the baked template at ``relative`` (a path of the pinned release) for a ``nuclei_validate`` test that names it by ``template_path``
+    (contract 11), when the index records it with ``sha256`` and the file in this image is exactly that. Raises ``TemplateError`` otherwise: a template
+    this image holds differently is never run in place of the one the server approved."""
+    from cvengine_scanner import template_index
+    entry = template_index.entry_for(relative, index)
+    if not isinstance(relative, str) or entry is None or not isinstance(sha256, str) or entry.get('sha256') != sha256:
+        raise TemplateError('the task names a template the template index does not record with that hash; nothing was run')
+    if template_index.reason(entry, 'refuse', index):
+        raise TemplateError('the template index refuses this template; nothing was run')
+    raw = _baked_file(source or image_templates_dir(), relative)
+    if raw is None or hashlib.sha256(raw).hexdigest() != sha256:
+        raise TemplateError('this image does not hold the template the task names as the index recorded it; nothing was run')
+    return raw.decode('utf-8')
 
 
 def bundles_dir():
@@ -172,7 +283,7 @@ def _prune(keep):
         if name.startswith('.download-') or name.startswith('.unpack-'):
             if now - _mtime(full) > UNUSED_SECONDS:
                 _remove(full)
-        elif SHA256.match(name):
+        elif SHA256.match(name) or name.startswith(INDEX_PREFIX):
             bundles.append((name, full, _mtime(full)))
     bundles.sort(key=lambda item: item[2], reverse=True)
     for name, full, mtime in bundles[KEEP_BUNDLES:]:

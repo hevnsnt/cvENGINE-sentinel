@@ -26,6 +26,8 @@ import time
 
 import requests
 
+from cvengine_scanner import flags
+
 from . import admission
 from . import badkeys
 from . import bbot
@@ -1303,6 +1305,7 @@ class Daemon:
                               templates=self._approved_templates(target), secret_file=secret_file, timeout=seconds,
                               services=target.get('services'), budget=target.get('budget'),
                               **({'allow_credential_checks': True} if target.get('allow_credential_checks') is True else {}),  # off unless the task says so
+                              **({'external': True} if target.get('external') is True else {}),  # contract 11: judged as a Sentinel that is not internal
                               # contract 10: the light pass as the network detection pass (network/detection templates on the non-web ports only)
                               **({'network_detection': True} if kind == 'nuclei_light' and target.get('network_detection') is True else {}))
             if task.get('signed_in'):
@@ -1361,8 +1364,18 @@ class Daemon:
                 raise tools.Refused('refused: an AI-written check runs here only for a server that names its hash and approves it (contract 4 or newer)')
             if not builtin or (sha256 is not None and config.server_contract() >= CHECKS_CONTRACT):
                 approved = self._approved_check(task['id'])  # asked of the server separately from the task: the hash it approves for this task
-            out = runner(target.get('mode'), target.get('template'), target.get('targets'), register=register, template_sha256=sha256, approved=approved,
+            template = target.get('template')
+            if template is None and target.get('template_path') is not None:  # contract 11: an installed template of the pinned release, read from this image
+                if target.get('mode') != 'test':
+                    raise tools.TargetError('an installed template is named by path only for a test')
+                try:
+                    template = templates.installed_text(target.get('template_path'), sha256)
+                except templates.TemplateError as exc:
+                    raise tools.Refused(f'refused: {exc}'[:280]) from None
+            out = runner(target.get('mode'), template, target.get('targets'), register=register, template_sha256=sha256, approved=approved,
                          builtin=builtin)
+            if target.get('template') is None and target.get('template_path') is not None:
+                out = {**out, 'template': template}  # contract 11: the text it read and ran, so the server can read a hit without a copy of its own
         elif kind == 'secrets_scan':
             out = runner(target, register=register, rules=self._secret_rules(target))
         else:  # openvas, the only other kind with a runner
@@ -1401,10 +1414,17 @@ class Daemon:
             raise tools.TargetError(str(exc)) from None
 
     def _approved_templates(self, target):
-        """The directory of the server's approved nuclei templates a task must run on, or ``None`` when the task names no bundle and the server asks
-        for no policy (an older server: the templates baked into this image are used). A task under the read-only policy that names no bundle, or a
-        bundle that cannot be fetched or verified, is an error: nothing unapproved is ever run in its place."""
+        """The directory of the approved nuclei templates a task must run on. From contract 11 the task's ``template_policy`` says ``source: "index"``: the
+        set is built here from the baked templates and the library's template index under the policy the task names (``templates.ensure_index_set``;
+        read-only unless the policy says plainly it is not, credentials only when the task allows them). For an older server: its verified bundle, or
+        ``None`` when the task names no bundle and the server asks for no policy (the templates baked into this image are used). A task under the
+        read-only policy that names no bundle, or a set that cannot be built, fetched or verified, is an error: nothing unapproved is ever run in its place."""
         policy = target.get('template_policy') if isinstance(target.get('template_policy'), dict) else {}
+        if policy.get('source') == flags.TEMPLATE_INDEX_SOURCE:
+            try:
+                return templates.ensure_index_set(policy.get('read_only') is not False, target.get('allow_credential_checks') is True)
+            except templates.TemplateError as exc:
+                raise tools.TargetError(str(exc)) from None
         # the server's shape is ``template_policy.bundle_sha256`` (sentinel_dispatch._nuclei_target); the top level is read too
         sha256 = policy.get('bundle_sha256') or target.get('bundle_sha256')
         if sha256:

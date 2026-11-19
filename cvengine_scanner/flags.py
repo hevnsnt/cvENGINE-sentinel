@@ -120,6 +120,19 @@ NUCLEI_DETECTION_BUDGET = {'pause_ms': 500, 'seconds': 240, 'web_rate': 25}
 NUCLEI_DETECTION_MAX_PORTS = 3
 
 
+# --- nuclei: the approved template set from the template index (contract 11) -----------------------------------------------
+# The server keeps no copy of the template library: a nuclei task's ``template_policy`` carries ``source: "index"`` and the Sentinel builds the approved set
+# itself, from the templates baked into its image (the release ``nuclei_templates`` the image pins) and the template index shipped with this library
+# (``cvengine_scanner.template_index``): only a file whose path and sha256 the index records, and whose recorded verdict passes the policy the task names, is
+# run. An installed template a ``nuclei_validate`` test runs is named by ``template_path`` (read from the same baked set), never sent as text. A target whose
+# host scope refuses (a name that now resolves to an address no Sentinel may scan) is not run and is reported in ``unreachable`` and ``not_checked`` with a
+# reason that starts with ``NUCLEI_REFUSED_PREFIX``, instead of failing the whole task: the server resolves no target name itself. The server sends such work
+# only to a Sentinel that declared ``TEMPLATE_INDEX_SINCE`` or later.
+TEMPLATE_INDEX_SINCE = 11
+TEMPLATE_INDEX_SOURCE = 'index'
+NUCLEI_REFUSED_PREFIX = 'refused by scope: '
+
+
 def nuclei_detection_selection(service):
     """``{'types', 'tags', 'etags'}`` of the network detection pass on a port of class ``service``: the class's own templates (``nuclei_service_selection``
     with no task tags: a task's tags never widen or narrow it), of nuclei's raw tcp type only, with ``NUCLEI_SERVICE_EXCLUDED_TAGS`` always excluded.

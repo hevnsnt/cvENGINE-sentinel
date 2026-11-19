@@ -353,9 +353,10 @@ def credential_problem(text, max_bytes=MAX_TEMPLATE_BYTES):
     return walk({k: v for k, v in doc.items() if k not in ('info', 'variables')})
 
 
-def readonly_problem(text):
+def readonly_problem(text, allow_credentials=False):
     """Why a template may not run on a Sentinel other than the built-in scanner, or ``''`` when its text is read-only (the server's
-    ``cveFeed.validation.readonly_problem``, rule for rule)."""
+    ``cveFeed.validation.readonly_problem``, rule for rule). ``allow_credentials`` leaves out the last rule (``credential_problem``): only for an
+    installed template of the pinned release, judged for the template index (``template_index``), never for an AI-written check."""
     doc, problem = _parse(text)
     if problem:
         return problem
@@ -395,7 +396,7 @@ def readonly_problem(text):
                 verb = first.split(' ', 1)[0].upper()
                 if verb not in READONLY_METHODS:
                     return f'template not validated: raw request method {verb or "?"} is not read-only'
-    return credential_problem(text)
+    return '' if allow_credentials else credential_problem(text)
 
 
 def scope_problem(text):

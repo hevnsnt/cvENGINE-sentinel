@@ -16,12 +16,13 @@ in tag-release.yml.
 
 The Chromium build Playwright drives is an advisory row (Chrome's newest stable is compared; the build is fixed by the Playwright pin, so it moves
 with that release): shown, never a gate. Not covered: the gems of docker/wpscan/Gemfile.lock (WPScan's own pin is) and the nuclei templates the
-server supplies at run time (the baked-in set is).
+server once supplied at run time (the baked-in set is: from contract 11 the server supplies none).
 
 The nuclei-templates pin has a second gate: the service-port allowlist (cvengine_scanner/data/nuclei_service_allowlist.json, made by
 scripts/generate_service_allowlist.py) lists the templates a service run may send for ONE release. When the pinned release is not the release the list was generated
 for (or the list is missing), the line "regenerate the service-port allowlist" is printed and --fail-if-behind fails: a new release must be regenerated and reviewed
-before it ships, because a template the list does not know is not run on a service port.
+before it ships, because a template the list does not know is not run on a service port. The template index (cvengine_scanner/data/nuclei_template_index.json,
+made by scripts/generate_template_index.py) has the same gate ("regenerate the template index"): a template it does not record with its hash is never run.
 
 Network use is this script's own fixed https lookups; the tests feed recorded answers and never touch the network (client/tests/test_tool_versions.py)."""
 import json
@@ -218,22 +219,30 @@ def pins(root):
 
 
 ALLOWLIST = 'cvengine_scanner/data/nuclei_service_allowlist.json'
+TEMPLATE_INDEX = 'cvengine_scanner/data/nuclei_template_index.json'
+# (the file, what it is, how to make it again): each is made for ONE nuclei-templates release
+RELEASE_DATA = ((ALLOWLIST, 'the service-port allowlist',
+                 'regenerate the service-port allowlist (python3 scripts/generate_service_allowlist.py --templates <the pinned nuclei-templates> --write), review what it '
+                 'keeps and leaves out, and commit it'),
+                (TEMPLATE_INDEX, 'the template index',
+                 'regenerate the template index (python3 scripts/generate_template_index.py --templates <the pinned nuclei-templates> --write), review the diff of the '
+                 'verdicts, and commit it'))
 
 
 def allowlist_problem(root=ROOT):
-    """The line to print when the service-port allowlist is not the one for the pinned nuclei-templates release, else ``None``: a different release, or a list that is
-    missing or unreadable (the gate fails closed, like every other pin)."""
+    """The line to print when the service-port allowlist or the template index is not the one for the pinned nuclei-templates release, else ``None``: a
+    different release, or a file that is missing or unreadable (the gate fails closed, like every other pin)."""
     match = re.search(r'(?m)^ARG NUCLEI_TEMPLATES_VERSION=v?(\S+)$', read(root, 'Dockerfile'))
     if not match:
         return None  # no pin: the pin's own row already says so
     pinned = match.group(1)
-    fix = 'regenerate the service-port allowlist (python3 scripts/generate_service_allowlist.py --templates <the pinned nuclei-templates> --write), review what it keeps and leaves out, and commit it'
-    try:
-        generated = str(json.loads(read(root, ALLOWLIST))['nuclei_templates']).lstrip('v')
-    except (ValueError, KeyError, TypeError):
-        return f'The service-port allowlist ({ALLOWLIST}) is missing or unreadable: {fix}.'
-    if generated != pinned:
-        return f'nuclei-templates is pinned at {pinned} but the service-port allowlist was generated for {generated or "no release"}: {fix}.'
+    for path, what, fix in RELEASE_DATA:
+        try:
+            generated = str(json.loads(read(root, path))['nuclei_templates']).lstrip('v')
+        except (ValueError, KeyError, TypeError):
+            return f'{what[0].upper() + what[1:]} ({path}) is missing or unreadable: {fix}.'
+        if generated != pinned:
+            return f'nuclei-templates is pinned at {pinned} but {what} was generated for {generated or "no release"}: {fix}.'
     return None
 
 
