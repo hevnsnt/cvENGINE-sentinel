@@ -60,6 +60,18 @@ NUCLEI_SERVICE_NAMES = {
     'memcached': 'memcached', 'ldap': 'ldap', 'microsoft-ds': 'smb', 'netbios-ssn': 'smb', 'ms-wbt-server': 'rdp', 'vnc': 'vnc',
     'smtps': 'tls', 'imaps': 'tls', 'pop3s': 'tls', 'ldapssl': 'tls', 'ldaps': 'tls', 'ftps': 'tls',
 }
+# The default ports of AI model servers and agent dashboards that nmap's top thousand leaves out (the others are in it: LM Studio 1234, Open WebUI
+# 3000 and 8080, AnythingLLM 3001, LiteLLM 4000, KoboldCpp 5001, vLLM 8000, llama.cpp 8080). An open one answers prompts, pulls models or runs an
+# agent's tools for whoever reaches it; cvENGINE reads what answers there with its version source reads (only fixed status GETs). The fingerprint
+# pass scans them (EXTRA_PORTS), and a port nmap could not name is sent the web templates (NUCLEI_SERVICE_PORTS).
+AI_PORTS = (
+    7860,   # Gradio apps (text-generation-webui, Stable Diffusion web UI) and Langflow
+    8188,   # ComfyUI
+    8265,   # Ray dashboard and Jobs API
+    9119,   # Hermes Agent dashboard (Nous Research)
+    11434,  # Ollama
+    18789,  # OpenClaw gateway and Control UI (formerly Clawdbot, Moltbot)
+)
 # the IANA port of each class, read only when the port has no service name and no web evidence (an older server, a port the port scan found but
 # nmap could not name); the well-known web ports are here too, so a task with no labels still sends HTTP to a web port and to nothing else
 NUCLEI_SERVICE_PORTS = {
@@ -67,6 +79,7 @@ NUCLEI_SERVICE_PORTS = {
     636: 'tls', 990: 'tls', 3306: 'mysql', 5432: 'postgres', 1433: 'mssql', 6379: 'redis', 27017: 'mongodb', 11211: 'memcached', 389: 'ldap',
     445: 'smb', 139: 'smb', 3389: 'rdp', 5900: 'vnc',
     **{p: 'web' for p in (80, 443, 3000, 8000, 8008, 8080, 8081, 8443, 8888, 9443)},
+    **{p: 'web' for p in AI_PORTS},
 }
 # What one host:port of a non-web service receives from one task. nuclei paces only its http and dns requests (its rate limiter, ``-rl``, is called by
 # the http and dns protocols and by nothing else: measured on nuclei 3.11.1, an ``-rl 2`` run opened 47 to 141 connections to one port within a tenth
@@ -357,6 +370,7 @@ EXTRA_PORTS = (
     9443, 10250, 10255, 11211, 15672,  # alternate HTTPS, kubelet, kubelet read-only, Memcached, RabbitMQ console
     16686, 27017, 27018, 50070, 61616, 1883, 8883,  # Jaeger, MongoDB, Hadoop, ActiveMQ, MQTT (plain and TLS)
     5005, 5006, 5007, 5008, 5009, 5010, 8787, 9009,  # Java debug (JDWP) ports: an open one runs any code it is sent (see JDWP_VERSION_SCRIPT)
+    *AI_PORTS,                        # AI model servers and agent dashboards
 )
 # nmap's jdwp-version is a "version" category script: it cannot be named in --script, and -sV runs it by itself, at intensity 7 or more, on a port
 # that closed on nmap's NULL probe (a JDWP debuggee hangs up after two seconds without a handshake, so the port reads as tcpwrapped). Reviewed as

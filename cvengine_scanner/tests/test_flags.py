@@ -94,6 +94,13 @@ class NmapFlagTests(unittest.TestCase):
         self.assertEqual(len(flags.EXTRA_PORTS), len(set(flags.EXTRA_PORTS)))
         self.assertTrue({6379, 27017, 2375, 10250} <= set(flags.EXTRA_PORTS))
 
+    def test_the_ai_servers_default_ports_are_fingerprinted_and_spoken_to_as_web(self):
+        self.assertEqual(set(flags.AI_PORTS), {7860, 8188, 8265, 9119, 11434, 18789})  # Gradio/Langflow, ComfyUI, Ray, Hermes, Ollama, OpenClaw
+        self.assertTrue(set(flags.AI_PORTS) <= set(flags.EXTRA_PORTS))
+        argument = flags.nmap_pass_flags([22])[-1]
+        self.assertTrue(all(str(p) in argument for p in flags.AI_PORTS))
+        self.assertEqual({flags.NUCLEI_SERVICE_PORTS[p] for p in flags.AI_PORTS}, {'web'})
+
     def test_the_port_argument_is_compact(self):
         self.assertEqual(flags.port_argument([8080, 22, 80, 81, 82, 443, 22]), '22,80-82,443,8080')
         self.assertEqual(flags.port_argument([5]), '5')

@@ -40,7 +40,7 @@
             "type": "string",
             "pattern": "^[A-Za-z0-9_-]{1,60}(\\.[A-Za-z0-9_-]{1,60}){0,5}$"
           },
-          "description": "json only: the dotted fields to return"
+          "description": "json only: the dotted fields to return (a part that is a number, at most 63, indexes an array: models.0.name)"
         },
         "find": {
           "type": "string",
@@ -102,7 +102,7 @@
             "type": "string",
             "pattern": "^[A-Za-z0-9_-]{1,60}(\\.[A-Za-z0-9_-]{1,60}){0,5}$"
           },
-          "description": "json only: the dotted fields to return"
+          "description": "json only: the dotted fields to return (a part that is a number, at most 63, indexes an array: models.0.name)"
         },
         "find": {
           "type": "string",
@@ -171,7 +171,7 @@
               }
             ]
           },
-          "description": "json: the dotted fields to return; rows: the names of the rows to return (the first cell of a table row, or the text before ':' on a line)"
+          "description": "json: the dotted fields to return (a part that is a number, at most 63, indexes an array: models.0.name); rows: the names of the rows to return (the first cell of a table row, or the text before ':' on a line)"
         },
         "find": {
           "type": "string",
