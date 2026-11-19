@@ -250,6 +250,27 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(batch['scan_name'], 'demo_scan')
         self.assertEqual(c.waiting(), 0)
 
+    def test_a_long_screenshot_name_keeps_its_extension(self):
+        """gowitness names a picture after its URL, which can be far past the contract's 120 characters: the stem is cut, never the extension, because
+        the server drops a screenshot whose extension is not its content type. A name with the wrong extension or none gets the type's own."""
+        folder = os.path.join(self.dir, 'demo_scan', 'gowitness')
+        os.makedirs(folder)
+        long_png = 'https---www.example.com-' + 'a' * 200 + '.png'
+        names = {long_png: PNG, 'page.html': PNG, 'noext': PNG, 'b' * 150 + '.jpeg': b'\xff\xd8\xff\xe0' + b'\0' * 16}
+        for name, raw in names.items():
+            with open(os.path.join(folder, name), 'wb') as handle:
+                handle.write(raw)
+        c = bbot.Collector(bbot.Policy(TARGET['scope']), self.dir)
+        c.add(event('SCAN', {'name': 'demo_scan'}))
+        for name in names:
+            c.add(event('WEBSCREENSHOT', {'path': f'gowitness/{name}', 'url': 'https://www.example.com/'}, 'www.example.com'))
+        batch = c.take(1)
+        self.assertEqual(list(Draft202012Validator(contract.partial_schema('bbot_discovery')).iter_errors(batch)), [])
+        got = [(s['filename'], s['content_type']) for s in batch['screenshots']]
+        self.assertEqual(got, [(long_png[:116] + '.png', 'image/png'), ('page.html.png', 'image/png'), ('noext.png', 'image/png'),
+                               ('b' * 115 + '.jpeg', 'image/jpeg')])
+        self.assertTrue(all(len(name) <= 120 for name, _ in got))
+
     def test_a_technology_that_bbot_3_1_names_by_product_still_carries_its_version_for_the_server(self):
         """bbot 3.1 sends ``technology: openssh`` and the CPE in a new ``cpe`` field; 3.0.2 sent the CPE itself. The server reads a product and version out of a
         CPE (``correlation.split_name_version``) but would see only a product name with no version, so an application CPE is stored as before."""

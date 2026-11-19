@@ -12,7 +12,7 @@ import unittest
 from unittest import mock
 
 from client import scope, tools
-from cvengine_scanner import checks
+from cvengine_scanner import checks, contract
 from cvengine_scanner import nuclei_allowlist
 
 FIXTURES = os.path.join(os.path.dirname(__file__), '..', '..', 'cvengine_scanner', 'tests', 'fixtures')  # the library's samples: the parsers' tests use them too
@@ -532,7 +532,7 @@ class RunTests(unittest.TestCase):
             tools._run([sys.executable, '-c', script], 30, max_bytes=1000)
         self.assertLess(time.monotonic() - started, 15)
 
-    def test_the_default_cap_applies_to_nmap_xml_and_udp_raw_xml(self):
+    def test_the_default_cap_applies_to_nmap_xml(self):
         with tempfile.TemporaryDirectory() as work:
             fake_nmap = os.path.join(work, 'nmap')
             with open(fake_nmap, 'w', encoding='utf-8') as handle:
@@ -540,9 +540,25 @@ class RunTests(unittest.TestCase):
             os.chmod(fake_nmap, 0o755)
             with mock.patch.object(tools, 'NMAP_BIN', fake_nmap), mock.patch.object(tools, 'MAX_TOOL_OUTPUT', 1000):
                 with self.assertRaises(tools.ToolOutputError):
-                    tools.run_nmap_udp('8.8.8.8')
-                with self.assertRaises(tools.ToolOutputError):
                     tools.run_nmap(['8.8.8.8'])
+
+    def test_a_udp_report_past_the_contract_bound_stops_the_run_and_one_at_it_is_sent(self):
+        """The server refuses an nmap_udp report over 512 KiB (agentapi.sentinel_broker.MAX_NMAP_UDP_XML); the contract says the same, and the
+        client stops the run at that size instead of sending a result the server throws away."""
+        self.assertEqual(tools.MAX_NMAP_UDP_REPORT, 512 * 1024)
+        self.assertEqual(tools.MAX_NMAP_UDP_REPORT, contract.load()['$defs']['results']['nmap_udp']['allOf'][1]['properties']['xml']['maxLength'])
+        with tempfile.TemporaryDirectory() as work:
+            fake_nmap = os.path.join(work, 'nmap')
+            for size, refused in ((tools.MAX_NMAP_UDP_REPORT, False), (tools.MAX_NMAP_UDP_REPORT + 1, True)):
+                with open(fake_nmap, 'w', encoding='utf-8') as handle:
+                    handle.write(f'#!{sys.executable}\nimport sys\nsys.stdout.write("<" * {size})\n')
+                os.chmod(fake_nmap, 0o755)
+                with self.subTest(size=size), mock.patch.object(tools, 'NMAP_BIN', fake_nmap):
+                    if refused:
+                        with self.assertRaises(tools.ToolOutputError):
+                            tools.run_nmap_udp('8.8.8.8')
+                    else:
+                        self.assertEqual(len(tools.run_nmap_udp('8.8.8.8')['xml']), size)
 
     def test_a_timeout_kills_the_whole_process_group_and_raises(self):
         with tempfile.TemporaryDirectory() as work:

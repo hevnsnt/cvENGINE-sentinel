@@ -1541,7 +1541,8 @@
               "xml": {
                 "type": "string",
                 "minLength": 1,
-                "maxLength": 4194304
+                "maxLength": 524288,
+                "description": "the raw nmap -oX report, at most 512 KiB (the server's agentapi.sentinel_broker.MAX_NMAP_UDP_XML): 18 UDP ports of one address are a few KiB, so only a runaway report is larger, and the client refuses it"
               }
             }
           }

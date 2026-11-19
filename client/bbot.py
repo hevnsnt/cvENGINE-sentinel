@@ -232,6 +232,23 @@ def _image_type(raw):
     return next((kind for magic, kind in IMAGE_TYPES if raw.startswith(magic)), None)
 
 
+MAX_FILENAME = 120  # the contract's bound on a screenshot's file name
+IMAGE_EXTENSIONS = {'image/png': ('png',), 'image/jpeg': ('jpg', 'jpeg')}  # the server keeps a screenshot only when its extension is its type's
+
+
+def _screenshot_name(basename, kind):
+    """A contract-safe file name for a screenshot of type ``kind``: unsafe characters become ``_``, a long name loses the end of its stem, never its
+    extension, and a name whose extension is not the picture's type (or that has none) gets the type's own (``.png``, ``.jpg``). The server drops a
+    screenshot whose extension does not match its content type, so a name cut at 120 characters must still end in it."""
+    stem, dot, ext = _FILENAME.sub('_', basename).lstrip('.').rpartition('.')
+    if not dot:
+        stem, ext = ext, ''
+    if ext.lower() not in IMAGE_EXTENSIONS[kind]:
+        stem, ext = (f'{stem}.{ext}' if dot and stem else stem or ext), IMAGE_EXTENSIONS[kind][0]
+    stem = stem.rstrip('.')[:MAX_FILENAME - len(ext) - 1].rstrip('.') or 'screenshot'
+    return f'{stem}.{ext}'
+
+
 class Collector:
     """Folds bbot's JSON events into what has not been sent yet, held to the scope, and cuts it into batches no list of which is over its cap."""
 
@@ -401,7 +418,7 @@ class Collector:
         kind = _image_type(raw)
         if not raw or len(raw) > MAX_SCREENSHOT_BYTES or kind is None:
             return
-        name = _FILENAME.sub('_', os.path.basename(source)).lstrip('.')[:120] or 'screenshot.png'
+        name = _screenshot_name(os.path.basename(source), kind)
         self._add('screenshots', {'host': where, 'url': self.policy.url(payload.get('url')) or '', 'filename': name, 'content_type': kind,
                                   'data': base64.b64encode(raw).decode('ascii')})
 
