@@ -206,7 +206,8 @@ def control_path(path):
 def _without_path(text, path):
     """``text`` with the requested ``path`` taken out (raw, percent-encoded and decoded): a "not found" page that names it is no portal."""
     forms = sorted({path, quote(path), unquote(path), quote(path, safe='')}, key=len, reverse=True)
-    return re.sub('|'.join(re.escape(f) for f in forms), ' ', str(text or ''), flags=re.I)
+    # the path as a whole only: /remote/login is taken out, the /remote/logincheck the real portal's form posts to is left
+    return re.sub('(?:' + '|'.join(re.escape(f) for f in forms) + r')(?![A-Za-z0-9_.-])', ' ', str(text or ''), flags=re.I)
 
 
 def _portal_page(spec, path, answer):

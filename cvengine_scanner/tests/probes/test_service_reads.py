@@ -190,6 +190,10 @@ class PortalTests(TestCase):
         item, _asked = self.read('vpn_fortinet', {}, catch_all=shell)
         self.assertEqual(item['value'], 'no')  # /remote/login is the site's catch-all page: not served on its own
 
+    def test_a_marker_that_extends_the_path_is_kept(self):
+        item, _asked = self.read('vpn_fortinet', {'/remote/login': answer(body='<form action="/remote/logincheck" method="post"></form>')})
+        self.assertEqual(item['value'], 'yes')
+
     def test_a_not_found_page_naming_the_path_is_not_the_portal(self):
         page = answer(200, body='<p>The page /logon/LogonPoint/index.html was not found on this server.</p>')
         item, _asked = self.read('vpn_citrix', {'/vpn/index.html': answer(404), '/logon/LogonPoint/index.html': page})
