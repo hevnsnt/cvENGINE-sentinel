@@ -152,3 +152,29 @@ class FetchTests(SimpleTestCase):
         policy = ScopePolicy({'domains': ['rt.test'], 'excluded': ['rt.test']}, internal=False)
         with self.assertRaises(ValueError):
             probes.fetch('https://www.rt.test/', policy, probe=probe, sleep=lambda s: None, allowed={'www.rt.test', 'rt.test'})
+
+
+class JavaPageTests(SimpleTestCase):
+    """The pages the version probes already fetch are read for the JVM (cvengine_scanner.java): nothing more is asked for it."""
+
+    def run_probe(self, probe_id, table):
+        return probes.run_http_probe(probe_id, 'https://www.rt.test', {'www.rt.test'}, get=answers(table), sleep=lambda s: None)
+
+    def test_the_front_page_header_states_the_runtime(self):
+        found = self.run_probe('headers-root', {'/': page(headers={'X-Powered-By': 'Servlet/3.1 JSP/2.3 (GlassFish Server 4.1 Java/Oracle Corporation/1.8)'})})
+        java = [o for o in found if o['product'] == probes.JAVA_RUNTIME]
+        self.assertEqual([(o['version'], o['variant'], o['source']) for o in java], [('8', 'Oracle', 'header:java')])
+        self.assertEqual(java[0]['evidence']['java']['line_only'], True)
+        self.assertNotIn('Java runtime:8', probes.technology_names(found))  # a reading of its own, never a technology
+
+    def test_the_error_page_banner_states_the_runtime(self):
+        body = '<pre>java.lang.IllegalStateException\n OpenJDK Runtime Environment (build 17.0.9+9-Ubuntu-0ubuntu122.04)</pre>'
+        found = self.run_probe('error-page', {probes.PROBE_PATH: page(500, body=body)})
+        java = [o for o in found if o['product'] == probes.JAVA_RUNTIME]
+        self.assertEqual([(o['version'], o['variant'], o['source']) for o in java], [('17.0.9', 'Ubuntu', 'body:java')])
+
+    def test_a_challenge_page_states_nothing(self):
+        blocked = page(503, body='OpenJDK Runtime Environment (build 17.0.9+9)')
+        blocked['challenge'] = 'Cloudflare'
+        found = self.run_probe('error-page', {probes.PROBE_PATH: blocked})
+        self.assertFalse([o for o in found if o['product'] == probes.JAVA_RUNTIME])

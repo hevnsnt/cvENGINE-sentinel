@@ -208,3 +208,40 @@ class DecodeTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class DetectionPassTests(unittest.TestCase):
+    """Contract 10: what the network detection pass may run is the part of the shipped list whose reviewed path is under ``network/detection/``."""
+
+    def test_the_detection_templates_are_the_listed_network_detection_files_only(self):
+        listed = al.load_allowlist()['templates']
+        detection = {tid for tid in listed if al.is_detection(tid)}
+        self.assertEqual(detection, {tid for tid, e in listed.items() if e['path'].startswith('network/detection/')})
+        self.assertGreaterEqual(len(detection), 150)
+        for tid in ('openssh-detect', 'sshd-dropbear-detect', 'redis-detect', 'rdp-detection', 'vnc-service-detect', 'mongodb-detect', 'mysql-detect',
+                    'rabbitmq-detect', 'apache-activemq-detect', 'activemq-openwire-transport-detect', 'proftpd-server-detect', 'vsftpd-detect', 'exim-detect'):
+            self.assertIn(tid, detection)
+        for tid in ('CVE-2001-1473', 'exposed-redis', 'erlang-daemon', '7777botnet-detect', 'cowrie-ssh-honeypot-detect', 'mssql-detect', 'samba-detect', 'rdp-detect'):
+            self.assertNotIn(tid, detection)  # a CVE, an exposure, a misconfiguration, a c2, a honeypot, a javascript check
+        self.assertFalse(al.is_detection('no-such-template'))
+        self.assertFalse(al.is_detection(None))
+
+    def test_no_detection_template_is_tagged_intrusive_or_sends_a_credential(self):
+        for tid, entry in al.load_allowlist()['templates'].items():
+            if not al.is_detection(tid):
+                continue
+            path = FIXTURES / 'nuclei_templates' / entry['path']
+            text = path.read_text(encoding='utf-8')
+            with self.subTest(template=tid):
+                self.assertEqual(al.sha256_of(path.read_bytes()), entry['sha256'])  # the vendored file is the reviewed one
+                tags = re.search(r'(?m)^  tags:\s*(.+)$', text).group(1).split(',')
+                self.assertFalse({t.strip() for t in tags} & {'dos', 'intrusive', 'fuzz', 'default-login', 'bruteforce'}, tags)
+                self.assertTrue(re.search(r'(?m)^tcp:', text), 'every network/detection template is a raw tcp template')
+                if tid not in al.load_allowlist()['reviewed_exceptions']:
+                    self.assertEqual(al.credential_findings(text), [])
+
+    def test_the_classes_with_a_detection_template(self):
+        classes = al.detection_classes()
+        self.assertTrue({'ssh', 'ftp', 'smtp', 'imap', 'pop3', 'telnet', 'mysql', 'redis', 'mongodb', 'rdp', 'vnc', 'unknown'} <= classes)
+        self.assertFalse(classes & {'tls', 'web', 'smb', 'mssql', 'postgres', 'ldap', 'memcached'})  # their checks are javascript or ssl, or there are none
+        self.assertEqual(al.detection_classes({'templates': {}, 'reviewed_exceptions': set()}), frozenset())

@@ -76,6 +76,13 @@ _CONTROL = re.compile('[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u2028\u2029\u202a-\u
 SCRIPT_OUTPUT_CAP = 4000  # one NSE script's text; the same bound as ``nmap.SCRIPT_OUTPUT_CAP`` and the contract's
 PORT_SCRIPT_CAP = 16000  # all the scripts of one port (or of one host) together
 BANNER_CAP = 1024
+# nmap's service fingerprint of a service it could not name (``servicefp``): the raw replies its probes got, escaped (a byte is four characters), which
+# the server decodes and reads for the greeting and the HTTP headers (cveFeed.servicefp). 1024 characters cut it inside the first reply's headers.
+SERVICEFP_CAP = 4096
+# The scripts a version scan runs by itself (nmap's ``version`` category: vmware-version, rpcinfo, hnap-info ...; they cannot be named in --script and run
+# whenever -sV does): their output, no request of our own, is kept apart from the reviewed scripts as text the server reads for a version
+# (``version_scripts``), never as reviewed script output.
+VERSION_SCRIPT_CAP, MAX_VERSION_SCRIPTS, VERSION_SCRIPT_TOTAL = 2000, 8, 8000
 MAX_PORTS_PER_HOST = 500  # the contract's ``port`` list bound, the server's own
 MAX_SCANNED_RANGES = 4096
 NMAP_HOST_TIMEOUT_SECONDS = 480  # ``flags.NMAP_HOST_TIMEOUT``, '8m'
@@ -115,6 +122,30 @@ def _script_texts(parent, cuts, target):
         budget -= len(text)
         cuts.chars('script_output', SCRIPT_OUTPUT_CAP, lost, target)
         out[sid] = text
+    return out
+
+
+def _version_script_texts(parent, cuts, target):
+    """``{script id: output}`` of the scripts under ``parent`` a version scan ran on its own (every id outside ``NSE_SCRIPT_SET``: only the version
+    category runs unasked): at most ``MAX_VERSION_SCRIPTS`` ids, ``VERSION_SCRIPT_CAP`` characters each and ``VERSION_SCRIPT_TOTAL`` in all, the clipped
+    characters counted as ``version_script_output``. Text from the scanned host, never interpreted."""
+    out, budget = {}, VERSION_SCRIPT_TOTAL
+    for script in (parent.findall('script') if parent is not None else []):
+        sid = script.get('id') or ''
+        if sid in NSE_SCRIPT_SET or sid in out or not re.fullmatch(r'[a-z0-9][a-z0-9._-]{0,63}', sid):
+            continue
+        if len(out) >= MAX_VERSION_SCRIPTS:
+            cuts.items('version_scripts', MAX_VERSION_SCRIPTS, 1, target)
+            continue
+        text, lost = _plain(script.get('output'), VERSION_SCRIPT_CAP, multiline=True)
+        text = text.strip('\n')
+        if len(text) > budget:
+            lost += len(text) - budget
+            text = text[:budget]
+        budget -= len(text)
+        cuts.chars('version_script_output', VERSION_SCRIPT_CAP, lost, target)
+        if text:
+            out[sid] = text
     return out
 
 
@@ -187,8 +218,12 @@ def _port_row(port_el, number, cuts, target):
     scripts = _script_texts(port_el, cuts, target)
     if scripts:
         row['scripts'] = scripts
-    banner, lost = _plain(raw_scripts.get('banner') or service.get('servicefp') or '', BANNER_CAP, multiline=True)
-    cuts.chars('banner', BANNER_CAP, lost, target)
+    version_scripts = _version_script_texts(port_el, cuts, target)
+    if version_scripts:
+        row['version_scripts'] = version_scripts
+    cap = BANNER_CAP if raw_scripts.get('banner') else SERVICEFP_CAP  # the banner script's text, else nmap's fingerprint (longer: it is escaped)
+    banner, lost = _plain(raw_scripts.get('banner') or service.get('servicefp') or '', cap, multiline=True)
+    cuts.chars('banner', cap, lost, target)
     if banner.strip():
         row['banner'] = banner.strip()
     tls = _tls_summary(raw_scripts.get('ssl-cert'), cuts, target) if raw_scripts.get('ssl-cert') else {}

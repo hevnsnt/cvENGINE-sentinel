@@ -3,11 +3,561 @@
   "$id": "https://github.com/hevnsnt/CVEngine/agentapi/sentinel_contract.json",
   "title": "cvENGINE Sentinel result contract",
   "description": "Both halves of the exchange between cvENGINE and a Sentinel. $defs/targets is what the server hands a Sentinel for each task kind (the task's target); $defs/results is what a Sentinel sends to POST /api/v1/sentinel/tasks/{id}/result; $defs/partials is what a streamed kind (bbot_discovery) sends to POST /api/v1/sentinel/tasks/{id}/partial while it runs, before the result that closes it. The server clips and validates every result anyway (agentapi.sentinel_broker.clean_result); this file is what a correct client keeps to, so the server never has to. Bounds are asserted equal to the server's own limits, and every target the server builds is validated against it, by tests/test_sentinel_contract.py. Bump contract_version (and say so in CHANGELOG) for any change a client must follow.",
-  "contract_version": 5,
+  "contract_version": 10,
   "min_supported_contract_version": 1,
-  "kind_since": {"nmap": 1, "naabu": 1, "nuclei_light": 1, "nuclei_targeted": 1, "nuclei_deep": 1, "testssl": 1, "nmap_udp": 1, "wpscan": 1, "discover": 1, "openvas": 1, "waf": 2, "bbot_discovery": 3, "http_probe": 3, "dns_resolve": 3, "bucket_check": 3, "vhost_probe": 3, "subdir_probe": 3, "alive_check": 3, "supplier_check": 3, "secrets_scan": 3, "nmap_full": 3, "nmap_verify": 3, "node2shell": 3, "rdp_shot": 3, "db_probe": 3, "path_probe": 3, "nuclei_validate": 3, "hygiene_check": 3, "dangling_dns_check": 3, "route_probe": 3, "wpscan_thorough": 3, "identity_check": 3, "web_screenshot": 3, "route_probe_signed": 3, "page_read": 3, "ssh_probe": 3},
+  "kind_since": {"nmap": 1, "naabu": 1, "nuclei_light": 1, "nuclei_targeted": 1, "nuclei_deep": 1, "testssl": 1, "nmap_udp": 1, "wpscan": 1, "discover": 1, "openvas": 1, "waf": 2, "bbot_discovery": 3, "http_probe": 3, "dns_resolve": 3, "bucket_check": 3, "vhost_probe": 3, "subdir_probe": 3, "alive_check": 3, "supplier_check": 3, "secrets_scan": 3, "nmap_full": 3, "nmap_verify": 3, "node2shell": 3, "rdp_shot": 3, "db_probe": 3, "path_probe": 3, "nuclei_validate": 3, "hygiene_check": 3, "dangling_dns_check": 3, "route_probe": 3, "wpscan_thorough": 3, "identity_check": 3, "web_screenshot": 3, "route_probe_signed": 3, "page_read": 3, "ssh_probe": 3, "java_runtime": 6, "version_read": 7, "version_digest": 8, "version_rows": 9},
   "external_since": {"nuclei_validate": 4, "path_probe": 3},
   "$defs": {
+    "version_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "read"
+      ],
+      "description": "one anonymous GET of a path on the entry's base, and which part of its answer comes back",
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "pattern": "^/[A-Za-z0-9._~!$&'()*+,;=:@%/?-]{0,199}$",
+          "description": "the path (and query) on the base: never another host, never a '.' or '..' segment"
+        },
+        "read": {
+          "enum": [
+            "json",
+            "text",
+            "metrics",
+            "headers"
+          ],
+          "description": "json: only the named fields of a JSON object; text: an excerpt; metrics: the *_info samples with their version-like labels; headers: no body"
+        },
+        "fields": {
+          "type": "array",
+          "maxItems": 12,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,60}(\\.[A-Za-z0-9_-]{1,60}){0,5}$"
+          },
+          "description": "json only: the dotted fields to return"
+        },
+        "find": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "description": "text only: the excerpt starts at the first occurrence of this literal (never a pattern)"
+        },
+        "headers": {
+          "type": "array",
+          "maxItems": 6,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,40}$",
+            "not": {
+              "enum": [
+                "set-cookie",
+                "cookie",
+                "authorization",
+                "proxy-authorization",
+                "www-authenticate",
+                "proxy-authenticate"
+              ]
+            }
+          },
+          "description": "the response headers to return"
+        }
+      }
+    },
+    "version_digest_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "read"
+      ],
+      "description": "one anonymous GET of a path on the entry's base (a version_digest request, contract 8), and which part of its answer comes back: any version_read read, or a digest of the body instead of the body",
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "pattern": "^/[A-Za-z0-9._~!$&'()*+,;=:@%/?-]{0,199}$",
+          "description": "the path (and query) on the base: never another host, never a '.' or '..' segment"
+        },
+        "read": {
+          "enum": [
+            "json",
+            "text",
+            "metrics",
+            "headers",
+            "digest"
+          ],
+          "description": "json: only the named fields of a JSON object; text: an excerpt; metrics: the *_info samples with their version-like labels; headers: no body; digest: the body's SHA-256 and its first bytes, never the body"
+        },
+        "fields": {
+          "type": "array",
+          "maxItems": 12,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,60}(\\.[A-Za-z0-9_-]{1,60}){0,5}$"
+          },
+          "description": "json only: the dotted fields to return"
+        },
+        "find": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "description": "text only: the excerpt starts at the first occurrence of this literal (never a pattern)"
+        },
+        "headers": {
+          "type": "array",
+          "maxItems": 6,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,40}$",
+            "not": {
+              "enum": [
+                "set-cookie",
+                "cookie",
+                "authorization",
+                "proxy-authorization",
+                "www-authenticate",
+                "proxy-authenticate"
+              ]
+            }
+          },
+          "description": "the response headers to return"
+        }
+      }
+    },
+    "version_rows_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "read"
+      ],
+      "description": "one anonymous GET of a path on the entry's base (a version_rows request, contract 9), and which part of its answer comes back: any version_read read, or only the named version rows of a status page",
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "pattern": "^/[A-Za-z0-9._~!$&'()*+,;=:@%/?-]{0,199}$",
+          "description": "the path (and query) on the base: never another host, never a '.' or '..' segment"
+        },
+        "read": {
+          "enum": [
+            "json",
+            "text",
+            "metrics",
+            "headers",
+            "rows"
+          ],
+          "description": "json: only the named fields of a JSON object; text: an excerpt; metrics: the *_info samples with their version-like labels; headers: no body; rows: only the named rows of a status page (a 'Name: value' line or the first two cells of a table row), each a short version-like value"
+        },
+        "fields": {
+          "type": "array",
+          "maxItems": 12,
+          "items": {
+            "type": "string",
+            "anyOf": [
+              {
+                "pattern": "^[A-Za-z0-9_-]{1,60}(\\.[A-Za-z0-9_-]{1,60}){0,5}$"
+              },
+              {
+                "pattern": "^[A-Za-z][A-Za-z0-9 ._()/-]{0,59}$"
+              }
+            ]
+          },
+          "description": "json: the dotted fields to return; rows: the names of the rows to return (the first cell of a table row, or the text before ':' on a line)"
+        },
+        "find": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "description": "text only: the excerpt starts at the first occurrence of this literal (never a pattern)"
+        },
+        "headers": {
+          "type": "array",
+          "maxItems": 6,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,40}$",
+            "not": {
+              "enum": [
+                "set-cookie",
+                "cookie",
+                "authorization",
+                "proxy-authorization",
+                "www-authenticate",
+                "proxy-authenticate"
+              ]
+            }
+          },
+          "description": "the response headers to return"
+        }
+      }
+    },
+    "version_value": {
+      "anyOf": [
+        {
+          "type": "string",
+          "maxLength": 200
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "size"
+          ],
+          "properties": {
+            "type": {
+              "enum": [
+                "object",
+                "array"
+              ]
+            },
+            "size": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      ]
+    },
+    "version_answer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "status"
+      ],
+      "description": "one answer of a version_read request: never a body, only the part its read keeps",
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "status": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 999
+        },
+        "error": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "content_type": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "headers": {
+          "type": "object",
+          "maxProperties": 6,
+          "additionalProperties": {
+            "type": "string",
+            "maxLength": 200
+          }
+        },
+        "json": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "maxProperties": 12,
+              "additionalProperties": {
+                "$ref": "#/$defs/version_value"
+              }
+            }
+          ],
+          "description": "null when the answer is not one JSON object"
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 1024
+        },
+        "lines": {
+          "type": "array",
+          "maxItems": 40,
+          "items": {
+            "type": "string",
+            "maxLength": 400
+          }
+        }
+      }
+    },
+    "version_digest_answer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "status"
+      ],
+      "description": "one answer of a version_digest request: never a body, only the part its read keeps (a digest read: the body's SHA-256 and first bytes)",
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "status": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 999
+        },
+        "error": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "content_type": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "headers": {
+          "type": "object",
+          "maxProperties": 6,
+          "additionalProperties": {
+            "type": "string",
+            "maxLength": 200
+          }
+        },
+        "json": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "maxProperties": 12,
+              "additionalProperties": {
+                "$ref": "#/$defs/version_value"
+              }
+            }
+          ],
+          "description": "null when the answer is not one JSON object"
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 1024
+        },
+        "lines": {
+          "type": "array",
+          "maxItems": 40,
+          "items": {
+            "type": "string",
+            "maxLength": 400
+          }
+        },
+        "digest": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "head"
+          ],
+          "description": "a digest read: the SHA-256 of the decoded body (only when the whole body was read) and its first 16 bytes as they came over the wire, in hex (a static asset's magic number and header, a gzip file's timestamp)",
+          "properties": {
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "head": {
+              "type": "string",
+              "maxLength": 32,
+              "pattern": "^([0-9a-f]{2}){0,16}$"
+            }
+          }
+        },
+        "redirected": {
+          "type": "boolean",
+          "description": "a digest read whose answer another path served after a redirect: it carries no digest"
+        }
+      }
+    },
+    "version_rows_answer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "status"
+      ],
+      "description": "one answer of a version_rows request: never a body, only the part its read keeps (a rows read: the named rows, each a short version-like value)",
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "status": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 999
+        },
+        "error": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "content_type": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "headers": {
+          "type": "object",
+          "maxProperties": 6,
+          "additionalProperties": {
+            "type": "string",
+            "maxLength": 200
+          }
+        },
+        "json": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "maxProperties": 12,
+              "additionalProperties": {
+                "$ref": "#/$defs/version_value"
+              }
+            }
+          ],
+          "description": "null when the answer is not one JSON object"
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 1024
+        },
+        "lines": {
+          "type": "array",
+          "maxItems": 40,
+          "items": {
+            "type": "string",
+            "maxLength": 400
+          }
+        },
+        "rows": {
+          "type": "object",
+          "maxProperties": 12,
+          "propertyNames": {
+            "pattern": "^[A-Za-z][A-Za-z0-9 ._()/-]{0,59}$"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120,
+            "pattern": "^[A-Za-z0-9 ._+~:()/,#-]{1,120}$"
+          },
+          "description": "a rows read: the rows named, found in the page, whose value is version-like text; nothing else of the page"
+        }
+      }
+    },
+    "java_reading": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "major",
+        "vendor",
+        "source",
+        "confidence"
+      ],
+      "description": "one reading of the Java runtime (cvengine_scanner.java.reading): what the host stated, never a guess. The server normalises the version again and stores it as a Java runtime observation",
+      "properties": {
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40,
+          "description": "the normalised version: 8u392, 17.0.9, 21.0.2, or a line alone (17)"
+        },
+        "major": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 99
+        },
+        "vendor": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "runtime": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "build": {
+          "type": "string",
+          "maxLength": 60
+        },
+        "line_only": {
+          "type": "boolean"
+        },
+        "source": {
+          "enum": [
+            "jdwp",
+            "actuator",
+            "jolokia",
+            "status_page",
+            "header",
+            "error_page"
+          ]
+        },
+        "confidence": {
+          "enum": [
+            "exact",
+            "inferred",
+            "weak"
+          ]
+        },
+        "url": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "evidence": {
+          "type": "string",
+          "maxLength": 300,
+          "description": "what the host said, clipped: untrusted text"
+        }
+      }
+    },
     "envelope": {
       "type": "object",
       "required": [
@@ -114,7 +664,20 @@
         },
         "banner": {
           "type": "string",
-          "maxLength": 1024
+          "maxLength": 4096,
+          "description": "the banner script's text (at most 1024 characters), else nmap's escaped service fingerprint of a service it could not name (servicefp, at most 4096: the server decodes it); a longer one is cut and named in cuts as banner"
+        },
+        "version_scripts": {
+          "type": "object",
+          "maxProperties": 8,
+          "propertyNames": {
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "maxLength": 2000
+          },
+          "description": "Optional: the output of the scripts a version scan ran on its own (nmap's version category, which -sV runs whatever --script names: vmware-version, rpcinfo ...), by script id, never one of the reviewed scripts. At most 2000 characters a script and 8000 a port in all (a cut is named in cuts as version_script_output); text from a scanned host the server only reads for a version, never interpreted. A server that predates it ignores it."
         },
         "scripts": {
           "type": "object",
@@ -4928,6 +5491,402 @@
             }
           }
         ]
+      },
+      "java_runtime": {
+        "allOf": [
+          {
+            "$ref": "#/$defs/envelope"
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "outcome": true,
+              "error": true,
+              "summary": true,
+              "web": {
+                "type": "array",
+                "maxItems": 50,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "id",
+                    "readings"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "readings": {
+                      "type": "array",
+                      "maxItems": 10,
+                      "items": {
+                        "$ref": "#/$defs/java_reading"
+                      }
+                    },
+                    "asked": {
+                      "type": "array",
+                      "maxItems": 20,
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "path",
+                          "status"
+                        ],
+                        "properties": {
+                          "path": {
+                            "type": "string",
+                            "maxLength": 200
+                          },
+                          "status": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 999
+                          },
+                          "error": {
+                            "type": "string",
+                            "maxLength": 40
+                          }
+                        }
+                      }
+                    },
+                    "error": {
+                      "type": "string",
+                      "maxLength": 200,
+                      "description": "the host was not asked or the check failed: unknown, not clean"
+                    }
+                  }
+                }
+              },
+              "jdwp": {
+                "type": "array",
+                "maxItems": 25,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "id",
+                    "speaks"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "speaks": {
+                      "type": [
+                        "boolean",
+                        "null"
+                      ],
+                      "description": "true: the debuggee echoed JDWP-Handshake (anyone who reaches it can run code); false: something else answered; null: nothing answered, unknown"
+                    },
+                    "reading": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/java_reading"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "error": {
+                      "type": "string",
+                      "maxLength": 200
+                    }
+                  }
+                }
+              },
+              "touched": {
+                "type": "array",
+                "maxItems": 2000,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 260
+                },
+                "description": "every host a request or a connection was sent to"
+              },
+              "refused": {
+                "type": "array",
+                "maxItems": 2000,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 260
+                },
+                "description": "every host a hop or an endpoint was refused for by the scope policy"
+              }
+            },
+            "if": {
+              "properties": {
+                "outcome": {
+                  "const": "done"
+                }
+              },
+              "required": [
+                "outcome"
+              ]
+            },
+            "then": {
+              "required": [
+                "web",
+                "jdwp"
+              ]
+            }
+          }
+        ]
+      },
+      "version_read": {
+        "allOf": [
+          {
+            "$ref": "#/$defs/envelope"
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "outcome": true,
+              "error": true,
+              "summary": true,
+              "reads": {
+                "type": "array",
+                "maxItems": 100,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "id",
+                    "answers"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "answers": {
+                      "type": "array",
+                      "maxItems": 4,
+                      "items": {
+                        "$ref": "#/$defs/version_answer"
+                      }
+                    },
+                    "error": {
+                      "type": "string",
+                      "maxLength": 200
+                    }
+                  }
+                }
+              },
+              "touched": {
+                "type": "array",
+                "maxItems": 2000,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 260
+                },
+                "description": "every host a request was sent to"
+              },
+              "refused": {
+                "type": "array",
+                "maxItems": 2000,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 260
+                },
+                "description": "every host a hop was refused for by the scope policy"
+              }
+            },
+            "if": {
+              "properties": {
+                "outcome": {
+                  "const": "done"
+                }
+              },
+              "required": [
+                "outcome"
+              ]
+            },
+            "then": {
+              "required": [
+                "reads",
+                "touched"
+              ]
+            }
+          }
+        ]
+      },
+      "version_digest": {
+        "allOf": [
+          {
+            "$ref": "#/$defs/envelope"
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "outcome": true,
+              "error": true,
+              "summary": true,
+              "reads": {
+                "type": "array",
+                "maxItems": 100,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "id",
+                    "answers"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "answers": {
+                      "type": "array",
+                      "maxItems": 4,
+                      "items": {
+                        "$ref": "#/$defs/version_digest_answer"
+                      }
+                    },
+                    "error": {
+                      "type": "string",
+                      "maxLength": 200
+                    }
+                  }
+                }
+              },
+              "touched": {
+                "type": "array",
+                "maxItems": 2000,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 260
+                },
+                "description": "every host a request was sent to"
+              },
+              "refused": {
+                "type": "array",
+                "maxItems": 2000,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 260
+                },
+                "description": "every host a hop was refused for by the scope policy"
+              }
+            },
+            "if": {
+              "properties": {
+                "outcome": {
+                  "const": "done"
+                }
+              },
+              "required": [
+                "outcome"
+              ]
+            },
+            "then": {
+              "required": [
+                "reads",
+                "touched"
+              ]
+            }
+          }
+        ]
+      },
+      "version_rows": {
+        "allOf": [
+          {
+            "$ref": "#/$defs/envelope"
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "outcome": true,
+              "error": true,
+              "summary": true,
+              "reads": {
+                "type": "array",
+                "maxItems": 100,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "id",
+                    "answers"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "answers": {
+                      "type": "array",
+                      "maxItems": 4,
+                      "items": {
+                        "$ref": "#/$defs/version_rows_answer"
+                      }
+                    },
+                    "error": {
+                      "type": "string",
+                      "maxLength": 200
+                    }
+                  }
+                }
+              },
+              "touched": {
+                "type": "array",
+                "maxItems": 2000,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 260
+                },
+                "description": "every host a request was sent to"
+              },
+              "refused": {
+                "type": "array",
+                "maxItems": 2000,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 260
+                },
+                "description": "every host a hop was refused for by the scope policy"
+              }
+            },
+            "if": {
+              "properties": {
+                "outcome": {
+                  "const": "done"
+                }
+              },
+              "required": [
+                "outcome"
+              ]
+            },
+            "then": {
+              "required": [
+                "reads",
+                "touched"
+              ]
+            }
+          }
+        ]
       }
     },
     "targets": {
@@ -5052,6 +6011,10 @@
           "allow_credential_checks": {
             "type": "boolean",
             "description": "optional, additive: true only when a person turned on \"Allow checks that send credentials\" at the server. Without it (absent or false) the web pass leaves out the default-login and bruteforce templates and never takes either as a tag; a Sentinel that does not know the field never runs them. It never reaches the service ports, which send no credentials."
+          },
+          "network_detection": {
+            "type": "boolean",
+            "description": "optional (contract 10): true makes this light task the network detection pass. Only the targets that are not web (a host:port whose service label, or else its port number, is not web) are run, each with the nuclei templates of its class that are on the Sentinel's service-port allowlist AND whose reviewed library path is under network/detection/ (nuclei's raw tcp type only), one template at a time under the service budget, with dos, default-login, bruteforce, fuzz and intrusive always excluded; tags are not used for those ports. A web target is not run and is named in not_checked. The server sends it only to a Sentinel that declared contract 10 or later (cvengine_scanner.flags.NUCLEI_DETECTION_SINCE): an older one ignores the field and its light pass checks nothing on these ports. The result is a nuclei_light result like any other."
           },
           "budget": {
             "type": "object",
@@ -7015,6 +7978,308 @@
                   "type": "integer",
                   "minimum": 1,
                   "maximum": 65535
+                }
+              }
+            }
+          },
+          "scope": {
+            "$ref": "#/$defs/probe_scope"
+          }
+        }
+      },
+      "java_runtime": {
+        "description": "the Java runtime reads of a set of hosts (cveFeed.java_runtime): fixed GETs per check on web hosts already identified as that product, and the JDWP handshake plus VirtualMachine.Version on JDWP or unidentified debug ports",
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "scope"
+        ],
+        "minProperties": 2,
+        "properties": {
+          "web": {
+            "type": "array",
+            "maxItems": 50,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "host",
+                "base",
+                "checks",
+                "allowed"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "host": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 260
+                },
+                "base": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 300,
+                  "description": "scheme://host[:port] of that host"
+                },
+                "checks": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 6,
+                  "uniqueItems": true,
+                  "items": {
+                    "enum": [
+                      "actuator",
+                      "jolokia",
+                      "solr",
+                      "geoserver",
+                      "druid",
+                      "elasticsearch"
+                    ]
+                  }
+                },
+                "allowed": {
+                  "type": "array",
+                  "maxItems": 20,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 260
+                  },
+                  "description": "the names a redirect may lead to (the host's apex and www)"
+                }
+              }
+            }
+          },
+          "jdwp": {
+            "type": "array",
+            "maxItems": 25,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "address",
+                "port"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "address": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 60,
+                  "description": "one IP address, asked as itself"
+                },
+                "port": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65535
+                }
+              }
+            }
+          },
+          "scope": {
+            "$ref": "#/$defs/probe_scope"
+          }
+        }
+      },
+      "version_read": {
+        "description": "the version source reads of a set of hosts (cveFeed.version_sources): per web base, up to four anonymous GETs from the server's catalogue of version sources, each with which part of its answer to return. Only a host already identified as the product, or a port whose service suggests it, is listed",
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "reads",
+          "scope"
+        ],
+        "properties": {
+          "reads": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 100,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "host",
+                "base",
+                "requests",
+                "allowed"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "host": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 260
+                },
+                "base": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 300,
+                  "description": "scheme://host[:port] of that host"
+                },
+                "requests": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 4,
+                  "items": {
+                    "$ref": "#/$defs/version_request"
+                  }
+                },
+                "allowed": {
+                  "type": "array",
+                  "maxItems": 20,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 260
+                  },
+                  "description": "the names a redirect may lead to (the host's apex and www)"
+                }
+              }
+            }
+          },
+          "scope": {
+            "$ref": "#/$defs/probe_scope"
+          }
+        }
+      },
+      "version_digest": {
+        "description": "the version digest reads of a set of hosts (cveFeed.version_sources, contract 8): a version_read target whose requests may also ask for a digest of a static asset's body (its SHA-256 and first bytes) instead of the body. Only a host already identified as the product is listed",
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "reads",
+          "scope"
+        ],
+        "properties": {
+          "reads": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 100,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "host",
+                "base",
+                "requests",
+                "allowed"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "host": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 260
+                },
+                "base": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 300,
+                  "description": "scheme://host[:port] of that host"
+                },
+                "requests": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 4,
+                  "items": {
+                    "$ref": "#/$defs/version_digest_request"
+                  }
+                },
+                "allowed": {
+                  "type": "array",
+                  "maxItems": 20,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 260
+                  },
+                  "description": "the names a redirect may lead to (the host's apex and www)"
+                }
+              }
+            }
+          },
+          "scope": {
+            "$ref": "#/$defs/probe_scope"
+          }
+        }
+      },
+      "version_rows": {
+        "description": "the version row reads of a set of hosts (cveFeed.version_sources, contract 9): a version_read target whose requests may also ask for only the named version rows of a status page (Apache's /server-status?auto, a phpinfo page cvENGINE already found) instead of any of its body. Only a host already identified as the product, or a page already found on it, is listed",
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "reads",
+          "scope"
+        ],
+        "properties": {
+          "reads": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 100,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "host",
+                "base",
+                "requests",
+                "allowed"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "host": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 260
+                },
+                "base": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 300,
+                  "description": "scheme://host[:port] of that host"
+                },
+                "requests": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 4,
+                  "items": {
+                    "$ref": "#/$defs/version_rows_request"
+                  }
+                },
+                "allowed": {
+                  "type": "array",
+                  "maxItems": 20,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 260
+                  },
+                  "description": "the names a redirect may lead to (the host's apex and www)"
                 }
               }
             }

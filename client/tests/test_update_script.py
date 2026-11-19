@@ -6,6 +6,7 @@ writes the daemon status a rebuilt Sentinel would write. It proves the script's 
 """
 import fcntl
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -424,6 +425,28 @@ class UpdateScriptTests(unittest.TestCase):
         self.assertIn('older than the one this Sentinel runs', control.updater_info()['detail'])
         self.assertEqual(self.head(), second[:12])
         self.assertEqual(self.calls().count('compose up -d'), 1)  # only the first update ever restarted anything
+
+    def test_now_with_a_server_naming_an_older_commit_moves_to_the_head(self):
+        # vmi2645654, Nov 16: the server pins an older build than the Sentinel runs, so it names that as the target. A person's --now must still
+        # update (to the head of main) instead of refusing the downgrade and changing nothing.
+        first, second = self.publish_two()
+        self.status('automatic', target=second)
+        self.assertEqual(self.update().returncode, 0)
+        self.publish()
+        newest = self.origin_main()
+        self.status('automatic', target=first)
+        out = self.update('--now')
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertEqual(self.head(), newest[:12])
+        self.assertEqual(self.marker(), newest[:12])
+        self.assertEqual(self.calls().count('compose up -d'), 2)
+
+    def test_the_default_drain_outlasts_the_longest_task_budget(self):
+        # a deep nuclei scan may run its full hour: a 30-minute drain gave up on it and the update never happened
+        script = open(os.path.join(ROOT, 'scripts', 'update.sh')).read()
+        default = int(re.search(r'CVENGINE_SENTINEL_DRAIN_TIMEOUT:-(\d+)', script).group(1))
+        self.assertGreater(default, 3600)
+        self.assertLess(default, control.DRAIN_TTL)  # the drain flag must not expire while the updater still waits on it
 
     def test_a_person_can_roll_back_only_with_the_explicit_flag(self):
         first, second = self.publish_two()

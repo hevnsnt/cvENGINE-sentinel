@@ -103,6 +103,43 @@ NUCLEI_SERVICE_MAX_PORTS = 6  # the most non-web ports the server puts in one ta
 NUCLEI_WEB_HOST_RATE = 25
 
 
+# --- nuclei: the network detection pass (contract 10) ---------------------------------------------------------------------
+# The light pass's ``-tags tech`` reaches the http technology templates only: a non-web port gets nothing from it (no network template is tagged tech), so
+# RDP, Redis, MongoDB, RabbitMQ, ActiveMQ, VNC and the SSH and FTP variants were never named by nuclei. A ``nuclei_light`` task that carries
+# ``network_detection: true`` (contract 10) runs the network detection templates instead, on its non-web host:port targets only: each port gets the
+# templates of its class that are on the service-port allowlist (``nuclei_allowlist``) AND whose reviewed path is under ``network/detection/``, through the same
+# paced, one-template-at-a-time service run as every other non-web port (``NUCLEI_SERVICE_BUDGET``, ``NUCLEI_SERVICE_EXCLUDED_TAGS``, the content rule). Never
+# ``network/cves``, ``network/misconfig``, a javascript or an ssl template, a web target or a tag the task names. The server sends the field only to a Sentinel
+# that declared contract ``NUCLEI_DETECTION_SINCE`` or later: an older one would ignore it and run the light pass's tech filter, which checks nothing there.
+NUCLEI_DETECTION_DIR = 'network/detection/'
+NUCLEI_DETECTION_SINCE = 10
+NUCLEI_DETECTION_TYPES = ('tcp',)  # every template under network/ is nuclei's raw tcp type
+# the per-port budget the server asks for (a task may only make it gentler: ``nuclei_service_budget``) and how many ports one task carries, so a light task's
+# own time (``TASK_LIMITS['nuclei_light']``: 840 s at least) covers each port's whole budget: 3 x 240 s. The FTP class has the most templates (79 in v10.5.2).
+NUCLEI_DETECTION_BUDGET = {'pause_ms': 500, 'seconds': 240, 'web_rate': 25}
+NUCLEI_DETECTION_MAX_PORTS = 3
+
+
+def nuclei_detection_selection(service):
+    """``{'types', 'tags', 'etags'}`` of the network detection pass on a port of class ``service``: the class's own templates (``nuclei_service_selection``
+    with no task tags: a task's tags never widen or narrow it), of nuclei's raw tcp type only, with ``NUCLEI_SERVICE_EXCLUDED_TAGS`` always excluded.
+    ``None`` for web (the pass never sends an http template) and for a class with no tcp templates of its own (``tls``: ssl templates only)."""
+    if service == NUCLEI_WEB or (service != NUCLEI_UNKNOWN and service not in NUCLEI_SERVICES):
+        return None
+    if service != NUCLEI_UNKNOWN and not set(NUCLEI_SERVICES[service][1]) & set(NUCLEI_DETECTION_TYPES):
+        return None
+    selection = nuclei_service_selection(service, ())
+    return {**selection, 'types': list(NUCLEI_DETECTION_TYPES)}
+
+
+def is_detection_path(path):
+    """Whether a template's reviewed library path (``nuclei_allowlist``'s ``path``) is under ``network/detection/``: a relative path, no ``..``."""
+    if not isinstance(path, str) or path.startswith(('/', '\\')) or '\\' in path:
+        return False
+    parts = path.split('/')
+    return path.startswith(NUCLEI_DETECTION_DIR) and '..' not in parts and '.' not in parts and path.endswith('.yaml')
+
+
 def nuclei_service_budget(requested=None):
     """The per-service budget a run uses: what the task asked for (``{'pause_ms', 'seconds', 'web_rate'}``) held to this library's bounds. A task can
     lower ``seconds`` and ``web_rate`` and raise ``pause_ms`` (a gentler run), never the other way, so no server can make a Sentinel hit a service harder
@@ -277,7 +314,8 @@ NSE_FLAGS = ['--script', ','.join(NSE_SCRIPTS), '--script-timeout', '30s']
 UDP_NSE_SCRIPTS = ('snmp-sysdescr', 'snmp-info', 'ntp-info', 'upnp-info', 'ipmi-version')
 # nmap's own documentation says a version scan "automatically executes the scripts in the version category" (rpcinfo, hnap-info, vmware-version,
 # skypev2-version, and more) whenever -sV runs, regardless of --script; these "cannot be selected explicitly". Their output is still written to
-# -oX. None of them has been reviewed the way NSE_SCRIPTS has, so ``reviewed_scripts`` drops anything -sV smuggled in before it is stored.
+# -oX. None of them has been reviewed the way NSE_SCRIPTS has, so ``reviewed_scripts`` drops anything -sV smuggled in from the reviewed output; what they
+# printed (no request of ours) is kept apart, as text the server only reads for a version (``version_scripts`` of a port, parsers._version_script_texts).
 NSE_SCRIPT_SET = frozenset(NSE_SCRIPTS) | frozenset(UDP_NSE_SCRIPTS)
 
 
@@ -305,7 +343,16 @@ EXTRA_PORTS = (
     9042, 9092, 9100, 9200, 9300,     # Cassandra, Kafka, node exporter, Elasticsearch HTTP and transport
     9443, 10250, 10255, 11211, 15672,  # alternate HTTPS, kubelet, kubelet read-only, Memcached, RabbitMQ console
     16686, 27017, 27018, 50070, 61616, 1883, 8883,  # Jaeger, MongoDB, Hadoop, ActiveMQ, MQTT (plain and TLS)
+    5005, 5006, 5007, 5008, 5009, 5010, 8787, 9009,  # Java debug (JDWP) ports: an open one runs any code it is sent (see JDWP_VERSION_SCRIPT)
 )
+# nmap's jdwp-version is a "version" category script: it cannot be named in --script, and -sV runs it by itself, at intensity 7 or more, on a port
+# that closed on nmap's NULL probe (a JDWP debuggee hangs up after two seconds without a handshake, so the port reads as tcpwrapped). Reviewed as
+# read-only: it sends the 14-byte "JDWP-Handshake" and then the one command VirtualMachine.Version (command set 1, command 1), and stores what it
+# read as the port's service ("jdwp"), product and version. Both the fingerprint pass (--version-intensity 7) and the version probe (--version-all)
+# run it. Its result is the port row itself, never script output, so ``reviewed_scripts`` has nothing of it to drop. cvENGINE reads that port as a Java
+# runtime and as an open debug port (cveFeed.java_runtime); the java_runtime kind asks the same two questions of a debug port nmap left unidentified.
+JDWP_VERSION_SCRIPT = 'jdwp-version'
+JDWP_PORTS = (5005, 5006, 5007, 5008, 5009, 5010, 8000, 8787, 9009)  # the debug ports the java_runtime kind may be asked to try
 # nmap's OS detection (-O --osscan-limit) needs one open and one CLOSED TCP port, and a pass over naabu's open ports alone has no closed one, so
 # the host was never OS-fingerprinted. These unassigned ports are nearly always answered with a reset when the host answers at all: one is
 # enough, two tolerate a firewall that drops one of them.

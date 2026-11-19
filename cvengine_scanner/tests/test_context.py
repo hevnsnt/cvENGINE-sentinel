@@ -193,8 +193,10 @@ class ContractTests(unittest.TestCase):
     def test_the_contract_version_is_not_bumped_for_an_optional_field(self):
         doc = contract.load()
         # 4 since the AI-written checks' template hash (a required target field of nuclei_validate), not for this optional field; 5 since the nmap detail,
-        # the cuts and the bbot finding port (every field of it optional, so the minimum a server still takes stays 1)
-        self.assertEqual((doc['contract_version'], doc['min_supported_contract_version']), (5, 1))
+        # the cuts and the bbot finding port (every field of it optional, so the minimum a server still takes stays 1); 6 since the java_runtime kind,
+        # 7 since the version_read kind, 8 since the version_digest kind, 9 since the version_rows kind, 10 since the network detection pass (a light task's
+        # network_detection, which an older Sentinel would ignore: the server must know which Sentinels run it)
+        self.assertEqual((doc['contract_version'], doc['min_supported_contract_version']), (10, 1))
 
 
 if __name__ == '__main__':

@@ -81,6 +81,8 @@ def _closed_tcp_port(host):
 
 SCRIPT_OUTPUT_CAP = 4000  # one NSE script's text, stored on the port; keeps a chatty script from bloating the row
 BANNER_CAP = 1024
+SERVICEFP_CAP = 4096  # nmap's escaped service fingerprint of a service it could not name (parsers.SERVICEFP_CAP)
+VERSION_SCRIPT_CAP, MAX_VERSION_SCRIPTS = 2000, 8  # the scripts a version scan ran on its own (parsers.VERSION_SCRIPT_CAP)
 
 
 def _scripts(element):
@@ -99,8 +101,20 @@ def _scripts(element):
 def _banner_from(scripts, service):
     """The service banner for a port: the `banner` NSE script's text if it ran, else nmap's service fingerprint probe
     (``servicefp``), which is the raw bytes the service replied with. Cleaned of the NSE label and capped. '' when neither."""
-    raw = scripts.get("banner") or service.get("@servicefp") or ""
-    return raw.strip()[:BANNER_CAP]
+    if scripts.get("banner"):
+        return scripts["banner"].strip()[:BANNER_CAP]
+    return str(service.get("@servicefp") or "").strip()[:SERVICEFP_CAP]
+
+
+def _version_scripts(scripts):
+    """``{script id: output}`` of the scripts a version scan ran on its own (every id outside the reviewed set: only nmap's version category runs
+    unasked), each clipped, at most ``MAX_VERSION_SCRIPTS``: text the server reads for a version, kept apart from the reviewed scripts."""
+    from .flags import NSE_SCRIPT_SET
+    out = {}
+    for sid, text in scripts.items():
+        if sid not in NSE_SCRIPT_SET and len(out) < MAX_VERSION_SCRIPTS and text.strip():
+            out[sid] = text.strip()[:VERSION_SCRIPT_CAP]
+    return out
 
 
 _FINGERPRINTS = {"MD5": ("fingerprint_md5", 32), "SHA-1": ("fingerprint_sha1", 40), "SHA-256": ("fingerprint_sha256", 64)}
@@ -144,7 +158,7 @@ def _service_record(port):
     cpes = [c for c in _as_list(service.get("cpe")) if isinstance(c, str)]
     portid = str(port.get("@portid", ""))
     scripts = _scripts(port)
-    return {
+    record = {
         "number": int(portid) if portid.isdigit() else None,
         "protocol": port.get("@protocol", "") or "",
         "state": (port.get("state") or {}).get("@state", "") or "",
@@ -164,6 +178,10 @@ def _service_record(port):
         "banner": _banner_from(scripts, service),
         "tls": parse_ssl_cert(scripts.get("ssl-cert")),
     }
+    version_scripts = _version_scripts(scripts)
+    if version_scripts:  # only when a version scan ran one on its own: a record without it reads as before
+        record["version_scripts"] = version_scripts
+    return record
 
 
 def _scanned_ports(nmaprun, protocol="tcp"):

@@ -49,7 +49,9 @@ if [ "$ALLOW_MOVE" = 1 ] && [ "$NOW" = 0 ]; then
   exit 2
 fi
 
-DRAIN_TIMEOUT="${CVENGINE_SENTINEL_DRAIN_TIMEOUT:-1800}"
+# 70 minutes: longer than the longest task budget the contract allows (an hour, nuclei_deep), so an update waits out a deep scan instead of giving up
+# half way through it and trying again an hour later; still inside the drain flag's two-hour expiry (client/control.py DRAIN_TTL) and the unit's 3h limit.
+DRAIN_TIMEOUT="${CVENGINE_SENTINEL_DRAIN_TIMEOUT:-4200}"
 case "$DRAIN_TIMEOUT" in
   ''|*[!0-9]*|0) echo "CVENGINE_SENTINEL_DRAIN_TIMEOUT must be a positive whole number of seconds (got '$DRAIN_TIMEOUT')" >&2; exit 2 ;;
 esac
@@ -165,16 +167,24 @@ if [ "$WANTED" != yes ]; then
   exit 0
 fi
 
+# A person's --now with a server that names an older commit than the one running here (a server pinned to an older build): that commit is no update,
+# so --now moves to the head of origin/<branch> as it does with no target, instead of refusing the downgrade and doing nothing.
+server_target_is_older() {
+  _named=$(git rev-parse --verify --quiet "$SERVER_TARGET^{commit}" 2>/dev/null || true)
+  _running=$(git rev-parse --verify --quiet "${DEPLOYED:-HEAD}^{commit}" 2>/dev/null || git rev-parse HEAD)
+  [ -n "$_named" ] && [ "$_named" != "$_running" ] && git merge-base --is-ancestor "$_named" "$_running" 2>/dev/null
+}
+
 # Which commit this run moves to, and why that is allowed. Nothing has been changed yet: a refusal leaves the running Sentinel as it is.
 if [ -n "$TO" ]; then
   REQUESTED=$TO
   WHY="you named it with --to"
-elif [ -n "$SERVER_TARGET" ]; then
+elif [ -n "$SERVER_TARGET" ] && ! { [ "$NOW" = 1 ] && server_target_is_older; }; then
   REQUESTED=$SERVER_TARGET
   WHY="cvENGINE named it as this Sentinel's target"
 elif [ "$NOW" = 1 ]; then
   REQUESTED=$AVAILABLE_FULL
-  WHY="cvENGINE named no target, so this is the head of origin/$BRANCH, which you asked for with --now; it is trusted only as far as the repository is (commits are not signature-checked)"
+  WHY="cvENGINE named no newer target, so this is the head of origin/$BRANCH, which you asked for with --now; it is trusted only as far as the repository is (commits are not signature-checked)"
 else
   # Nothing is wrong on this machine: an Automatic or requested update moves only to the commit cvENGINE names, and cvENGINE has named none (for now). That is waiting,
   # not a failure, and it is told to cvENGINE once a day (a marker file), not by every hourly run.

@@ -160,7 +160,7 @@ jobs:
           python -m unittest cvengine_scanner.tests.test_contract -v
       - name: The sha the server pins is on main
         env:
-          SERVER_REQUIREMENTS_URL: https://raw.githubusercontent.com/hevnsnt/CVEngine/1.4-develop/web/requirements.txt
+          SERVER_REQUIREMENTS_URL: https://raw.githubusercontent.com/hevnsnt/CVEngine/develop/web/requirements.txt
         run: |
           reqs="$RUNNER_TEMP/server_requirements.txt"
           # Fails closed: a file that cannot be fetched (after three tries with a growing wait) fails the job, because a skipped check would let a

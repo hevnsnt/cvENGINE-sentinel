@@ -713,18 +713,34 @@ def _allowed_on_port(path, port):
 
 NO_CHECK_REASON = 'no check exists for this service'  # the server shows it as it is, and reads it as "nothing to check", not as a failure (it records it as covered for now)
 NO_LIST_REASON = 'the service-port allowlist is missing or empty'  # a fault of this Sentinel: nothing was checked, and the port stays unreachable and due
+DETECTION_WEB_REASON = 'the network detection pass runs on non-web ports only'  # a web target in a network detection task: not run, never an http template
 
 
-def _run_service_port(target, klass, tags, budget, deadline, extra, templates, register, secret_file, listing_failed=None, spent=0.0):
+def _detection_only(files):
+    """The listed template files that are network detection templates (``flags.NUCLEI_DETECTION_DIR``), read from the service-port allowlist's own record of where
+    each reviewed template lives (``nuclei_allowlist.is_detection``), never from where the file sits now: a bundle cannot move a template into the pass."""
+    allowlist = nuclei_allowlist.load_allowlist()
+    out = []
+    for path in files:
+        _allowed, _why, tid = nuclei_allowlist.check_file(path, allowlist)
+        if nuclei_allowlist.is_detection(tid, allowlist):
+            out.append(path)
+    return out
+
+
+def _run_service_port(target, klass, tags, budget, deadline, extra, templates, register, secret_file, listing_failed=None, spent=0.0, detection=False):
     """One non-web ``host:port`` of class ``klass``: its template files, each as its own nuclei process, one at a time, with ``budget['pause_ms']`` between
     one run ending and the next starting, and ``budget['seconds']`` for the port (and never past ``deadline``). One connection is in flight at a time and a
     new template starts no sooner than the pause, which is the bound on what the port receives (see ``flags.NUCLEI_SERVICE_BUDGET``). The third run in a row
     that gets no answer at all ends the port: nothing is listening, and it is not asked again. A run that fails does not end the port, and a port whose every
     run failed is reported as not checked, with the reason.
+    ``detection`` is the network detection pass (contract 10, ``flags.nuclei_detection_selection``): only the class's tcp templates whose reviewed path is under
+    ``network/detection/``, whatever ``tags`` says; a class with none has no check (``nuclei_allowlist.detection_classes``).
     Returns ``{'findings', 'unreachable', 'incomplete', 'no_templates', 'reason'}``; ``reason`` is why the port was not fully checked, else ``None``."""
-    selection = flags.nuclei_service_selection(klass, tags)
+    selection = flags.nuclei_detection_selection(klass) if detection else flags.nuclei_service_selection(klass, tags)
     out = {'findings': [], 'unreachable': False, 'incomplete': False, 'no_templates': False, 'reason': None}
-    if not nuclei_allowlist.covers(klass):  # the list has no template for this service at all (or no list): nothing was checked, and the answer says so
+    covered = klass in nuclei_allowlist.detection_classes() if detection else nuclei_allowlist.covers(klass)
+    if not covered:  # the list has no template for this service at all (or no list): nothing was checked, and the answer says so
         out['no_templates'] = True
         if nuclei_allowlist.load_allowlist()['templates']:  # a list that loaded and names nothing of this class: there is no check for this service (postgres, ldap...), an answer
             out['reason'] = NO_CHECK_REASON
@@ -750,6 +766,8 @@ def _run_service_port(target, klass, tags, budget, deadline, extra, templates, r
         return out
     port = (flags.nuclei_label_key(target) or (None, None))[1]
     files = [path for path in files if _allowed_on_port(path, port)]
+    if detection:
+        files = _detection_only(files)
     if not files:
         out['no_templates'] = True  # nothing of this set may run for this class on this port: no process is started
         return out
@@ -882,7 +900,8 @@ def warm_credential_templates():
 
 
 @_reports_cuts
-def run_nuclei(targets, tags=None, severities=None, timeout=3600, register=None, templates=None, secret_file=None, services=None, budget=None, allow_credential_checks=False):
+def run_nuclei(targets, tags=None, severities=None, timeout=3600, register=None, templates=None, secret_file=None, services=None, budget=None, allow_credential_checks=False,
+               network_detection=False):
     """Host names are passed to nuclei as names, because each finding reports the host it was given. They were judged by scope (and by
     every address they resolved to) just before; nuclei resolves them again, so a name whose DNS answer changes in between is the one gap.
     ``templates`` is a directory of approved templates (the server's verified bundle, ``client.templates``): nuclei then runs exactly that set and
@@ -897,11 +916,19 @@ def run_nuclei(targets, tags=None, severities=None, timeout=3600, register=None,
     task or lose the findings already found: the result's ``not_checked`` names each port not fully checked and why.
 
     ``allow_credential_checks`` is the task's own field, true only when a person turned credential checks on at the server: only then may the web pass
-    run default-login and brute-force templates (a credential tag of the task's filter is otherwise left out). It never reaches the service ports."""
+    run default-login and brute-force templates (a credential tag of the task's filter is otherwise left out). It never reaches the service ports.
+
+    ``network_detection`` (a ``nuclei_light`` task's field, contract 10) makes the task the network detection pass: only its non-web host:port targets are run,
+    each with the ``network/detection/`` templates of its class (``_run_service_port``'s ``detection``), and the task's tags are not used for them. A web target
+    is not run (named in ``not_checked``): the pass never sends an http template."""
     allow_credentials = allow_credential_checks is True  # anything but a real true is off
+    detection = network_detection is True
     resolve = _resolver()  # one resolver for the task: the names are resolved once, for the scope judgment, and the banner probe connects to what was judged
     targets = validate_targets(targets, endpoint=True, resolver=resolve)
     web, service_runs = _split_by_service(targets, services)
+    skipped_web = []
+    if detection:  # the detection pass sends no http template: a web target the server should not have sent is named, never run
+        web, skipped_web = [], web
     extra = _proxy_args('nuclei', targets)
     proxied = bool(extra)  # a run through the egress proxy never connects directly, so it reads no banner either
     if secret_file is not None:
@@ -929,6 +956,7 @@ def run_nuclei(targets, tags=None, severities=None, timeout=3600, register=None,
     attempts = failures = 0
     last_error = None
     listing_failed = {}  # class -> why its template listing failed: tried once per class in a task
+    not_checked.extend({'target': t, 'reason': DETECTION_WEB_REASON} for t in skipped_web)
 
     def stop_for(pass_targets, reason):
         nonlocal incomplete
@@ -996,7 +1024,8 @@ def run_nuclei(targets, tags=None, severities=None, timeout=3600, register=None,
             if _banner_is_ssh(target, resolve):
                 klass = 'ssh'  # sshd on a port nothing named: it gets the ssh templates at the ssh pace
             spent = max(0.0, _clock() - began)  # the probe is charged to this port's budget
-        got = _run_service_port(target, klass, clean_tags, spend, deadline, extra, templates, register, secret_file, listing_failed, spent)
+        got = _run_service_port(target, klass, () if detection else clean_tags, spend, deadline, extra, templates, register, secret_file, listing_failed, spent,
+                                detection=detection)
         findings += got['findings']
         incomplete = incomplete or got['incomplete']
         quiet.append(got['no_templates'])
@@ -1010,7 +1039,7 @@ def run_nuclei(targets, tags=None, severities=None, timeout=3600, register=None,
             failures += 1
     if attempts and failures == attempts and not findings:
         raise last_error or ToolExitError('every nuclei run of this task failed')  # nothing ran: that is an error, not an answer
-    if quiet and all(quiet) and not findings and not incomplete and not unreachable and not no_check:
+    if quiet and all(quiet) and not findings and not incomplete and not unreachable and not no_check and not skipped_web:
         # the filter this task asked for matches no template in this set: there is nothing to check on these targets, which is an answer, not a failure
         return {'findings': [], 'templates_release': release, 'unreachable': [], 'no_templates': True}
     out = {'findings': findings, 'templates_release': release, 'unreachable': [t for t in targets if t in set(unreachable)]}
@@ -2196,7 +2225,71 @@ def run_ssh_probe(target, register=None, badkeys_dir=None):
 RUNNERS['ssh_probe'] = run_ssh_probe
 
 
+def run_java_runtime(target, register=None):
+    """The ``java_runtime`` kind (contract 6, ``cvengine_scanner.probes.java_runtime``): the fixed read-only GETs that make a host's own status pages
+    state its Java runtime, and the JDWP handshake plus the one VirtualMachine.Version command on a debug port, all under the task's scope policy."""
+    from cvengine_scanner.probes import java_runtime
+    try:
+        return java_runtime.run_batch(target)
+    except ValueError as exc:
+        raise TargetError(f'not a usable java_runtime task ({exc})') from None
+
+
+RUNNERS['java_runtime'] = run_java_runtime
+
+
+def run_version_read(target, register=None):
+    """The ``version_read`` kind (contract 7, ``cvengine_scanner.probes.version_read``): the anonymous GETs the server's version source catalogue
+    names for each host, under the task's scope policy, each answer handed back only in the part the request names (JSON fields, an excerpt, the
+    ``*_info`` metric samples, named headers)."""
+    from cvengine_scanner.probes import version_read
+    try:
+        return version_read.run_batch(target)
+    except ValueError as exc:
+        raise TargetError(f'not a usable version_read task ({exc})') from None
+
+
+RUNNERS['version_read'] = run_version_read
+
+
+def run_version_digest(target, register=None):
+    """The ``version_digest`` kind (contract 8): ``version_read`` whose requests may also ask for a digest of a static asset (its SHA-256 and
+    first bytes, never the asset), for the build of an edge appliance (cvENGINE's ``cveFeed.edge_builds``)."""
+    from cvengine_scanner.probes import version_read
+    try:
+        return version_read.run_batch(target, kind=version_read.DIGEST_KIND)
+    except ValueError as exc:
+        raise TargetError(f'not a usable version_digest task ({exc})') from None
+
+
+RUNNERS['version_digest'] = run_version_digest
+
+
+def run_version_rows(target, register=None):
+    """The ``version_rows`` kind (contract 9): ``version_read`` whose requests may also ask for only the named version rows of a status page
+    (Apache's ``/server-status?auto``, a phpinfo page cvENGINE already found), never the page (cvENGINE's ``cveFeed.version_catalogue``)."""
+    from cvengine_scanner.probes import version_read
+    try:
+        return version_read.run_batch(target, kind=version_read.ROWS_KIND)
+    except ValueError as exc:
+        raise TargetError(f'not a usable version_rows task ({exc})') from None
+
+
+RUNNERS['version_rows'] = run_version_rows
+
+
 # --- version probing, for the capabilities a bootstrapping Sentinel declares ------------------------------------------
+
+def _probe_timeout():
+    try:
+        return max(5.0, float(os.environ.get('CVENGINE_SENTINEL_PROBE_TIMEOUT', '60')))
+    except ValueError:
+        return 60.0
+
+
+# A host under load (a build, a GVM feed sync) can take half a minute to start a Python or Ruby tool: a probe that gave up at 10 s dropped bbot, testssl and
+# wpscan from a Sentinel's tools until its next restart.
+PROBE_TIMEOUT = _probe_timeout()
 
 VERSION_ARGS = {'nmap': [NMAP_BIN, '--version'], 'naabu': [NAABU_BIN, '-version'], 'nuclei': [NUCLEI_BIN, '-version'],
                 'testssl': [TESTSSL_BIN, '--version'], 'wpscan': [WPSCAN_BIN, '--version'], 'wafw00f': [WAFW00F_BIN, '--version'],
@@ -2253,16 +2346,27 @@ def gvm_ready():
 
 
 _VERSION = re.compile(r'v?(\d+(?:\.\d+){1,5}(?:[-+.~]?[0-9A-Za-z]{1,12})?)')
+# The line that names the tool's own version, for the tools that print other version-shaped text first. nuclei and naabu built with a Go newer than
+# their JSON library (bytedance/sonic) supports print "WARNING: sonic/ast only supports (go1.17~1.26 and amd64 CPU) ..." before it, and the first
+# version-shaped text in that is "1.17~1": every Sentinel reported nuclei 1.17~1 and showed "tools behind". Without the line, the first version is used.
+_VERSION_LINE = {
+    'nuclei': re.compile(r'(?i)engine version:\s*v?(\d+(?:\.\d+){1,5})'),
+    'naabu': re.compile(r'(?i)current version:\s*v?(\d+(?:\.\d+){1,5})'),
+}
 _PROBED = {'versions': None}  # {tool: version} of the last ``detect_tools`` probe: the same runs, so reporting the versions costs no second probe
 
 
-def _version_in(ran):
-    """The first version number in what a version probe printed (nuclei and naabu print it on stderr), clipped and printable: tool output is text, never trusted."""
-    for stream in (getattr(ran, 'stdout', None), getattr(ran, 'stderr', None)):
-        text = stream.decode('utf-8', 'replace') if isinstance(stream, bytes) else stream if isinstance(stream, str) else ''
-        found = _VERSION.search(text)
-        if found:
-            return ''.join(c for c in found.group(1) if c.isprintable())[:40]
+def _version_in(ran, name=None):
+    """The version a probe printed (nuclei and naabu print it on stderr): from the tool's own version line when it has one (``_VERSION_LINE``),
+    else the first version number, clipped and printable: tool output is text, never trusted."""
+    texts = [stream.decode('utf-8', 'replace') if isinstance(stream, bytes) else stream if isinstance(stream, str) else ''
+             for stream in (getattr(ran, 'stdout', None), getattr(ran, 'stderr', None))]
+    patterns = ([_VERSION_LINE[name]] if name in _VERSION_LINE else []) + [_VERSION]
+    for pattern in patterns:
+        for text in texts:
+            found = pattern.search(text)
+            if found:
+                return ''.join(c for c in found.group(1) if c.isprintable())[:40]
     return ''
 
 
@@ -2273,18 +2377,24 @@ def detect_tools():
     found, versions = [], {}
     for name, argv in VERSION_ARGS.items():
         try:
-            ran = subprocess.run(argv, capture_output=True, timeout=10, check=False)
+            ran = subprocess.run(argv, capture_output=True, timeout=PROBE_TIMEOUT, check=False)
         except (OSError, subprocess.TimeoutExpired):
             continue
         if ran.returncode == 0:  # a binary that starts and then fails its own version probe is broken: declaring it would take tasks it cannot run (review L1)
             found.append(name)
-            version = _version_in(ran)
+            version = _version_in(ran, name)
             if version:
                 versions[name] = version
     _PROBED['versions'] = versions
     if gvm_available():
         found.append('gvm')
     return found
+
+
+def unprobed_tools(found):
+    """The tools installed here (their binary resolves) that are not in ``found``: a probe that timed out or failed on a loaded host, to be tried again."""
+    import shutil
+    return [name for name, argv in VERSION_ARGS.items() if name not in found and shutil.which(argv[0]) is not None]
 
 
 def tool_versions():

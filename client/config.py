@@ -15,6 +15,10 @@ CAPABILITIES = ['nmap', 'naabu', 'nuclei_light', 'nuclei_targeted', 'nuclei_deep
                 # (external_since), and this one runs an AI-written check only after the checks in client/daemon.py and tools._verified_template.
                 'nmap_full', 'nmap_verify', 'node2shell', 'rdp_shot', 'db_probe', 'path_probe', 'nuclei_validate',
                 'secrets_scan', 'alive_check', 'bucket_check', 'vhost_probe', 'subdir_probe', 'route_probe', 'supplier_check', 'hygiene_check', 'dangling_dns_check', 'identity_check', 'web_screenshot', 'wpscan_thorough', 'page_read', 'ssh_probe',
+                'java_runtime',  # contract 6: asked for only from a server whose contract has it (server_knows)
+                'version_read',  # contract 7: the GETs of the server's version source catalogue (cvengine_scanner.probes.version_read)
+                'version_digest',  # contract 8: the same with a digest of a static asset instead of its body (an edge appliance's build)
+                'version_rows',  # contract 9: the same with only the named version rows of a status page (Apache server-status, a phpinfo page)
                 'route_probe_signed']  # route_probe_signed: the built-in scanner's alone (runnable_kinds drops it elsewhere); it reads a stored sign-in
 CONTRACT_VERSION = contract.version()  # the result contract this Sentinel speaks: the packaged sentinel_contract.json's, declared at registration and every heartbeat
 KIND_SINCE = contract.load()['kind_since']  # the contract version that introduced each kind (waf: 2, bbot_discovery, http_probe, dns_resolve, secrets_scan, alive_check, bucket_check, vhost_probe, subdir_probe, route_probe, supplier_check, hygiene_check, dangling_dns_check, identity_check, page_read and ssh_probe: 3)

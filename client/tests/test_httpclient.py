@@ -120,6 +120,17 @@ class CallTests(Base):
         with self.assertRaises(httpclient.ApiError) as ctx:
             client.call('POST', 'sentinel/tasks/next')
         self.assertEqual((ctx.exception.status, ctx.exception.message), (403, 'suspended'))
+        self.assertEqual((ctx.exception.code, ctx.exception.reason), (None, None))
+
+    def test_an_error_body_passes_its_code_and_reason_on(self):
+        client, _ = self.make(FakeResponse(403, b'{"error": "no work can be assigned: its user is disabled", "code": "agent_blocked", "reason": "its user is disabled"}'))
+        with self.assertRaises(httpclient.ApiError) as ctx:
+            client.call('POST', 'sentinel/tasks/next')
+        self.assertEqual((ctx.exception.status, ctx.exception.code, ctx.exception.reason), (403, 'agent_blocked', 'its user is disabled'))
+        client, _ = self.make(FakeResponse(403, b'{"error": "x", "code": 7, "reason": ["odd"]}'))
+        with self.assertRaises(httpclient.ApiError) as ctx:
+            client.call('POST', 'sentinel/tasks/next')
+        self.assertEqual((ctx.exception.code, ctx.exception.reason), (None, None))
 
 
 if __name__ == '__main__':

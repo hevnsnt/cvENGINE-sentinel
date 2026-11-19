@@ -46,6 +46,38 @@ def _read(name):
         return handle.read()
 
 
+class ToolProbeTests(unittest.TestCase):
+    """``detect_tools`` waits long enough for a loaded host and leaves out only a tool that never answered; ``unprobed_tools`` names what to try again."""
+
+    def test_a_probe_gets_the_configured_timeout_and_a_timed_out_tool_is_left_out(self):
+        def fake_run(argv, capture_output, timeout, check):
+            if argv[0] == tools.BBOT_BIN_FOR_TEST:
+                raise subprocess.TimeoutExpired(argv, timeout)
+            return mock.Mock(returncode=0, stdout=b'tool 1.2.3', stderr=b'')
+        tools.BBOT_BIN_FOR_TEST = tools.VERSION_ARGS['bbot'][0]
+        self.addCleanup(delattr, tools, 'BBOT_BIN_FOR_TEST')
+        with mock.patch('client.tools.subprocess.run', side_effect=fake_run) as run, mock.patch('client.tools.gvm_available', return_value=False):
+            found = tools.detect_tools()
+        self.assertNotIn('bbot', found)
+        self.assertIn('nmap', found)
+        self.assertGreaterEqual(tools.PROBE_TIMEOUT, 30)
+        self.assertTrue(all(call.kwargs['timeout'] == tools.PROBE_TIMEOUT for call in run.call_args_list))
+
+    def test_the_timeout_can_be_set_and_never_goes_below_five_seconds(self):
+        with mock.patch.dict(os.environ, {'CVENGINE_SENTINEL_PROBE_TIMEOUT': '120'}):
+            self.assertEqual(tools._probe_timeout(), 120.0)
+        with mock.patch.dict(os.environ, {'CVENGINE_SENTINEL_PROBE_TIMEOUT': '1'}):
+            self.assertEqual(tools._probe_timeout(), 5.0)
+        with mock.patch.dict(os.environ, {'CVENGINE_SENTINEL_PROBE_TIMEOUT': 'soon'}):
+            self.assertEqual(tools._probe_timeout(), 60.0)
+
+    def test_unprobed_tools_are_the_installed_ones_that_did_not_answer(self):
+        installed = {tools.VERSION_ARGS['bbot'][0], tools.VERSION_ARGS['testssl'][0], tools.VERSION_ARGS['nmap'][0]}
+        with mock.patch('shutil.which', side_effect=lambda name: '/bin/' + name if name in installed else None):
+            self.assertEqual(sorted(tools.unprobed_tools(['nmap'])), ['bbot', 'testssl'])
+            self.assertEqual(tools.unprobed_tools(['nmap', 'bbot', 'testssl']), [])
+
+
 class ValidateTargetsTests(unittest.TestCase):
     """The one gate every target list passes through before it ever reaches subprocess: a compromised or buggy server
     naming something other than a plain address, host name or host:port must never reach an argv list."""
@@ -1373,7 +1405,8 @@ def _bundle_allowlist(directory):
                     raw = handle.read()
                 tid = nuclei_allowlist.template_id(raw.decode('utf-8', 'replace'))
                 if tid:
-                    templates[tid] = {'sha256': nuclei_allowlist.sha256_of(raw), 'classes': [*tools.flags.NUCLEI_SERVICES, tools.flags.NUCLEI_UNKNOWN]}  # the fake nuclei does the class selection
+                    templates[tid] = {'sha256': nuclei_allowlist.sha256_of(raw), 'classes': [*tools.flags.NUCLEI_SERVICES, tools.flags.NUCLEI_UNKNOWN],  # the fake nuclei does the class selection
+                                      'path': os.path.relpath(os.path.join(folder, name), directory).replace(os.sep, '/')}  # where the reviewed file lives, as the shipped list records it
     return {'nuclei_templates': 'test', 'templates': templates, 'reviewed_exceptions': set()}
 
 
@@ -2164,6 +2197,114 @@ class NucleiAllowlistRunTests(NucleiTestCase):
         with mock.patch.object(nuclei_allowlist, 'load_allowlist', side_effect=lambda path=None: patched):
             self.run_nuclei(['www.example.test:445'], services={'www.example.test:445': 'smb'})
         self.assertEqual(self.ran('www.example.test:445'), ['smb-signing'])
+
+
+class NucleiNetworkDetectionTests(NucleiTestCase):
+    """Contract 10: a light task with ``network_detection`` runs the network detection templates on its non-web ports, and nothing else: the templates the shipped
+    allowlist records under ``network/detection/`` for the port's class, of nuclei's raw tcp type, paced and filtered as every service run is. Never a CVE, a
+    misconfiguration, an exposure, a c2 or honeypot check, a javascript or ssl template, an http template or the task's own tags."""
+
+    PORTS = {'svc.example.test:22': 'ssh', 'svc.example.test:6379': 'redis', 'svc.example.test:61613': 'unknown', 'svc.example.test:5900': 'vnc'}
+    DETECT = ('openssh-detect', 'sshd-dropbear-detect', 'redis-detect', 'apache-activemq-detect', 'rabbitmq-detect', 'vnc-service-detect')
+    OTHERS = ('CVE-2001-1473', 'exposed-redis', 'erlang-daemon', '7777botnet-detect', 'cowrie-ssh-honeypot-detect', 'eol-openssh-debian', 'gost-ssh-detect')
+
+    def setUp(self):
+        super().setUp()
+        patcher = mock.patch.object(nuclei_allowlist, 'load_allowlist', side_effect=lambda path=None: REAL_LOAD())  # the shipped list, with each template's reviewed path
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        for tid in (*self.DETECT, *self.OTHERS):
+            rel, path = _add_real(self, tid)
+            with open(path, 'rb') as handle:
+                self.nuclei.original[rel] = handle.read()  # the fake answers for the private copy a run is given by these bytes
+
+    def ran(self, target):
+        return sorted(os.path.basename(t)[:-5] for t in self.templates_run_on(target))
+
+    def detect(self, targets=None, **kwargs):
+        targets = list(self.PORTS) if targets is None else targets
+        kwargs.setdefault('services', self.PORTS)
+        return self.run_nuclei(targets, tags=['tech'], severities=['info'], network_detection=True, **kwargs)
+
+    def test_each_port_gets_only_the_detection_templates_of_its_class(self):
+        self.detect()
+        self.assertEqual(self.ran('svc.example.test:22'), ['openssh-detect', 'sshd-dropbear-detect'])
+        self.assertEqual(self.ran('svc.example.test:6379'), ['redis-detect'])
+        self.assertEqual(self.ran('svc.example.test:61613'), ['apache-activemq-detect', 'rabbitmq-detect'])
+        self.assertEqual(self.ran('svc.example.test:5900'), ['vnc-service-detect'])
+        ran = {os.path.basename(r['template'])[:-5] for r in self.nuclei.service_runs}
+        self.assertFalse(ran & set(self.OTHERS), ran & set(self.OTHERS))  # a CVE, an exposure, a misconfiguration, a c2, a honeypot, a javascript check: never
+        for tid in ran:
+            self.assertTrue(REAL_LOAD()['templates'][tid]['path'].startswith('network/detection/'), tid)
+
+    def test_the_flags_are_tcp_only_with_the_intrusive_tags_excluded_and_never_the_task_tags(self):
+        self.detect()
+        self.assertTrue(self.nuclei.service_runs)
+        for run in self.nuclei.service_runs:
+            self.assertEqual(_flag(run['argv'], '-pt'), 'tcp')
+            self.assertTrue({'dos', 'default-login', 'bruteforce', 'fuzz', 'intrusive'} <= set(_flag(run['argv'], '-etags').split(',')))
+            self.assertNotIn('-tags', run['argv'])  # one template file per run; the task's "tech" never reaches a service
+            self.assertIn('-nh', run['argv'])
+            self.assertEqual(_flag(run['argv'], '-c'), '1')
+            self.assertEqual(_flag(run['argv'], '-severity'), 'info')
+        for listing in self.nuclei.listings:
+            self.assertEqual(_flag(listing, '-pt'), 'tcp')
+            self.assertNotIn('tech', (_flag(listing, '-tags') or '').split(','))
+            self.assertTrue({'dos', 'default-login', 'bruteforce', 'fuzz', 'intrusive'} <= set(_flag(listing, '-etags').split(',')))
+
+    def test_without_the_field_the_light_pass_sends_the_service_ports_nothing(self):
+        self.run_nuclei(list(self.PORTS), tags=['tech'], severities=['info'], services=self.PORTS)
+        self.assertEqual(self.nuclei.service_runs, [])
+
+    def test_a_web_target_is_never_run_and_is_named(self):
+        result = self.detect(['svc.example.test', 'svc.example.test:443', 'svc.example.test:6379'], services={**self.PORTS, 'svc.example.test:443': 'web'})
+        self.assertEqual(self.nuclei.web_runs, [])  # no http template, no web pass
+        self.assertEqual(self.ran('svc.example.test:6379'), ['redis-detect'])
+        named = {row['target']: row['reason'] for row in result['not_checked']}
+        self.assertEqual(named, {'svc.example.test': tools.DETECTION_WEB_REASON, 'svc.example.test:443': tools.DETECTION_WEB_REASON})
+        self.assertEqual(result['unreachable'], [])
+
+    def test_a_class_with_no_detection_template_has_no_check(self):
+        result = self.detect(['svc.example.test:993', 'svc.example.test:445'], services={'svc.example.test:993': 'tls', 'svc.example.test:445': 'smb'})
+        self.assertEqual(self.nuclei.service_runs, [])
+        self.assertEqual({row['target']: row['reason'] for row in result['not_checked']},
+                         {'svc.example.test:993': tools.NO_CHECK_REASON, 'svc.example.test:445': tools.NO_CHECK_REASON})
+
+    def test_a_bundle_cannot_move_a_template_into_the_pass(self):
+        """Where a file sits in the bundle says nothing: the allowlist's reviewed path decides (``_add_real`` puts every file under network/real/)."""
+        self.assertTrue(all(rel.startswith('network/real/') for rel in self.nuclei.templates if rel.endswith(('CVE-2001-1473.yaml', 'exposed-redis.yaml'))))
+        listed = tools._detection_only([os.path.join(self.dir, 'network/real/CVE-2001-1473.yaml'), os.path.join(self.dir, 'network/real/openssh-detect.yaml')])
+        self.assertEqual([os.path.basename(p) for p in listed], ['openssh-detect.yaml'])
+        self.assertFalse(tools.flags.is_detection_path('network/detection/../cves/x.yaml'))
+        self.assertFalse(tools.flags.is_detection_path('/network/detection/x.yaml'))
+        self.assertFalse(tools.flags.is_detection_path('network/detection-extra/x.yaml'))
+        self.assertTrue(tools.flags.is_detection_path('network/detection/ftp/vsftpd-detect.yaml'))
+
+    def test_the_findings_of_the_real_templates_come_back_typed(self):
+        lines = _detection_lines()
+        by_port = {}
+        for row in lines:
+            by_port.setdefault(row['matched-at'].replace('svc.example.com', 'svc.example.test'), []).append(row)
+        for target, rows in by_port.items():
+            for row in rows:
+                rel = f"network/real/{row['template-id']}.yaml"
+                if rel in self.nuclei.templates:
+                    self.nuclei.finding[(target, rel)] = [{**row, 'host': target, 'matched-at': target}]
+        result = self.detect()
+        found = {f['template_id']: f for f in result['findings']}
+        self.assertEqual(sorted(found), ['apache-activemq-detect', 'openssh-detect', 'redis-detect', 'vnc-service-detect'])
+        self.assertEqual(found['openssh-detect']['extracted_results'], ['SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.6'])
+        self.assertEqual(found['openssh-detect']['matched_at'], 'svc.example.test:22')
+        self.assertEqual(found['openssh-detect']['host'], 'svc.example.test')
+        self.assertEqual(found['openssh-detect']['type'], 'tcp')
+        self.assertEqual(found['vnc-service-detect']['extracted_results'], ['RFB 003.008'])
+        self.assertEqual(found['redis-detect']['name'], 'Redis Service - Detect')
+
+
+def _detection_lines():
+    """The realistic nuclei JSONL lines of the network detection templates the library ships for both sides' tests (``fixtures/nuclei/network_detection.jsonl``)."""
+    with open(os.path.join(_FIXTURES, 'nuclei', 'network_detection.jsonl'), encoding='utf-8') as handle:
+        return [json.loads(line) for line in handle if line.strip()]
 
 
 class NucleiBannerBudgetTests(NucleiTestCase):

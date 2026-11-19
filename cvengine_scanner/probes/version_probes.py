@@ -36,8 +36,8 @@ BODY_SCAN = 64 * 1024  # a response is read for markers in its first 64 KB only:
 PROBES = (
     {'id': 'headers-root', 'label': 'Response headers and page markers of the front page', 'family': 'http', 'leads': WEB,
      'requests': (('GET', '/'),), 'handler': 'headers', 'safety': 'one GET of the front page'},
-    {'id': 'error-page', 'label': 'Server error page signature (nginx, Apache, Tomcat, Jetty, IIS footers)', 'family': 'http',
-     'leads': r'nginx|openresty|apache|httpd|tomcat|jetty|iis|internetinformation|express|nextjs|springboot|ingress', 'requests': (('GET', PROBE_PATH),),
+    {'id': 'error-page', 'label': 'Server error page signature (nginx, Apache, Tomcat, JBoss Web, Jetty, IIS footers)', 'family': 'http',
+     'leads': r'nginx|openresty|apache|httpd|tomcat|jboss|jetty|iis|internetinformation|express|nextjs|springboot|ingress', 'requests': (('GET', PROBE_PATH),),
      'safety': 'one GET of a path no site serves', 'rules': (
          {'request': 0, 'where': 'body', 'regex': r'<center>nginx/(\d+\.\d+\.\d+)</center>', 'product': 'nginx', 'version': 1,
           'kind': 'version', 'confidence': 0.95, 'source': 'body:nginx-error-page'},
@@ -47,12 +47,25 @@ PROBES = (
           'confidence': 0.8, 'source': 'body:nginx-error-page'},
          {'request': 0, 'where': 'body', 'regex': r'<hr><center>nginx</center>', 'product': 'nginx', 'variant': 'nginx', 'kind': 'identity',
           'confidence': 0.7, 'source': 'body:nginx-error-page'},
-         {'request': 0, 'where': 'body', 'regex': r'(?i)Apache/(\d+\.\d+\.\d+) (?:\([^)]{1,30}\) )?Server at', 'product': 'Apache HTTP Server',
+         # Apache's footer (ServerSignature On) is the whole server banner, modules included when ServerTokens allows them:
+         # "<address>Apache/2.4.6 (CentOS) OpenSSL/1.0.2k-fips PHP/7.4.33 Server at example.com Port 80</address>" (server/core.c
+         # ap_psignature): the web server, and the OpenSSL, PHP and Python releases it lists
+         {'request': 0, 'where': 'body', 'regex': r'(?i)Apache/(\d+\.\d+\.\d+) (?:[^<>]{1,300}? )?Server at ', 'product': 'Apache HTTP Server',
           'version': 1, 'kind': 'version', 'confidence': 0.9, 'source': 'body:apache-error-page'},
+         {'request': 0, 'where': 'body', 'regex': r'(?i)<address>Apache/\d+\.\d+\.\d+ [^<>]{0,300}?\bOpenSSL/(\d+\.\d+\.\d+[a-z]{0,2})(?:-[A-Za-z0-9]{1,12})? [^<>]{0,300}?Server at ',
+          'product': 'OpenSSL', 'version': 1, 'kind': 'version', 'confidence': 0.85, 'source': 'body:apache-error-page'},
+         {'request': 0, 'where': 'body', 'regex': r'(?i)<address>Apache/\d+\.\d+\.\d+ [^<>]{0,300}?\bPHP/(\d+\.\d+\.\d+)[^ <>]{0,40} [^<>]{0,300}?Server at ',
+          'product': 'PHP', 'version': 1, 'kind': 'version', 'confidence': 0.85, 'source': 'body:apache-error-page'},
+         {'request': 0, 'where': 'body', 'regex': r'(?i)<address>Apache/\d+\.\d+\.\d+ [^<>]{0,300}?\bPython/(\d+\.\d+\.\d+)[^ <>]{0,40} [^<>]{0,300}?Server at ',
+          'product': 'Python', 'version': 1, 'kind': 'version', 'confidence': 0.85, 'source': 'body:apache-error-page'},
          {'request': 0, 'where': 'body', 'regex': r'Apache Tomcat/(\d+\.\d+\.\d+[\w.-]*)', 'product': 'Apache Tomcat', 'version': 1,
           'kind': 'version', 'confidence': 0.9, 'source': 'body:tomcat-error-page'},
          {'request': 0, 'where': 'body', 'regex': r'Powered by Jetty:// (\d+\.\d+\.\d+[\w.-]*)', 'product': 'Jetty', 'version': 1,
           'kind': 'version', 'confidence': 0.9, 'source': 'body:jetty-error-page'},
+         # JBoss AS 4 to 7 and EAP 5 and 6 serve Tomcat's error template with their own servlet container's name: "<h3>JBoss Web/7.0.13.Final</h3>"
+         # (AS 7.1), "<h3>JBossWeb/2.0.1.GA</h3>" (AS 4.2); WildFly's Undertow page states no version and is not read
+         {'request': 0, 'where': 'body', 'regex': r'<h3>JBoss ?Web/(\d+\.\d+\.\d+)(?:\.(?:GA|Final|CR\d{1,2}|Beta\d{1,2}|SP\d{1,2}))?</h3>',
+          'product': 'JBoss Web', 'version': 1, 'kind': 'version', 'confidence': 0.9, 'source': 'body:jbossweb-error-page'},
          {'request': 0, 'where': 'title', 'regex': r'IIS (\d+\.\d+) Detailed Error', 'product': 'Microsoft IIS', 'version': 1,
           'kind': 'version', 'confidence': 0.85, 'source': 'title:iis-detailed-error'},
          {'request': 0, 'where': 'body', 'regex': r'^[ \t]{0,8}default backend - 404[ \t]{0,8}$', 'product': 'nginx', 'variant': 'kubernetes-ingress',
@@ -360,6 +373,8 @@ def technology_names(observations):
         library = (o.get('evidence') or {}).get('library') if isinstance(o.get('evidence'), dict) else None
         if o['kind'] == 'version' and isinstance(library, dict) and library.get('tech_names'):
             names += [str(n)[:500] for n in library['tech_names'] if ':' in str(n)]  # the effective copy, or each copy of an unresolved set
+        elif o['kind'] == 'version' and o['product'] == JAVA_RUNTIME:
+            continue  # the JVM is a Java runtime reading of its own (cveFeed.java_runtime), not a technology
         elif o['kind'] == 'version' and o['outcome'] == 'found' and o['version']:
             names.append(f"{o['product']}:{o['version']}")
         elif o['kind'] == 'wordpress' and o['outcome'] == 'found':
@@ -409,9 +424,32 @@ def run_http_probe(probe_id, base, allowed, policy=None, get=None, sleep=time.sl
     elif handler == 'libraries' and first:
         out += _library_observations(first, script_get or get, sleep, policy, reader=reader)
     out += apply_rules(probe, responses)
+    if probe_id in JAVA_PAGE_PROBES and first and not first.get('challenge'):
+        out += java_observations(first, 'header' if probe_id == 'headers-root' else 'error_page', probe['requests'][0][1])
     if first and first.get('challenge') and not any(o['kind'] == 'edge' for o in out):
         out.append(_observation('edge', first['challenge'], outcome='challenged', confidence=0.8, source='edge-challenge', url=probe['requests'][0][1]))
     return out
+
+
+JAVA_RUNTIME = 'Java runtime'  # the product of an observation that states the JVM (cvENGINE stores it as a Java runtime reading, not a technology)
+JAVA_PAGE_PROBES = ('headers-root', 'error-page')  # the pages already fetched whose headers and body are read for the JVM: nothing is asked for it
+
+
+def java_observations(response, source, path):
+    """The Java runtime a page this probe already fetched states (``cvengine_scanner.java``: X-Powered-By and Server, and a JVM banner or
+    ``java.version`` in the body), as ``version`` observations of the product ``Java runtime``: the vendor in ``variant``, the reading in
+    ``evidence['java']``. Nothing is asked to make a page fail: these are the answers the probe had anyway."""
+    from .. import java
+    headers = response.get('raw_headers') or response.get('headers') or {}
+    readings = java.from_headers(headers, url=path) + java.from_body(response.get('body') or '', source='error_page', url=path)
+    out, seen = [], set()
+    for r in readings:
+        if r['version'] in seen:
+            continue
+        seen.add(r['version'])
+        out.append(_observation('version', JAVA_RUNTIME, r['version'], r['vendor'][:60], 'found', 0.9,
+                                f"{'header' if r['source'] == 'header' else 'body'}:java", url=path, evidence={'java': r}))
+    return out[:3]
 
 
 def own_answer(response, base):

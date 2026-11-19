@@ -53,6 +53,41 @@ class ToolVersionProbeTests(unittest.TestCase):
         self.assertTrue(all(v.isprintable() for v in versions.values()))
 
 
+class ToolVersionLineTests(unittest.TestCase):
+    """nuclei and naabu built with a Go newer than their JSON library supports print a warning with version-shaped text before their own version
+    line. This is the stderr of ``nuclei -version`` from the published image (ghcr.io/hevnsnt/cvengine-sentinel:sha-d166a4b7468a, amd64): every
+    Sentinel on it reported nuclei "1.17~1"."""
+    SONIC = 'WARNING: sonic/ast only supports (go1.17~1.26 and amd64 CPU) or (go1.20~1.26 and arm64 CPU), but your environment is not suitable and will fallback to encoding/json\n'
+    NUCLEI = SONIC + ('[\x1b[34mINF\x1b[0m] Nuclei Engine Version: v3.11.1\n[\x1b[34mINF\x1b[0m] Nuclei Config Directory: /home/sentinel/.config/nuclei\n'
+                      '[\x1b[34mINF\x1b[0m] Nuclei Cache Directory: /home/sentinel/.cache/nuclei\n')
+    NAABU = SONIC + '\n  naabu banner\n\n\t\tprojectdiscovery.io\n\n[\x1b[34mINF\x1b[0m] Current Version: 2.7.0\n'
+
+    def ran(self, err, out=''):
+        return mock.Mock(returncode=0, stdout=out.encode(), stderr=err.encode())
+
+    def test_the_version_line_wins_over_a_warning_printed_first(self):
+        self.assertEqual(tools._version_in(self.ran(self.NUCLEI), 'nuclei'), '3.11.1')
+        self.assertEqual(tools._version_in(self.ran(self.NAABU), 'naabu'), '2.7.0')
+
+    def test_through_detect_tools(self):
+        outputs = dict(OUTPUTS, nuclei=('', self.NUCLEI), naabu=('', self.NAABU))
+
+        def run(argv, **kwargs):
+            for name, probe in tools.VERSION_ARGS.items():
+                if argv == probe:
+                    out, err = outputs[name]
+                    return self.ran(err, out)
+            raise AssertionError(argv)
+        with mock.patch('client.tools.subprocess.run', side_effect=run), mock.patch('client.tools.gvm_available', return_value=False):
+            tools.detect_tools()
+            versions = tools.tool_versions()
+        self.assertEqual((versions['nuclei'], versions['naabu']), ('3.11.1', '2.7.0'))
+
+    def test_without_the_line_the_first_version_is_still_used(self):
+        self.assertEqual(tools._version_in(self.ran('nuclei 3.12.0\n'), 'nuclei'), '3.12.0')
+        self.assertEqual(tools._version_in(self.ran('', 'Nmap version 7.993 ( https://nmap.org )\n'), 'nmap'), '7.993')
+
+
 class ToolVersionReportTests(DaemonTestCase):
     def setUp(self):
         super().setUp()
