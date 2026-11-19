@@ -43,5 +43,45 @@ class RunNmapKeepsTheDetailTests(unittest.TestCase):
             self.assertNotIn('cuts', tools.run_nmap(['8.8.8.8', '1.1.1.1']))
 
 
+FEATURES_XML = open(os.path.join(os.path.dirname(contract.__file__), '..', 'tests', 'fixtures', 'nmap_service_features.xml'),
+                    encoding='utf-8').read().replace('192.0.2.20', '8.8.8.8').replace('192.0.2.21', '1.1.1.1')
+
+
+class RunNmapFeatureReadingsTests(unittest.TestCase):
+    """The fingerprint pass carries the service feature readings: the SSH and RDP ones from its own NSE output, the SMTP and SMB ones from the
+    follow-up probes on the task's own addresses."""
+
+    def test_the_nse_readings_and_the_follow_up_reach_the_result_and_validate(self):
+        seen = {}
+
+        def follow_up(hosts, vetted, budget):
+            seen.update(vetted=vetted, budget=budget, ips=[h['ip'] for h in hosts])
+            return [{'host': '8.8.8.8', 'port': 445, 'transport': 'tcp', 'feature': 'smbv1', 'value': 'no', 'detail': ''}], 3
+        with mock.patch('client.tools._run', return_value=FEATURES_XML), \
+                mock.patch('cvengine_scanner.probes.service_probes.follow_up', side_effect=follow_up):
+            result = tools.run_nmap(['8.8.8.8', '1.1.1.1'], timeout=600)
+        got = {(i['host'], i['port'], i['feature']): i['value'] for i in result['service_features']}
+        self.assertEqual(got[('8.8.8.8', 22, 'ssh_terrapin')], 'exposed')
+        self.assertEqual(got[('1.1.1.1', 3389, 'rdp_nla')], 'not_required')
+        self.assertEqual(got[('8.8.8.8', 445, 'smbv1')], 'no')
+        self.assertEqual(seen['vetted'], {'8.8.8.8', '1.1.1.1'})
+        self.assertLessEqual(seen['budget'], 120)
+        self.assertIn({'what': 'feature_probes', 'kind': 'items', 'limit': 64, 'dropped': 3}, result['cuts'])
+        self.assertEqual(list(Draft202012Validator(contract.result_schema('nmap')).iter_errors({'outcome': 'done', **result})), [])
+
+    def test_a_failing_follow_up_never_fails_the_pass(self):
+        with mock.patch('client.tools._run', return_value=FEATURES_XML), \
+                mock.patch('cvengine_scanner.probes.service_probes.follow_up', side_effect=RuntimeError('boom')):
+            result = tools.run_nmap(['8.8.8.8', '1.1.1.1'])
+        self.assertEqual(len(result['hosts']), 2)
+        self.assertNotIn('service_features', result)
+
+    def test_no_time_left_asks_nothing(self):
+        with mock.patch('client.tools._run', return_value=FEATURES_XML), \
+                mock.patch('cvengine_scanner.probes.service_probes._connect', side_effect=AssertionError('nothing may be asked')):
+            result = tools.run_nmap(['8.8.8.8', '1.1.1.1'], timeout=tools.FOLLOW_UP_MARGIN)
+        self.assertIn('service_features', result)  # the NSE readings cost nothing
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -50,6 +50,10 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(out['touched'], ['93.184.215.14'])
         self.assertEqual(out['refused'], [])
         self.assertTrue(out['hosts'][0]['reached'])
+        # the KEXINIT and method readings of the record (cvengine_scanner.features), from the same run
+        got = {(i['host'], i['port'], i['feature']): i['value'] for i in out['service_features']}
+        self.assertEqual(got[('93.184.215.14', 22, 'ssh_terrapin')], 'strict_kex')
+        self.assertEqual(got[('93.184.215.14', 22, 'ssh_auth_methods')], 'publickey,password,keyboard-interactive')
 
     def test_badkeys_data_is_linked_for_the_tool_only_when_all_three_files_are_there(self):
         with tempfile.TemporaryDirectory() as data:
