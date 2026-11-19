@@ -266,10 +266,24 @@ def data_age(hours):
     return 'host key blocklist data: age unknown'
 
 
-def parse_host(address, port, text, badkeys_checked, badkeys_age_hours=None):
+def _feature_readings(address, port, record):
+    """The service feature items (``cvengine_scanner.features``) of the server's KEXINIT lists and the authentication methods it listed, read from
+    the record (``service_probes.ssh_readings``; nothing new is asked of the server)."""
+    from .service_probes import ssh_readings
+    kex = record.get('kex') if isinstance(record.get('kex'), dict) else {}
+
+    def joined(*keys):
+        lists = [kex.get(k) for k in keys if isinstance(kex.get(k), list) and all(isinstance(v, str) for v in kex.get(k))]
+        return [v for part in lists for v in part[:MAX_LIST_ITEMS * 2]] if lists else None
+    return ssh_readings(address, port, kex=joined('kexAlgos'), ciphers=joined('cipherC2S', 'cipherS2C'), macs=joined('macC2S', 'macS2C'),
+                        methods=_names(record.get('methods')))
+
+
+def parse_host(address, port, text, badkeys_checked, badkeys_age_hours=None, features=None):
     """The contract's host entry for one target from the tool's output (``text``: JSON lines). ``badkeys_checked`` is whether the blocklist data was
     present for the run: without it the check did nothing, so the entry says so (unverified) instead of implying the keys are clean.
-    ``badkeys_age_hours`` is how old that data is (whole hours, ``None`` unknown), said in the evidence so a stale list is visible."""
+    ``badkeys_age_hours`` is how old that data is (whole hours, ``None`` unknown), said in the evidence so a stale list is visible. ``features``, a
+    list when given, receives the service feature readings of a server that answered (``_feature_readings``)."""
     if not isinstance(text, str) or not text.strip():
         return unverified(address, port, 'the tool wrote no result: the address was unreachable, nothing there speaks SSH, or the handshake did not finish', badkeys_checked=badkeys_checked)
     if len(text) > MAX_OUTPUT_BYTES:
@@ -293,6 +307,8 @@ def parse_host(address, port, text, badkeys_checked, badkeys_age_hours=None):
     if not _is_banner(version):
         return unverified(address, port, 'no SSH identification string was read: the service may not be SSH', 'ssh_not_identified', badkeys_checked=badkeys_checked)
 
+    if features is not None:
+        features.extend(_feature_readings(address, port, record))
     observations = [_banner_observation(version), _hostkey_observation(record.get('hostkeys')), _methods_observation(record.get('methods'))]
     observations.extend(_algorithm_observations(record.get('kex')))
     extension = _extension_observation(record.get('extensions'))

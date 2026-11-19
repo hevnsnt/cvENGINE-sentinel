@@ -43,6 +43,8 @@ from cvengine_scanner.parsers import (MAX_FINDINGS, MAX_FINDINGS_BYTES, MAX_LIST
                                       testssl_result, unreached_targets,
                                       parse_waf_output)
 
+from cvengine_scanner.probes import service_probes
+
 from . import admission, bbot, config, credential_templates, dbprobe, egress, openvas, rdp, scope
 
 logger = logging.getLogger('sentinel.tools')
@@ -422,7 +424,8 @@ def run_nmap(addresses, timeout=None, register=None, ports=None):
         raise TargetError(str(exc)) from None
     resolve = _resolver()
     addresses = _pinned(validate_targets(addresses, resolver=resolve), resolve)
-    out, cuts = [], Cuts()
+    started, limit = time.monotonic(), timeout or nmap_timeout(len(addresses))
+    out, cuts, readings = [], Cuts(), []
     for group, flags in (([a for a in addresses if not _is_ipv6(a)], []), ([a for a in addresses if _is_ipv6(a)], ['-6'])):
         if not group:
             continue
@@ -434,14 +437,40 @@ def run_nmap(addresses, timeout=None, register=None, ports=None):
             rows = parsed['hosts']
             cuts.merge(parsed.get('cuts'))  # a host nmap gave up on, a port list or a text cut: said in the result, never silent (contract 5)
             out.extend(rows + _scanned_without_open_ports(group, rows, nmap_scanned_total(xml)))
+            readings.extend(service_probes.nse_readings(xml))  # SSH (ssh2-enum-algos) and RDP (rdp-enum-encryption) features: no new traffic
         finally:
             os.unlink(path)
     # An address the report does not list and nmap did not count as scanned gets no row: the server reads a missing row as "this Sentinel did not cover it"
     # (review H3: a padded row read as a clean host).
     result = {'hosts': out, 'os_reliable': os_guess_reliable()}
+    features = _nmap_follow_up(out, addresses, readings, cuts, limit - (time.monotonic() - started))
+    if features:
+        result['service_features'] = features
     if cuts:
         result['cuts'] = cuts.as_list()
     return result
+
+
+def _nmap_follow_up(hosts, addresses, readings, cuts, left):
+    """The service feature readings of a fingerprint pass (``cvengine_scanner.probes.service_probes``): the SSH and RDP ones read from nmap's own
+    report, plus one EHLO on each cleartext SMTP port and one SMB2 and one SMB1 NEGOTIATE on each port 445 the pass found open, on the task's own
+    addresses only, inside the task's time (never past ``left`` seconds less a margin, and never more than ``BUDGET_SECONDS``). What did not fit is
+    named in ``cuts``. Never fails the pass."""
+    try:
+        budget = min(service_probes.BUDGET_SECONDS, left - FOLLOW_UP_MARGIN)
+        vetted = {_normal_address(a) for a in addresses}
+        rows = [{**h, 'ip': _normal_address(h.get('ip'))} for h in hosts]
+        found, skipped = service_probes.follow_up(rows, vetted, budget=budget)
+        cuts.items('feature_probes', service_probes.MAX_ENDPOINTS, skipped)
+        kept, dropped = service_probes.bounded(readings + found)
+        cuts.items('service_features', service_probes.features.MAX_ITEMS, dropped)
+        return kept
+    except Exception:  # noqa: BLE001 - the fingerprint pass stands without its feature readings
+        logger.warning('service feature readings failed', exc_info=True)
+        return []
+
+
+FOLLOW_UP_MARGIN = 30  # seconds of the task's time the feature probes always leave unused
 
 
 def _scanned_without_open_ports(group, rows, total):
@@ -2209,7 +2238,7 @@ def _badkeys_age(badkeys_dir):
     return None if stamp is None else max(0, int((time.time() - stamp) // 3600))
 
 
-def _ssh_probe_one(address, port, register, badkeys_dir):
+def _ssh_probe_one(address, port, register, badkeys_dir, features=None):
     from cvengine_scanner.probes import ssh_probe
     with tempfile.TemporaryDirectory(prefix='sshamble-') as work:
         out = os.path.join(work, 'out.jsonl')
@@ -2235,7 +2264,7 @@ def _ssh_probe_one(address, port, register, badkeys_dir):
             return ssh_probe.unverified(address, port, 'the tool output was larger than is read', 'ssh_oversized', badkeys_checked=checked)
         with open(out, 'rb') as handle:
             text = handle.read(ssh_probe.MAX_OUTPUT_BYTES + 1).decode('utf-8', errors='replace')
-        return ssh_probe.parse_host(address, port, text, checked, age)
+        return ssh_probe.parse_host(address, port, text, checked, age, features=features)
 
 
 def run_ssh_probe(target, register=None, badkeys_dir=None):
@@ -2256,7 +2285,7 @@ def run_ssh_probe(target, register=None, badkeys_dir=None):
     if badkeys_dir is None:
         from . import badkeys
         badkeys_dir = badkeys.data_dir(BADKEYS_DIR) or BADKEYS_DIR  # the refreshed data (BADKEYS_DIR/current) or data placed there by hand
-    hosts = []
+    hosts, readings = [], []
     for address, port in clean:
         try:
             policy.check_host(address)
@@ -2266,8 +2295,12 @@ def run_ssh_probe(target, register=None, badkeys_dir=None):
             hosts.append(ssh_probe.unverified(address, port, f'not run: {exc}', 'ssh_refused'))
             continue
         policy.touch(address)
-        hosts.append(_ssh_probe_one(address, port, register, badkeys_dir))
-    return {'hosts': hosts, 'touched': policy.touched, 'refused': policy.refused}
+        hosts.append(_ssh_probe_one(address, port, register, badkeys_dir, features=readings))
+    result = {'hosts': hosts, 'touched': policy.touched, 'refused': policy.refused}
+    kept, _dropped = service_probes.bounded(readings)  # at most 25 endpoints of at most 4 readings: never cut
+    if kept:  # the KEXINIT and authentication method readings of the servers that answered (cvengine_scanner.features)
+        result['service_features'] = kept
+    return result
 
 
 RUNNERS['ssh_probe'] = run_ssh_probe
