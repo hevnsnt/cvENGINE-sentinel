@@ -235,6 +235,13 @@ class LocalServer:
     def close(self):
         self.sock.close()
 
+    def wait_for(self, count, seconds=2.0):
+        """Wait until the server thread has recorded ``count`` messages (it may still be reading when the client returns)."""
+        stop = time.monotonic() + seconds
+        while len(self.received) < count and time.monotonic() < stop:
+            time.sleep(0.01)
+        return self.received
+
 
 def local_connect(address, port, policy, timeout=2):
     return socket.create_connection(('127.0.0.1', port), timeout)
@@ -256,7 +263,7 @@ class NetworkTests(unittest.TestCase):
         self.addCleanup(server.close)
         got = by_feature(sp.probe_smtp('192.0.2.30', server.port, ScopePolicy(), connect=local_connect))
         self.assertEqual(got[('192.0.2.30', server.port, 'smtp_chunking')], 'yes')
-        self.assertEqual(server.received, [b'EHLO cvengine-sentinel.invalid\r\n', b'QUIT\r\n'])
+        self.assertEqual(server.wait_for(2), [b'EHLO cvengine-sentinel.invalid\r\n', b'QUIT\r\n'])
 
     def test_a_server_that_does_not_greet_with_220_is_not_asked(self):
         def busy(server, conn):
@@ -265,11 +272,7 @@ class NetworkTests(unittest.TestCase):
         server = LocalServer(busy)
         self.addCleanup(server.close)
         self.assertEqual(sp.probe_smtp('192.0.2.30', server.port, ScopePolicy(), connect=local_connect), [])
-        for _ in range(50):
-            if server.received:
-                break
-            time.sleep(0.02)
-        self.assertEqual(server.received, [b''])  # nothing was sent: the connection was closed
+        self.assertEqual(server.wait_for(1), [b''])  # nothing was sent: the connection was closed
 
     def test_smb_two_negotiates_and_a_closed_smb1_connection_is_no(self):
         def smb(server, conn):
@@ -281,7 +284,7 @@ class NetworkTests(unittest.TestCase):
         server = LocalServer(smb)
         self.addCleanup(server.close)
         got = by_feature(sp.probe_smb('192.0.2.31', server.port, ScopePolicy(), connect=local_connect))
-        self.assertEqual(server.received, [b'\xfeSMB@', b'\xffSMBr'])
+        self.assertEqual(server.wait_for(2), [b'\xfeSMB@', b'\xffSMBr'])
         self.assertEqual(got[('192.0.2.31', server.port, 'smb_compression')], 'yes')
         self.assertEqual(got[('192.0.2.31', server.port, 'smbv1')], 'no')
 
