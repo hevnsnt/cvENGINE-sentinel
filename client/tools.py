@@ -1201,15 +1201,19 @@ def run_testssl(host, ip, port, starttls=None, timeout=900, register=None):
 # --- nmap -sU: raw XML returned as-is; the server reads it with cvengine_scanner.nmap.parse_xml -------------------------
 
 
+MAX_NMAP_UDP_REPORT = 512 * 1024  # the contract's bound on nmap_udp's report (agentapi.sentinel_broker.MAX_NMAP_UDP_XML): a larger one stops the run
+
+
 def run_nmap_udp(address, timeout=1500, register=None):
     """Run ``nmap -sU`` against one address with the curated port list and low-rate options of ``cvengine_scanner.flags.udp_nmap_flags`` (the
     server's local sweep builds its flags with the same function), and return its raw XML report text. The contract carries the raw report for
     this kind: the server reads UDP's ``open|filtered`` vocabulary and the NSE script output with ``cvengine_scanner.nmap.parse_xml``. A host
     name stays a name, because the raw report carries it; it was judged by scope with every address it resolved to just before nmap resolves it
-    again, so a DNS answer that changes in between is the one gap."""
+    again, so a DNS answer that changes in between is the one gap. A report larger than ``MAX_NMAP_UDP_REPORT`` stops the run (``ToolOutputError``):
+    the server would refuse it, and 18 ports of one address are a few KiB, so only a runaway gets there."""
     address = validate_targets([address], limit=1)[0]
     argv = [NMAP_BIN, *(['-6'] if _is_ipv6(address) else []), *udp_nmap_flags(), '-oX', '-', address]
-    return {'xml': _run(argv, timeout, register)}
+    return {'xml': _run(argv, timeout, register, max_bytes=MAX_NMAP_UDP_REPORT)}
 
 
 # --- wpscan: raw report, exit code and a trailing line of stderr; cveFeed.wpscan_scan._classify reads them server-side -
@@ -1508,7 +1512,7 @@ def run_dns_resolve(target, register=None):
 
 # --- nmap_full and nmap_verify: one address, the raw report read by the server's own parser -----------------------------------------------
 
-MAX_NMAP_REPORT = 4 * 1024 * 1024  # agentapi.sentinel_broker.MAX_NMAP_UDP_XML: the server refuses a larger report
+MAX_NMAP_REPORT = 4 * 1024 * 1024  # an nmap_verify report (agentapi.sentinel_broker.MAX_NMAP_REPORT_XML): the server refuses a larger report
 
 
 def _one_address(value):
