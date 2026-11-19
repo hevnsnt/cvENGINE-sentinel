@@ -8,8 +8,9 @@ the requests a task lists under the task's scope policy and returns clipped part
 What a task asks (``target['reads']``): per web base of a host, up to ``MAX_REQUESTS`` requests, each a path and how to read the answer:
 
   json     the answer is parsed as JSON (at most ``MAX_JSON_BYTES``) and only the dotted ``fields`` it names come back, each a scalar (a string
-           clipped to ``MAX_VALUE``) or ``{"type": "object"|"array", "size": n}`` for a container. Nothing else of the body leaves the Sentinel:
-           an actuator ``env``, Consul's ``DebugConfig`` or Nomad's agent config carry secrets, and only the version fields are read.
+           clipped to ``MAX_VALUE``) or ``{"type": "object"|"array", "size": n}`` for a container. A part of a field that is a number indexes an
+           array (``models.0.name``: the first model's name; ``MAX_INDEX`` at most), any other part an object's key. Nothing else of the body
+           leaves the Sentinel: an actuator ``env``, Consul's ``DebugConfig`` or Nomad's agent config carry secrets, and only the version fields are read.
   text     ``MAX_TEXT`` characters of the body, control characters removed, from the first occurrence of the literal ``find`` (a plain substring,
            never a pattern) or from the start.
   metrics  the Prometheus exposition text, of which only the ``*_info`` samples come back (``go_info``, ``jvm_info``, ``python_info``,
@@ -55,6 +56,7 @@ KIND = 'version_read'
 MAX_READS = 100       # read entries (one web base of a host each) in one task
 MAX_REQUESTS = 4      # requests one entry may list: a product's version endpoint or two and a control path
 MAX_FIELDS = 12       # dotted JSON fields one request may name
+MAX_INDEX = 63        # the highest array index a dotted field may name (``models.9.name``)
 MAX_HEADERS = 6       # response headers one request may name
 MAX_VALUE = 200       # a JSON string value or a header value, clipped
 MAX_TEXT = 1024       # a text excerpt
@@ -178,8 +180,9 @@ def _scalar(value):
 
 
 def json_fields(body, fields):
-    """``(is_json, {field: value})``: only the dotted ``fields`` of a JSON object answer, each a scalar or a container's type and size. A body
-    that is not one JSON object (an HTML page, a list, truncated) reads as ``(False, {})``."""
+    """``(is_json, {field: value})``: only the dotted ``fields`` of a JSON object answer, each a scalar or a container's type and size; a part
+    that is a number (at most ``MAX_INDEX``) indexes an array. A body that is not one JSON object (an HTML page, a list, truncated) reads as
+    ``(False, {})``."""
     if not body or len(body) > MAX_JSON_BYTES:
         return False, {}
     try:
@@ -194,6 +197,8 @@ def json_fields(body, fields):
         for part in field.split('.'):
             if isinstance(node, dict) and part in node:
                 node = node[part]
+            elif isinstance(node, list) and part.isdigit() and len(part) <= 2 and int(part) <= MAX_INDEX and int(part) < len(node):
+                node = node[int(part)]
             else:
                 found = False
                 break

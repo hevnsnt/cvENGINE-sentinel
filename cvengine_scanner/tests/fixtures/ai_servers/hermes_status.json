@@ -1,0 +1,20 @@
+{
+ "version": "0.21.2",
+ "release_date": "2026.9.24",
+ "import_keep_host": 1,
+ "config_version": 9,
+ "latest_config_version": 9,
+ "gateway_running": true,
+ "gateway_state": "running",
+ "active_sessions": 2,
+ "auth_required": true,
+ "auth_providers": [
+  "basic"
+ ],
+ "auth_flows": [
+  "cookie"
+ ],
+ "peer_access": 0,
+ "install_id": "6f1d0c9e-hidden",
+ "overall": "ok"
+}
