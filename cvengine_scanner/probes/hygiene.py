@@ -650,7 +650,8 @@ def _mail_row(name, policy, confirm, rdap_on, emailer):
 
 def run_batch(target, probe=None, emailer=None, mx=None, cname=None, workers=TLS_WORKERS):
     """Run a ``hygiene_check`` task: the certificates of ``target['tls']`` and the email review of ``target['mail']`` under ``target['scope']``.
-    Returns ``{'certs': [{'host', 'port', 'found', 'cert'?, 'error'?}], 'mail': [{'name', 'has_mx', 'findings'}], 'touched', 'refused'}``.
+    Returns ``{'certs': [{'host', 'port', 'found', 'cert'?, 'error'?}], 'mail': [{'name', 'has_mx', 'findings'}], 'touched', 'refused',
+    'service_features'}`` (``service_features``: whether each TLS service offers HTTP/2, ``cvengine_scanner.features``).
 
     A name flagged ``always`` is reviewed whatever its records; any other is reviewed only when it has an MX record of its own and is not a CNAME
     (a CNAME has no MX of its own, the one a lookup returns is its target's). A TLS endpoint the policy refused, or a mail review that failed, is
@@ -699,4 +700,13 @@ def run_batch(target, probe=None, emailer=None, mx=None, cname=None, workers=TLS
                 logger.warning('email review of %s failed: %s', name, type(exc).__name__)
                 return None
         rows = [r for r in pool.map(review, chosen) if r is not None]
-    return {'certs': certs, 'mail': rows, 'touched': policy.touched, 'refused': policy.refused, **({'unknown_names': sorted(unknown)} if unknown else {})}
+    return {'certs': certs, 'mail': rows, 'touched': policy.touched, 'refused': policy.refused, **({'unknown_names': sorted(unknown)} if unknown else {}),
+            'service_features': service_features(certs)}
+
+
+def service_features(certs):
+    """The ``service_features`` readings (``cvengine_scanner.features``) the certificate handshakes took: ``http2`` from each certificate's ALPN
+    answer. An endpoint whose answer was not read (``unknown``, the legacy client, no TLS) has no item: unknown, never "no"."""
+    from cvengine_scanner import features
+    items = [features.http2_reading(row['host'], row['port'], (row.get('cert') or {}).get('alpn')) for row in certs if row.get('found')]
+    return features.clean_features([item for item in items if item])

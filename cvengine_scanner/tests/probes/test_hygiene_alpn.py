@@ -149,3 +149,53 @@ class AlpnReadingTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ServiceFeaturesTests(unittest.TestCase):
+    """The shared vocabulary (``cvengine_scanner.features``) and the readings the hygiene batch reports with it."""
+
+    def item(self, **over):
+        return {'host': 'www.example.com', 'port': 443, 'transport': 'tcp', 'feature': 'http2', 'value': 'yes', 'detail': 'ALPN h2', **over}
+
+    def test_a_good_item_passes_and_is_normalised(self):
+        from cvengine_scanner import features
+        self.assertEqual(features.clean_features([self.item(host='WWW.Example.com.')]), [self.item()])
+        self.assertEqual(features.clean_features([self.item(detail=None)])[0]['detail'], '')
+        self.assertEqual(features.clean_features([self.item(detail='a\x00b\nc')])[0]['detail'], 'abc')
+
+    def test_anything_malformed_or_unknown_is_dropped(self):
+        from cvengine_scanner import features
+        bad = [self.item(feature='http3'), self.item(feature='HTTP2'), self.item(value='maybe'), self.item(value='yes,yes'), self.item(value=''),
+               self.item(value='y' * 65), self.item(value=True), self.item(port=0), self.item(port=70000), self.item(port=True), self.item(port='443'),
+               self.item(transport='udp'), self.item(transport='tls'), self.item(host=''), self.item(host='a b'), self.item(host='-x'),
+               self.item(host='h' * 254), self.item(detail='d' * 201), self.item(detail=5), 'not a dict', None]
+        self.assertEqual(features.clean_features(bad), [])
+        self.assertEqual(features.clean_features('not a list'), [])
+        self.assertEqual(features.clean_features([self.item()] * (features.MAX_ITEMS + 1)), [])  # over the cap: nothing, never a cut list
+        self.assertEqual(len(features.clean_features([self.item(), self.item(value='no')])), 1)  # the first reading of one endpoint wins
+
+    def test_several_tokens_join_with_commas_when_each_is_allowed(self):
+        from cvengine_scanner import features
+        with mock.patch.dict(features.FEATURES, {'ssh_kex': {'values': ('a', 'b'), 'transport': 'tcp', 'about': 'test'}}):
+            self.assertEqual(features.clean_value('ssh_kex', 'a,b'), 'a,b')
+            self.assertIsNone(features.clean_value('ssh_kex', 'a,c'))
+
+    def test_every_key_and_value_fits_the_vocabulary_rules(self):
+        from cvengine_scanner import features
+        for key, spec in features.FEATURES.items():
+            self.assertRegex(key, r'^[a-z0-9_]{1,32}$')
+            self.assertIn(spec['transport'], ('tcp', 'udp', 'any'))
+            self.assertTrue(spec['about'])
+            for value in spec['values']:
+                self.assertIsNotNone(features.clean_value(key, value))
+
+    def test_the_batch_reports_http2_for_each_read_handshake_only(self):
+        certs = [{'host': 'a.example.com', 'port': 443, 'found': True, 'cert': {'alpn': 'h2'}},
+                 {'host': 'b.example.com', 'port': 443, 'found': True, 'cert': {'alpn': 'http/1.1'}},
+                 {'host': 'c.example.com', 'port': 443, 'found': True, 'cert': {'alpn': 'none'}},
+                 {'host': 'd.example.com', 'port': 443, 'found': True, 'cert': {'alpn': 'unknown'}},
+                 {'host': 'e.example.com', 'port': 443, 'found': True, 'cert': {}},
+                 {'host': 'f.example.com', 'port': 443, 'found': False}]
+        got = hy.service_features(certs)
+        self.assertEqual([(i['host'], i['value'], i['detail']) for i in got],
+                         [('a.example.com', 'yes', 'ALPN h2'), ('b.example.com', 'no', 'ALPN http/1.1'), ('c.example.com', 'no', 'no ALPN protocol chosen')])
