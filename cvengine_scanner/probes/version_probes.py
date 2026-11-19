@@ -10,11 +10,12 @@ A probe only ever sends a GET, never a cookie or a credential, caps its requests
 import itertools
 import logging
 import re
+import threading
 import time
 from urllib.parse import urljoin, urlsplit
 
 from .. import cms, versions
-from . import fingerprint, http, js_libraries
+from . import fingerprint, http, js_libraries, service_reads
 
 logger = logging.getLogger(__name__)
 
@@ -389,9 +390,10 @@ def technology_names(observations):
 
 # ----------------------------------------------------------------------------- running one probe
 
-def run_http_probe(probe_id, base, allowed, policy=None, get=None, sleep=time.sleep, reader=None):
+def run_http_probe(probe_id, base, allowed, policy=None, get=None, sleep=time.sleep, reader=None, seen=None):
     """Run one http probe against ``base`` and return its observations. Without ``get`` every request is a ``fetch`` under ``policy`` (the task's
-    ``ScopePolicy``, required then); ``get(url)`` replaces that fetch (``run_batch`` and tests). Without a policy no script of another host is read."""
+    ``ScopePolicy``, required then); ``get(url)`` replaces that fetch (``run_batch`` and tests). Without a policy no script of another host is read.
+    ``seen``, a dict when given, receives ``first``: the host's own answer to the probe's first request (the service feature reads use it)."""
     if get is None and policy is None:
         raise ValueError('a probe needs the task\'s scope policy')
     probe = BY_ID[probe_id]
@@ -417,6 +419,8 @@ def run_http_probe(probe_id, base, allowed, policy=None, get=None, sleep=time.sl
     responses = [own_answer(r, base) for r in responses]
     out = []
     first = responses[0] if responses else None
+    if seen is not None:
+        seen['first'] = first
     if handler == 'headers' and first:
         out += observations_from_page(first)
     elif handler == 'nextjs' and first:
@@ -634,14 +638,22 @@ def _entry(raw):
         return None  # a base is the host's own: what is asked is what the server planned for that host
     allowed = {str(n).lower().rstrip('.') for n in (raw.get('allowed') or []) if isinstance(n, str)}
     allowed.add(parts.hostname.lower().rstrip('.'))
-    return {'id': ident[:200], 'host': host.lower().rstrip('.'), 'probe': probe_id, 'base': base.rstrip('/'), 'allowed': allowed}
+    # the optional service feature reads the server asks for on this base (service_reads.READS); a name this Sentinel does not know is ignored
+    asked = raw.get('features') if isinstance(raw.get('features'), list) else []
+    reads = [r for r in dict.fromkeys(a for a in asked[:16] if isinstance(a, str)) if r in service_reads.READS]
+    return {'id': ident[:200], 'host': host.lower().rstrip('.'), 'probe': probe_id, 'base': base.rstrip('/'), 'allowed': allowed, 'features': reads}
 
 
 def run_batch(target, probe=None, sleep=time.sleep, clock=time.monotonic, workers=HOST_WORKERS, max_seconds=BATCH_SECONDS):
     """Run an ``http_probe`` task: ``target['probes']`` (planned probes, see ``_entry``) under ``target['scope']`` (``policy.ScopePolicy``).
-    Returns ``{'probes': [{'id', 'observations', 'error'?}], 'touched': [hosts asked], 'refused': [hosts a hop was refused for]}``. A probe whose host the policy refuses is not run (its
+    Returns ``{'probes': [{'id', 'observations', 'error'?}], 'touched': [hosts asked], 'refused': [hosts a hop was refused for],
+    'service_features': [...]}``. A probe whose host the policy refuses is not run (its
     error says so); a probe that fails is reported with its error and no observations, never as clean. ``probe`` replaces ``http.probe_url``,
-    the network (tests): every request still goes through ``fetch``, so the policy is asked at every hop, redirects included."""
+    the network (tests): every request still goes through ``fetch``, so the policy is asked at every hop, redirects included.
+
+    ``service_features`` (``cvengine_scanner.features``, ``service_reads``): what the ``headers-root`` front page answer says with no request of
+    its own (HTTP/3 advertised in Alt-Svc, PHP on Windows), and the reads an entry's optional ``features`` names (one OPTIONS for ``webdav``, the
+    portal pages for ``vpn_*``), once per web base, after that entry's probe and under the same policy."""
     import concurrent.futures
 
     from .policy import ScopePolicy
@@ -658,6 +670,7 @@ def run_batch(target, probe=None, sleep=time.sleep, clock=time.monotonic, worker
     for entry in entries:
         by_host.setdefault(entry['host'], []).append(entry)
     results = {}
+    feature_items, lock = [], threading.Lock()
 
     def getter(entry):
         if probe is None:
@@ -665,6 +678,7 @@ def run_batch(target, probe=None, sleep=time.sleep, clock=time.monotonic, worker
         return lambda url, headers=None: fetch(url, policy, probe=probe, allowed=entry['allowed'], sleep=sleep, headers=headers)
 
     def run_host(host, mine):
+        read_bases = set()  # (base, read) pairs this host was already read for: each read runs once per web base
         for entry in mine:
             if clock() > deadline:
                 results[entry['id']] = {'id': entry['id'], 'observations': [], 'error': 'not run: the task ran out of time'}
@@ -673,14 +687,56 @@ def run_batch(target, probe=None, sleep=time.sleep, clock=time.monotonic, worker
             if why:
                 results[entry['id']] = {'id': entry['id'], 'observations': [], 'error': f'not run: the host is {why}'}
                 continue
+            seen = {}
             try:
-                found = run_http_probe(entry['probe'], entry['base'], entry['allowed'], policy, get=getter(entry), sleep=sleep, reader=reader)
+                found = run_http_probe(entry['probe'], entry['base'], entry['allowed'], policy, get=getter(entry), sleep=sleep, reader=reader,
+                                       seen=seen)
                 results[entry['id']] = {'id': entry['id'], 'observations': found[:MAX_OBSERVATIONS]}
             except Exception as exc:  # noqa: BLE001 - one probe failing never stops the rest; the server retries it, never records it clean
                 logger.info('probe %s on %s failed: %s', entry['probe'], host, type(exc).__name__)
                 results[entry['id']] = {'id': entry['id'], 'observations': [], 'error': f'{type(exc).__name__}: {exc}'[:200]}
+            items = _feature_items(entry, seen.get('first'), read_bases, policy, probe, sleep)
+            if items:
+                with lock:
+                    feature_items.extend(items)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
         for future in [pool.submit(run_host, host, mine) for host, mine in by_host.items()]:
             future.result()
-    return {'probes': [results[e['id']] for e in entries if e['id'] in results], 'touched': policy.touched, 'refused': policy.refused}
+    from .. import features
+    return {'probes': [results[e['id']] for e in entries if e['id'] in results], 'touched': policy.touched, 'refused': policy.refused,
+            'service_features': features.clean_features(feature_items[:features.MAX_ITEMS])}
+
+
+def _feature_items(entry, first, done, policy, probe=None, sleep=time.sleep):
+    """The service feature readings of one planned probe (``service_reads``): the free ones of a ``headers-root`` front page answer, then the
+    extra-request reads its ``features`` names that this host's base has not had yet (``done``, updated). Never raises: a read that fails is no
+    item (unknown)."""
+    base, host = entry['base'], entry['host']
+    scheme = urlsplit(base).scheme
+    out = []
+    if entry['probe'] == 'headers-root' and (base, 'page') not in done:
+        done.add((base, 'page'))
+        out += service_reads.page_readings(host, service_reads.base_port(base), scheme, first)
+    reads = [r for r in entry.get('features') or () if (base, r) not in done]
+    if not reads:
+        return out
+    done.update((base, r) for r in reads)
+    send = probe or http.probe_url
+
+    def get(url):
+        return fetch(url, policy, probe=probe, allowed=entry['allowed'], sleep=sleep, max_bytes=service_reads.PORTAL_BYTES)
+
+    def options(url):
+        name = urlsplit(url).hostname or ''
+        if policy.host_refusal(name):
+            policy.refuse(name)
+            raise ValueError('probe destination is not allowed')
+        answer = send(url, policy, method='OPTIONS', max_bytes=service_reads.OPTIONS_BYTES, browser=True)
+        return {**answer, 'challenge': challenge_of(answer)}
+    try:
+        out += service_reads.run_reads(host, base, reads, get, options, page=first if entry['probe'] == 'headers-root' else None,
+                                       sleep=sleep, gap=REQUEST_GAP)
+    except Exception as exc:  # noqa: BLE001 - a feature read never fails the probe it rides on
+        logger.info('feature reads on %s failed: %s', host, type(exc).__name__)
+    return out

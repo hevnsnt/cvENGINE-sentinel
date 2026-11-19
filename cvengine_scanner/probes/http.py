@@ -1,6 +1,7 @@
 """The one HTTP GET every probe makes, copied from cvENGINE's ``route_auth`` (``probe_url``, ``page_title`` and the limits they use).
 
-Every request is bounded (bytes, per-read timeouts and a total time budget), read-only (GET or HEAD), anonymous (no cookie, no credential, only a
+Every request is bounded (bytes, per-read timeouts and a total time budget), read-only (GET or HEAD, or the OPTIONS the WebDAV read sends:
+``service_reads``), anonymous (no cookie, no credential, only a
 Host override or a cached script's ETag may be added) and goes to a numeric address the task's scope policy accepted (``transport``). The one exception is
 the signed-in route check (``routes_signed``): it passes ``signed`` (the stored sign-in's header pairs, already checked) and then the server certificate is
 verified unless that sign-in's owner switched verification off for it."""
@@ -57,7 +58,7 @@ def page_title(text):
 
 def probe_url(url, policy, timeout=(CONNECT_TIMEOUT, READ_TIMEOUT), max_bytes=ROUTE_SAMPLE_BYTES, headers=None, method='GET', browser=False,
               connect_ip=None, signed=None, verify=True):
-    """Bounded anonymous GET/HEAD using a pinned numeric destination and original Host/SNI, copied from cvENGINE's ``route_auth.probe_url``.
+    """Bounded anonymous GET/HEAD (or OPTIONS, which asks what the server allows and changes nothing) using a pinned numeric destination and original Host/SNI, copied from cvENGINE's ``route_auth.probe_url``.
     The URL's host must pass ``policy`` (a ``policy.ScopePolicy``) and so must every address it resolves to; a redirect is never followed here
     (``version_probes.fetch`` follows one, asking the policy again). ``connect_ip`` connects to that vetted address instead of resolving the URL's
     name: the name is still sent as the Host header and the TLS server name. No credential is sent and the server certificate is never verified,
@@ -68,8 +69,8 @@ def probe_url(url, policy, timeout=(CONNECT_TIMEOUT, READ_TIMEOUT), max_bytes=RO
     from http.cookies import SimpleCookie, CookieError
     from urllib.parse import quote, urlsplit
 
-    if method not in ('GET', 'HEAD'):
-        raise ValueError('route probes are read-only: GET or HEAD')
+    if method not in ('GET', 'HEAD', 'OPTIONS'):
+        raise ValueError('route probes are read-only: GET, HEAD or OPTIONS')
     max_bytes = min(int(max_bytes), MAX_READ_BYTES)
     if max_bytes < 0:
         raise ValueError('invalid probe byte limit')

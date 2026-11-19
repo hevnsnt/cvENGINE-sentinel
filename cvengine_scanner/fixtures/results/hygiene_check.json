@@ -77,6 +77,14 @@
       "feature": "http2",
       "value": "yes",
       "detail": "ALPN h2"
+    },
+    {
+      "host": "192.0.2.20",
+      "port": 427,
+      "transport": "tcp",
+      "feature": "slp",
+      "value": "yes",
+      "detail": "SLPv2 SrvRply on 427/tcp (error 0, 1 service URL)"
     }
   ]
 }

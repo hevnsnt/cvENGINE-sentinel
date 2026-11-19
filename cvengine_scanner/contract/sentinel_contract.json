@@ -6669,6 +6669,16 @@
                     "maxLength": 260
                   },
                   "description": "the names a redirect may lead to (the host's apex and www)"
+                },
+                "features": {
+                  "type": "array",
+                  "maxItems": 16,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 32
+                  },
+                  "description": "Optional, additive: the service feature reads to make on this base after the probe, once per base (cvengine_scanner.probes.service_reads.READS: webdav sends one OPTIONS /; vpn_fortinet, vpn_globalprotect, vpn_cisco, vpn_citrix and vpn_ivanti GET that vendor's portal pages and one path that cannot exist beside them). A name a Sentinel does not know is ignored, and a Sentinel that does not know the field makes none of them. The readings come back in the result's service_features."
                 }
               },
               "required": [
@@ -7589,6 +7599,31 @@
           "rdap": {
             "type": "boolean",
             "description": "ask a registry whether a domain an SPF include or DMARC report address names is registered (default true)"
+          },
+          "slp": {
+            "type": "array",
+            "maxItems": 50,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "host",
+                "port"
+              ],
+              "properties": {
+                "host": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 260
+                },
+                "port": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65535
+                }
+              }
+            },
+            "description": "Optional, additive: endpoints (VMware ESXi hosts, or 427 open) asked one SLPv2 service request for service:VMwareInfrastructure over TCP (cvengine_scanner.probes.service_reads.read_slp), never a registration; the slp readings come back in service_features. A Sentinel that does not know the field asks nothing."
           },
           "scope": {
             "$ref": "#/$defs/probe_scope"
