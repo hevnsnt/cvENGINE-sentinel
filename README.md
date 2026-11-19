@@ -703,6 +703,14 @@ Re-running `install-updater.sh` rewrites that file (a `systemctl edit` drop-in s
   less loaded Sentinel, or this one is over a limit), the Sentinel waits that long (at most 30 seconds, with a little
   jitter, and a stop request ends the wait) before asking again, so it is not parked by the rate limit. A full long poll
   is answered with one second and is asked again at once.
+- Every heartbeat carries `info.machine`: what this machine has and how it is doing (`client/machine.py`): `cpus` (the CPUs this Sentinel may
+  use: its cgroup quota, else its affinity mask), `host_cpus` and the host's `load` average (1, 5 and 15 minutes; inside a container the load is
+  the host's, so it is compared with `host_cpus`), memory and swap from `/proc/meminfo` (`mem_total_mb`, `mem_available_mb`, `swap_total_mb`,
+  `swap_free_mb`), the container's own memory limit and use when it runs in one (`cgroup_limit_mb`, `cgroup_used_mb`, `null` when there is no
+  limit), the kills its memory cgroup counted (`cgroup_oom_kills`) and `oom_kills_1h`, how many runs of each task kind the kernel killed for
+  memory in the last hour (a tool that exited -9 or 137 that the Sentinel did not stop itself). cvENGINE's auto-tuner sizes this Sentinel's
+  concurrency and per-kind slots from it, never above this machine's own `CVENGINE_SENTINEL_MAX_CONCURRENT` (or the detected CPU count). Numbers
+  only, no target or finding; the field is optional and nothing in the contract changes (an older server ignores it).
 - A task the server takes back (it is no longer in the heartbeat's lease list) is killed and not reported.
 - A result that fails to post (network error, 5xx, 429) is retried a few times within 20 seconds. If cvENGINE still
   does not answer (an update, a restart, an outage) the finished result goes to the **spool** and the task slot is free
