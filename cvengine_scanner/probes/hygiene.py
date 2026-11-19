@@ -4,7 +4,8 @@ cvENGINE picks what to check (the target's TLS endpoints, the names that may hav
 (``evaluate_cert`` stays on the server, which also stores everything). This module asks:
 
 - ``probe_tls``: the certificate and TLS posture of ``host:port``, read without verification so broken certificates can be read, plus the
-  system trust store's verdict and whether TLS 1.0 / 1.1 is accepted. Every connection goes through ``transport`` under the task's scope policy;
+  system trust store's verdict, whether TLS 1.0 / 1.1 is accepted and which application protocol the server chose from the ``h2`` and
+  ``http/1.1`` the handshake offers (ALPN: whether the service offers HTTP/2). Every connection goes through ``transport`` under the task's scope policy;
 - ``email_findings``: the SPF, DMARC, DKIM and CAA review of one mail domain and the MailFail checks (``probes.mailfail``). DNS is read from this
   Sentinel's resolver. The rules are the server's own, so a finding means the same wherever it was computed. The server clips every field it
   gets back and takes only the check families this module raises.
@@ -37,6 +38,11 @@ SPF_MAX_QUERIES = 50  # records fetched for one domain: the owner of a scanned d
 SPF_MAX_TERMS = 200  # terms read from one record
 EXPIRY_BANDS = ((0, CRITICAL, 'has expired'), (7, HIGH, 'expires within 7 days'),
                 (30, MEDIUM, 'expires within 30 days'), (60, LOW, 'expires within 60 days'))
+# What the certificate handshake offers in ALPN, and what ``alpn`` reports: the protocol the server chose (h2 or http/1.1), ``none`` when the handshake
+# completed and the server chose nothing (it does not speak ALPN, so no client reaches HTTP/2 over TLS there), ``unknown`` when it was not read (the
+# legacy TLS 1.0 / 1.1 client, or a server that refused the offer and was read again without it). Cleartext HTTP/2 (h2c) is never probed.
+ALPN_OFFER = ('h2', 'http/1.1')
+ALPN_VALUES = ('h2', 'http/1.1', 'none', 'unknown')
 
 
 @dataclass
@@ -271,15 +277,19 @@ def _fetch_cert(host, port, policy, timeout=TLS_TIMEOUT, legacy=False, addresses
         if got is None:
             return None
         der, protocol, cipher = got
+        alpn = 'unknown'  # the legacy client offers no ALPN: whether the service offers HTTP/2 is not read there
     else:
-        ctx = ssl.create_default_context()
-        ctx.minimum_version = ssl.TLSVersion.TLSv1_2  # explicit: legacy_tls is the only place old protocols are spoken
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
         try:
-            with transport.open_socket(addresses if addresses is not None else transport.resolve(host, port, policy), timeout, policy, host=host) as raw, \
-                    ctx.wrap_socket(raw, server_hostname=host) as tls:
-                der, protocol, cipher = tls.getpeercert(binary_form=True), tls.version(), (tls.cipher() or ('',))[0]
+            if addresses is None:
+                addresses = transport.resolve(host, port, policy)
+            try:
+                der, protocol, cipher, alpn = _modern_handshake(host, port, policy, addresses, timeout, offer_alpn=True)
+            except ssl.SSLError as exc:
+                if not _refused_alpn(exc):
+                    raise
+                # a server may abort a handshake whose ALPN offer it has no protocol for (RFC 7301's no_application_protocol alert): the
+                # certificate is read again without the offer, so the ALPN read never costs the certificate and posture readings; ALPN is unknown
+                der, protocol, cipher, alpn = _modern_handshake(host, port, policy, addresses, timeout, offer_alpn=False)
         except (OSError, ssl.SSLError, socket.timeout, ValueError):
             return None
     cert = x509.load_der_x509_certificate(der)
@@ -298,7 +308,36 @@ def _fetch_cert(host, port, policy, timeout=TLS_TIMEOUT, legacy=False, addresses
             'not_before': getattr(cert, 'not_valid_before_utc', None) or cert.not_valid_before.replace(tzinfo=datetime.timezone.utc),
             'not_after': getattr(cert, 'not_valid_after_utc', None) or cert.not_valid_after.replace(tzinfo=datetime.timezone.utc),
             'signature_algorithm': f'{sig} ({cert.signature_algorithm_oid._name})' if sig else cert.signature_algorithm_oid._name,
-            'key_description': key, 'protocol': protocol, 'cipher': cipher}
+            'key_description': key, 'protocol': protocol, 'cipher': cipher, 'alpn': alpn}
+
+
+def _alpn_reading(selected, offered):
+    """``ALPN_VALUES`` from what ``SSLSocket.selected_alpn_protocol()`` returned: the protocol chosen (only one of ours counts), ``none`` when the
+    offer was made and nothing was chosen, ``unknown`` when no offer was made or the answer is not one of ours."""
+    if not offered:
+        return 'unknown'
+    if selected is None:
+        return 'none'
+    return selected if selected in ALPN_OFFER else 'unknown'
+
+
+def _refused_alpn(exc):
+    """Whether a handshake failed on the ALPN offer itself (the no_application_protocol alert), not on anything a retry would change."""
+    return 'APPLICATION_PROTOCOL' in f'{getattr(exc, "reason", "") or ""} {exc}'.upper()
+
+
+def _modern_handshake(host, port, policy, addresses, timeout, offer_alpn=True):
+    """``(der, protocol, cipher, alpn)`` of one TLS 1.2+ handshake without verification. ``offer_alpn`` offers ``ALPN_OFFER``: the server's choice
+    is read from the same handshake that reads the certificate, so it costs no extra connection. Raises what the connection raises."""
+    ctx = ssl.create_default_context()
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2  # explicit: legacy_tls is the only place old protocols are spoken
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    if offer_alpn:
+        ctx.set_alpn_protocols(list(ALPN_OFFER))
+    with transport.open_socket(addresses, timeout, policy, host=host) as raw, ctx.wrap_socket(raw, server_hostname=host) as tls:
+        return (tls.getpeercert(binary_form=True), tls.version(), (tls.cipher() or ('',))[0],
+                _alpn_reading(tls.selected_alpn_protocol(), offer_alpn))
 
 
 def _chain_error(host, port, policy, timeout=TLS_TIMEOUT, addresses=None):

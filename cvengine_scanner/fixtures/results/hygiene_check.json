@@ -19,7 +19,8 @@
         "protocol": "TLSv1.3",
         "cipher": "TLS_AES_256_GCM_SHA384",
         "chain_error": "",
-        "legacy_tls": false
+        "legacy_tls": false,
+        "alpn": "h2"
       }
     },
     {

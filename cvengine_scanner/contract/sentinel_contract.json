@@ -4186,6 +4186,16 @@
                         "legacy_tls": {
                           "type": "boolean"
                         },
+                        "alpn": {
+                          "type": "string",
+                          "enum": [
+                            "h2",
+                            "http/1.1",
+                            "none",
+                            "unknown"
+                          ],
+                          "description": "the application protocol the server chose from the h2 and http/1.1 the certificate handshake offered (ALPN): none when it chose nothing, unknown when not read (the legacy TLS 1.0 / 1.1 client, or a server that refused the offer). Optional: a Sentinel before this field sends none, which reads as unknown"
+                        },
                         "legacy_handshake": {
                           "type": "object",
                           "additionalProperties": false,
