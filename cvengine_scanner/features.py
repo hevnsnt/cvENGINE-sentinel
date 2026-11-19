@@ -32,6 +32,38 @@ FEATURES = {
                        'the ALPN answer is in detail'},
 }
 
+# --- web service features (``probes.service_reads``): read from the answers the http_probe kind already gets, one OPTIONS request, the portal pages of
+# an appliance already identified as that vendor, and one SLP question (hygiene_check). Kept as one block so other features merge beside it.
+FEATURES.update({
+    'http3': {'values': ('yes', 'no'), 'transport': 'tcp',
+              'about': 'whether the HTTPS service advertises HTTP/3 (QUIC) in its Alt-Svc response header (yes: h3 or h3-NN; no: an HTTPS answer '
+                       'without it). An HTTP/3 listener that is not advertised is not read, so no only means not advertised'},
+    'php_windows': {'values': ('yes', 'no'), 'transport': 'tcp',
+                    'about': 'whether the PHP this web service names (X-Powered-By or Server: PHP/x) runs on Windows, from the same answer\'s Server '
+                             'and X-Powered-By headers (yes: IIS, Win32 or Win64; no: a Unix or Linux distribution token). CGI mode and the code '
+                             'page are not read'},
+    'webdav': {'values': ('yes', 'no'), 'transport': 'tcp',
+               'about': 'whether the web service answers OPTIONS / with a DAV compliance header (yes: DAV: 1, 2 or 3, or MS-Author-Via: DAV; no: an '
+                        'OPTIONS answer without one, or 405/501). WebDAV turned on only below / is not read'},
+    'http_methods': {'values': ('put', 'delete', 'trace', 'propfind', 'none'), 'transport': 'tcp',
+                     'about': 'which of PUT, DELETE, TRACE and PROPFIND the OPTIONS / answer lists in Allow or Public (none: it lists none of them)'},
+    'vpn_fortinet': {'values': ('yes', 'no'), 'transport': 'tcp',
+                     'about': 'whether a FortiGate answers its SSL-VPN web portal login page (/remote/login)'},
+    'vpn_globalprotect': {'values': ('yes', 'no'), 'transport': 'tcp',
+                          'about': 'whether a PAN-OS firewall answers a GlobalProtect portal (/global-protect/login.esp) or gateway '
+                                   '(/ssl-vpn/prelogin.esp) page; detail says which'},
+    'vpn_cisco': {'values': ('yes', 'no'), 'transport': 'tcp',
+                  'about': 'whether a Cisco ASA or FTD answers its WebVPN / AnyConnect login page (/+CSCOE+/logon.html)'},
+    'vpn_citrix': {'values': ('yes', 'no'), 'transport': 'tcp',
+                   'about': 'whether a NetScaler answers a Gateway (/vpn/index.html) or AAA (/logon/LogonPoint/index.html) login page; detail says which'},
+    'vpn_ivanti': {'values': ('yes', 'no'), 'transport': 'tcp',
+                   'about': 'whether an Ivanti (Pulse) Connect Secure answers its user sign-in page (/dana-na/auth/url_default/welcome.cgi)'},
+    'slp': {'values': ('yes', 'no'), 'transport': 'tcp',
+            'about': 'whether the Service Location Protocol (OpenSLP on VMware ESXi) answers one SLPv2 service request on TCP 427 (yes: an SLP reply; '
+                     'no: the connection was refused). UDP 427 is not read'},
+})
+# --- end of the web service features
+
 KEY = re.compile(r'[a-z0-9_]{1,32}')
 _TOKEN = re.compile(r'[A-Za-z0-9_.@+/-]{1,64}')
 _HOST = re.compile(r'[A-Za-z0-9_.:\-\[\]]{1,253}')

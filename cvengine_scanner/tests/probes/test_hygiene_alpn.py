@@ -165,7 +165,7 @@ class ServiceFeaturesTests(unittest.TestCase):
 
     def test_anything_malformed_or_unknown_is_dropped(self):
         from cvengine_scanner import features
-        bad = [self.item(feature='http3'), self.item(feature='HTTP2'), self.item(value='maybe'), self.item(value='yes,yes'), self.item(value=''),
+        bad = [self.item(feature='http9'), self.item(feature='HTTP2'), self.item(value='maybe'), self.item(value='yes,yes'), self.item(value=''),
                self.item(value='y' * 65), self.item(value=True), self.item(port=0), self.item(port=70000), self.item(port=True), self.item(port='443'),
                self.item(transport='udp'), self.item(transport='tls'), self.item(host=''), self.item(host='a b'), self.item(host='-x'),
                self.item(host='h' * 254), self.item(detail='d' * 201), self.item(detail=5), 'not a dict', None]

@@ -20,11 +20,18 @@
   ],
   "confirm_resolvers": [],
   "rdap": true,
+  "slp": [
+    {
+      "host": "192.0.2.20",
+      "port": 427
+    }
+  ],
   "scope": {
     "hosts": [
       "www.example.com",
       "mail.example.com",
-      "mta-sts.example.com"
+      "mta-sts.example.com",
+      "192.0.2.20"
     ],
     "domains": [],
     "excluded": [],
