@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE nmaprun>
+<nmaprun scanner="nmap" args="nmap -sV --version-intensity 7 -O --osscan-limit -Pn -T4 --script banner,ssh-hostkey,ssh2-enum-algos,rdp-enum-encryption -oX - 192.0.2.20 192.0.2.21" start="1763560000" version="7.95" xmloutputversion="1.05">
+<scaninfo type="syn" protocol="tcp" numservices="4" services="22,2222,3389,8080"/>
+<host starttime="1763560001" endtime="1763560040"><status state="up" reason="user-set" reason_ttl="0"/>
+<address addr="192.0.2.20" addrtype="ipv4"/>
+<ports>
+<port protocol="tcp" portid="22"><state state="open" reason="syn-ack" reason_ttl="52"/><service name="ssh" product="OpenSSH" version="8.9p1 Ubuntu 3ubuntu0.4" extrainfo="Ubuntu Linux; protocol 2.0" ostype="Linux" method="probed" conf="10"><cpe>cpe:/a:openbsd:openssh:8.9p1</cpe></service>
+<script id="ssh2-enum-algos" output="&#xa;  kex_algorithms: (10)&#xa;  server_host_key_algorithms: (4)&#xa;  encryption_algorithms: (6)&#xa;  mac_algorithms: (10)&#xa;  compression_algorithms: (2)"><table key="kex_algorithms">
+<elem>curve25519-sha256</elem>
+<elem>curve25519-sha256@libssh.org</elem>
+<elem>ecdh-sha2-nistp256</elem>
+<elem>ecdh-sha2-nistp384</elem>
+<elem>ecdh-sha2-nistp521</elem>
+<elem>sntrup761x25519-sha512@openssh.com</elem>
+<elem>diffie-hellman-group-exchange-sha256</elem>
+<elem>diffie-hellman-group16-sha512</elem>
+<elem>diffie-hellman-group18-sha512</elem>
+<elem>diffie-hellman-group14-sha256</elem>
+</table>
+<table key="server_host_key_algorithms">
+<elem>rsa-sha2-512</elem>
+<elem>rsa-sha2-256</elem>
+<elem>ecdsa-sha2-nistp256</elem>
+<elem>ssh-ed25519</elem>
+</table>
+<table key="encryption_algorithms">
+<elem>chacha20-poly1305@openssh.com</elem>
+<elem>aes128-ctr</elem>
+<elem>aes192-ctr</elem>
+<elem>aes256-ctr</elem>
+<elem>aes128-gcm@openssh.com</elem>
+<elem>aes256-gcm@openssh.com</elem>
+</table>
+<table key="mac_algorithms">
+<elem>umac-64-etm@openssh.com</elem>
+<elem>umac-128-etm@openssh.com</elem>
+<elem>hmac-sha2-256-etm@openssh.com</elem>
+<elem>hmac-sha2-512-etm@openssh.com</elem>
+<elem>hmac-sha1-etm@openssh.com</elem>
+<elem>umac-64@openssh.com</elem>
+<elem>umac-128@openssh.com</elem>
+<elem>hmac-sha2-256</elem>
+<elem>hmac-sha2-512</elem>
+<elem>hmac-sha1</elem>
+</table>
+<table key="compression_algorithms">
+<elem>none</elem>
+<elem>zlib@openssh.com</elem>
+</table>
+</script></port>
+<port protocol="tcp" portid="3389"><state state="open" reason="syn-ack" reason_ttl="116"/><service name="ms-wbt-server" product="Microsoft Terminal Services" ostype="Windows" method="probed" conf="10"><cpe>cpe:/o:microsoft:windows</cpe></service>
+<script id="rdp-enum-encryption" output="&#xa;  Security layer&#xa;    CredSSP (NLA): SUCCESS&#xa;    CredSSP with Early User Auth: SUCCESS&#xa;    RDSTLS: SUCCESS&#xa;"/></port>
+</ports>
+</host>
+<host starttime="1763560001" endtime="1763560040"><status state="up" reason="user-set" reason_ttl="0"/>
+<address addr="192.0.2.21" addrtype="ipv4"/>
+<ports>
+<port protocol="tcp" portid="2222"><state state="open" reason="syn-ack" reason_ttl="52"/><service name="ssh" product="Dropbear sshd" version="2022.83" extrainfo="protocol 2.0" method="probed" conf="10"/>
+<script id="ssh2-enum-algos" output="&#xa;  kex_algorithms: (4)&#xa;  server_host_key_algorithms: (2)&#xa;  encryption_algorithms_client_to_server: (2)&#xa;  encryption_algorithms_server_to_client: (3)&#xa;  mac_algorithms: (2)&#xa;  compression_algorithms: (1)"><table key="kex_algorithms">
+<elem>curve25519-sha256</elem>
+<elem>diffie-hellman-group14-sha256</elem>
+<elem>kex-strict-s-v00@openssh.com</elem>
+<elem>ext-info-s</elem>
+</table>
+<table key="server_host_key_algorithms">
+<elem>ssh-ed25519</elem>
+<elem>rsa-sha2-256</elem>
+</table>
+<table key="encryption_algorithms_client_to_server">
+<elem>aes128-ctr</elem>
+<elem>aes256-ctr</elem>
+</table>
+<table key="encryption_algorithms_server_to_client">
+<elem>aes128-ctr</elem>
+<elem>aes256-ctr</elem>
+<elem>aes128-cbc</elem>
+</table>
+<table key="mac_algorithms">
+<elem>hmac-sha2-256-etm@openssh.com</elem>
+<elem>hmac-sha2-256</elem>
+</table>
+<table key="compression_algorithms">
+<elem>none</elem>
+</table>
+</script></port>
+<port protocol="tcp" portid="3389"><state state="open" reason="syn-ack" reason_ttl="116"/><service name="ms-wbt-server" product="Microsoft Terminal Services" ostype="Windows" method="probed" conf="10"/>
+<script id="rdp-enum-encryption" output="&#xa;  Security layer&#xa;    CredSSP (NLA): SUCCESS&#xa;    CredSSP with Early User Auth: SUCCESS&#xa;    Native RDP: SUCCESS&#xa;    RDSTLS: SUCCESS&#xa;    SSL: SUCCESS&#xa;  RDP Encryption level: Client Compatible&#xa;    40-bit RC4: SUCCESS&#xa;    56-bit RC4: SUCCESS&#xa;    128-bit RC4: SUCCESS&#xa;    FIPS 140-1: SUCCESS&#xa;  RDP Protocol Version:  RDP 5.x, 6.x, 7.x, or 8.x server&#xa;"/></port>
+<port protocol="tcp" portid="8080"><state state="open" reason="syn-ack" reason_ttl="52"/><service name="http-proxy" method="table" conf="3"/></port>
+</ports>
+</host>
+<runstats><finished time="1763560040" timestr="Wed Nov 19 12:00:40 2026" summary="Nmap done: 2 IP addresses (2 hosts up) scanned in 40.00 seconds" elapsed="40.00" exit="success"/><hosts up="2" down="0" total="2"/></runstats>
+</nmaprun>

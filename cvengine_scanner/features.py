@@ -30,6 +30,40 @@ FEATURES = {
     'http2': {'values': ('yes', 'no'), 'transport': 'tcp',
               'about': 'whether the TLS service offers HTTP/2: the ALPN protocol it chose from h2 and http/1.1 (yes: h2; no: http/1.1 or none); '
                        'the ALPN answer is in detail'},
+    # SSH, read from the server's KEXINIT (unauthenticated, sent before any login): nmap's ssh2-enum-algos in the fingerprint pass, or the
+    # ssh_probe kind's sshamble record (cvengine_scanner.probes.service_probes.ssh_readings)
+    'ssh_terrapin': {'values': ('exposed', 'strict_kex', 'no_affected_mode'), 'transport': 'tcp',
+                     'about': 'the Terrapin prefix truncation (CVE-2023-48795) preconditions of the SSH server: exposed (it offers '
+                              'chacha20-poly1305@openssh.com, or a CBC cipher with an -etm@openssh.com MAC, and not strict kex), strict_kex (an '
+                              'affected mode, but kex-strict-s-v00@openssh.com is offered) or no_affected_mode (neither mode is offered)'},
+    'ssh_cbc': {'values': ('yes', 'no'), 'transport': 'tcp', 'about': 'whether the SSH server offers a cipher in CBC mode'},
+    'ssh_aes_gcm': {'values': ('yes', 'no'), 'transport': 'tcp', 'about': 'whether the SSH server offers aes128-gcm@openssh.com or aes256-gcm@openssh.com'},
+    'ssh_auth_methods': {'values': ('publickey', 'password', 'keyboard-interactive', 'hostbased', 'gssapi-with-mic', 'gssapi-keyex', 'none'),
+                         'transport': 'tcp',
+                         'about': 'the authentication methods the SSH server lists to a client that sent no credential (the ssh_probe kind only)'},
+    # SMTP, read from one EHLO on a cleartext SMTP port (then QUIT: no MAIL FROM, no AUTH)
+    'smtp_chunking': {'values': ('yes', 'no'), 'transport': 'tcp', 'about': 'whether the EHLO reply lists CHUNKING (the BDAT command)'},
+    'smtp_starttls': {'values': ('yes', 'no'), 'transport': 'tcp', 'about': 'whether the EHLO reply lists STARTTLS'},
+    'smtp_smtputf8': {'values': ('yes', 'no'), 'transport': 'tcp', 'about': 'whether the EHLO reply lists SMTPUTF8'},
+    'smtp_8bitmime': {'values': ('yes', 'no'), 'transport': 'tcp', 'about': 'whether the EHLO reply lists 8BITMIME'},
+    'smtp_pipelining': {'values': ('yes', 'no'), 'transport': 'tcp', 'about': 'whether the EHLO reply lists PIPELINING'},
+    'smtp_auth': {'values': ('external', 'ntlm', 'gssapi', 'cram-md5', 'digest-md5', 'plain', 'login', 'xoauth2', 'oauthbearer', 'scram-sha-1',
+                             'scram-sha-256', 'other', 'none'), 'transport': 'tcp',
+                  'about': 'the AUTH mechanisms the cleartext EHLO reply lists (none: no AUTH and no STARTTLS; no reading when AUTH may be offered '
+                           'only after STARTTLS, which is never sent)'},
+    # SMB, read from one SMB2 NEGOTIATE (with a compression context) and one SMB1 NEGOTIATE on port 445: nothing after NEGOTIATE, no session
+    'smb_dialect': {'values': ('2.0.2', '2.1', '3.0', '3.0.2', '3.1.1'), 'transport': 'tcp',
+                    'about': 'the SMB2 dialect the server chose from 2.0.2, 2.1, 3.0, 3.0.2 and 3.1.1 (its highest)'},
+    'smb_compression': {'values': ('yes', 'no'), 'transport': 'tcp',
+                        'about': 'whether the server negotiates SMB 3.1.1 with compression (the algorithms are in detail); no when it does not '
+                                 'choose 3.1.1 or returns no compression algorithm'},
+    'smb_signing': {'values': ('required', 'not_required'), 'transport': 'tcp', 'about': 'whether the SMB2 server requires message signing'},
+    'smbv1': {'values': ('yes', 'no'), 'transport': 'tcp',
+              'about': 'whether the server accepts an SMB1 NEGOTIATE for the NT LM 0.12 dialect (no: it refused the dialect or closed the connection)'},
+    # RDP, read from nmap's rdp-enum-encryption in the fingerprint pass (one X.224 Connection Request per security protocol, nothing after it)
+    'rdp_nla': {'values': ('required', 'not_required'), 'transport': 'tcp',
+                'about': 'whether the RDP server requires Network Level Authentication (CredSSP): not_required when it accepts standard RDP '
+                         'security or TLS without CredSSP'},
 }
 
 KEY = re.compile(r'[a-z0-9_]{1,32}')
