@@ -35,6 +35,7 @@ from . import blob as blob_mod
 from . import config
 from . import control
 from . import httpclient
+from . import machine
 from . import openvas
 from . import selfupdate
 from . import spool as spool_mod
@@ -342,6 +343,10 @@ def info():
     versions = detected_versions()
     if versions:
         out['tool_versions'] = dict(versions)  # {tool: version} from the start-up probes: the server compares them with the versions it ships (optional: an older server ignores it)
+    try:
+        out['machine'] = machine.report()  # CPU, load, memory and the kernel's kills by kind: cvENGINE sizes this Sentinel's slots from it (optional: an older server ignores it)
+    except Exception:  # noqa: BLE001 - a status line must never stop a heartbeat
+        logger.exception('the machine report could not be read')
     out['waiting'] = list(_waiting_report)[:6]  # heavy kinds that wait for memory, tasks taken back and still stopping: shown on the Sentinels page (empty says nothing waits now)
     if 'ssh_probe' in declared_kinds():
         try:
@@ -1227,10 +1232,14 @@ class Daemon:
             if give_back:
                 self._release(task_id, 'the approved template bundle is not ready yet, retry later')
         except (tools.TargetError, bbot.RunError) as exc:
+            if isinstance(exc, bbot.RunError) and str(exc).startswith('bbot was killed'):
+                machine.note_oom(kind)  # bbot exits -9 when the kernel kills it for memory
             if isinstance(exc, tools.Refused) or str(exc).startswith('refused:'):
                 logger.warning('task %s refused locally: %s', task_id, _clip(str(exc), 200))
             self._report_unless_dropped(task_id, state, self._watchdog_result(state, exc) or {'outcome': 'error', 'error': str(exc)[:280]})
         except Exception as exc:  # noqa: BLE001 - one bad task must never take the daemon down
+            if isinstance(exc, tools.ToolOOMError):
+                machine.note_oom(kind)  # the kernel killed the tool for memory: reported in the heartbeat (info.machine.oom_kills_1h)
             if not state.get('dropped') and not state.get('wd'):
                 logger.exception('task %s failed', task_id)
             self._report_unless_dropped(task_id, state, self._watchdog_result(state, exc) or {'outcome': 'error', 'error': _error_text(exc)})
