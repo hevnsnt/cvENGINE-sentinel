@@ -5,7 +5,8 @@
 # Uses systemd when there is one, else a cron.d entry (and removes the other one). Linux only. It writes to /etc, so it needs root: run it as
 # root, or as a user who can sudo (it asks).
 #   scripts/install-updater.sh [--remove] [--allow-root]
-#     --allow-root   install even though root owns this checkout, so the updater runs as root (refused otherwise)
+#     --allow-root   install even though root owns this checkout, so the updater runs as root (refused otherwise; the way out is
+#                    scripts/migrate-to-service-user.sh, which moves the install to the cvengine user)
 set -eu
 PREFIX="${CVENGINE_SENTINEL_INSTALL_PREFIX:-}"  # only for tests: where /etc, /run and /var/log are
 UNITS="$PREFIX/etc/systemd/system"
@@ -36,8 +37,9 @@ if [ "$OWNER" = UNKNOWN ]; then
   exit 1
 fi
 if [ "$OWNER" = root ] && [ "$ALLOW_ROOT" = 0 ] && [ "$REMOVE" = 0 ]; then
-  echo "root owns $DIR, so the updater would run as root every hour. Give the checkout to the user who runs docker (chown -R USER $DIR)," >&2
-  echo "or pass --allow-root to run it as root anyway" >&2
+  echo "root owns $DIR, so the updater would run as root every hour. Move this install to an unprivileged service user (it keeps its enrollment):" >&2
+  echo "  sudo \"$DIR/scripts/migrate-to-service-user.sh\"" >&2
+  echo "or pass --allow-root to run the updater as root anyway" >&2
   exit 1
 fi
 if [ "$OWNER" != root ] && ! id -nG "$OWNER" | tr ' ' '\n' | grep -qx docker; then

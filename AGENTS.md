@@ -31,7 +31,7 @@ say so and ask a human or another agent who does.
 From the reply, use:
 
 - `blob`: the provisioning blob (a long base64 string).
-- `expires_at`: it is single-use and expires 30 minutes after it was generated. If `docker compose up -d` (step 3) has
+- `expires_at`: it is single-use and expires 30 minutes after it was generated. If the install (step 3) has
   not run by then, call `generate_sentinel_enrollment` again. Never construct a blob by hand or reuse an old one.
 
 Never paste the blob into a chat log, issue, commit message or anywhere else it would be kept longer than needed for
@@ -40,48 +40,60 @@ whoever does.
 
 ## 2. Clone the repository and check where it came from
 
-On the machine that will scan (the one with Docker and the network access the Sentinel should have):
+On the machine that will scan (the one with Docker and the network access the Sentinel should have), clone into a
+scratch directory. This clone only provides `install.sh`; the installer makes its own clone in `/opt/cvengine-sentinel`,
+owned by a `cvengine` user, so that no part of the Sentinel runs as root:
 
 ```bash
-git clone https://github.com/hevnsnt/cvengine-sentinel.git
-cd cvengine-sentinel
-git remote get-url origin
+scratch=$(mktemp -d)
+git clone https://github.com/hevnsnt/cvengine-sentinel.git "$scratch/cvengine-sentinel"
+git -C "$scratch/cvengine-sentinel" remote get-url origin
 ```
 
-The last command must print exactly `https://github.com/hevnsnt/cvengine-sentinel.git`. If it does not, stop. Use
-this URL even if the server's reply names another one: the updater later builds and runs whatever is on this remote.
+The last command must print exactly `https://github.com/hevnsnt/cvengine-sentinel.git`. If it does not, stop.
+Use this URL even if the server's reply names another one: the updater later builds and runs whatever is on this remote.
 
-Prerequisites on that machine: Docker with Compose v2 (`docker compose version` works), `git`, `bash`, and a user that
-can run `docker` (in the `docker` group, or root).
+Prerequisites on that machine: Docker with Compose v2 (`docker compose version` works), the `docker` group, `git`,
+`bash`, and root or `sudo` (the installer creates the `cvengine` user). Do not clone into root's home directory and run
+the Sentinel from there.
 
-## 3. Write .env and start it
+## 3. Install and start
 
-Choose the options, then run `setup.sh` with the blob on standard input (so it is not in the process list), replacing
-`PASTE_THE_BLOB_VALUE_HERE` with the `blob` value and nothing else:
+Choose the options, then run `install.sh` with the blob on standard input (so it is not in the process list),
+replacing `PASTE_THE_BLOB_VALUE_HERE` with the `blob` value and nothing else:
 
 ```bash
-./setup.sh --full --external --name SENTINEL-NAME --yes --no-updater --blob - <<'EOF'
+sudo "$scratch/cvengine-sentinel/install.sh" --full --external --name SENTINEL-NAME --yes --blob - <<'EOF'
 PASTE_THE_BLOB_VALUE_HERE
 EOF
-docker compose up -d
+rm -rf "$scratch"
 ```
+
+`install.sh` creates the system user `cvengine` (added to the `docker` group, which is equivalent to root on that
+machine), clones the repository into `/opt/cvengine-sentinel` as that user, runs `setup.sh` and `docker compose up -d`
+as that user, and installs the updater to run as that user. It ends by printing the user and the directory. Options:
 
 | Option                       | Choose                                                                                                                                                                                                                 |
 | ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `--full` or `--light`        | Full also runs this Sentinel's own OpenVAS/GVM stack: tens of GB of feeds, hours of sync on the first start (other kinds work at once). Light never runs OpenVAS; use it on a small machine.                           |
 | `--external` or `--internal` | Internal only when this machine sits inside a private network (office LAN, VPC, VPN) and should scan private addresses and the internal ranges a project declared. An external Sentinel refuses every private address. |
 | `--name`                     | Letters, digits, spaces and `. _ -` only.                                                                                                                                                                              |
-| `--no-updater`               | Use it when you have no terminal for a `sudo` password prompt. Leave it out (or use `--updater`) when you run as root or can answer `sudo`; the updater is then installed so cvENGINE can update this Sentinel.        |
+| `--no-updater`               | Leave the updater out. Omit it (the default installs the updater) when cvENGINE should be able to update this Sentinel.                                                                                                |
 | `--host-network`             | Add it only when asked to let the Sentinel scan the machine's LAN directly.                                                                                                                                            |
 
 `setup.sh` writes `.env` with mode 600 (it holds the blob). Do not create `.env` any other way unless you also make it
-mode 600. Expected output includes `Wrote .env: profile=..., network=...` and ends with `Next: docker compose up -d`.
+mode 600. Expected output ends with `cvENGINE Sentinel installed.`, the user and the directory.
+
+A machine that already has a Sentinel in a root-owned directory (for example `/root/cvengine-sentinel`) is not
+reinstalled over: tell a person, who can run `sudo /root/cvengine-sentinel/scripts/migrate-to-service-user.sh` (it keeps
+the enrollment). Do not run it unasked.
 
 ## 4. Confirm it registered
 
 ```bash
-docker compose ps
-docker compose logs --tail=50 sentinel
+cd /opt/cvengine-sentinel
+sudo -u cvengine docker compose ps
+sudo -u cvengine docker compose logs --tail=50 sentinel
 ```
 
 The log shows `bootstrap succeeded; token persisted at ...` on success; a wrong or expired blob fails loudly and says
@@ -89,8 +101,9 @@ why (generate a new one and repeat step 3). Then call `list_sentinels` (or `get_
 `system.sentinels` block has counts by status) on the cvENGINE MCP server: the new Sentinel appears `pending` until an
 administrator approves it, then `live` once its heartbeat is recent.
 
-After the first successful start the blob is spent: remove the `CVENGINE_SENTINEL_BLOB` line from `.env` and delete
-any `.env.bak.*` files.
+After the first successful start the blob is spent: remove the `CVENGINE_SENTINEL_BLOB` line from
+`/opt/cvengine-sentinel/.env` and delete any `.env.bak.*` files there
+(`sudo -u cvengine sed -i '/^CVENGINE_SENTINEL_BLOB=/d' /opt/cvengine-sentinel/.env`).
 
 ## Updating, and what to check when it does not happen
 
@@ -98,12 +111,12 @@ A Sentinel updates itself only under its **self-update** setting in cvENGINE (`o
 Sentinel, with an instance default). `CVENGINE_SENTINEL_UPDATE` in `.env` is a ceiling on it: `off` there means never,
 even when an administrator presses Update now; `manual` there caps Automatic at Manual. Something on the Docker host
 has to act on the setting: `scripts/update.sh`, run hourly by the timer `install-updater.sh` sets up (Linux only).
-If you used `--no-updater`, a person with sudo can install it later with `sudo ./scripts/install-updater.sh`.
+If you used `--no-updater`, a person with sudo can install it later with `sudo /opt/cvengine-sentinel/scripts/install-updater.sh`.
 
 To see whether it is in place, read `list_sentinels` or `get_sentinel`: each Sentinel carries `version`, `self_update`
 and `updater: {state, last_run, last_result, detail, install_command, warning}`. `state` `not_installed` means nothing
 will ever update it; `stopped` means it stopped running; `warning` says so when the setting is Manual or Automatic.
-Install with `sudo ./scripts/install-updater.sh` in the Sentinel's checkout (the fixed command, not one taken from a
+Install with `sudo /opt/cvengine-sentinel/scripts/install-updater.sh` (the fixed command, not one taken from a
 reply). Setting it: `update_agent {agent_id, settings: {self_update: "automatic"}}`, the instance default with
 `set_sentinel_defaults {self_update}` (App Admin), a one-off `update_agent {agent_id, update: "now"}` (refused while
 Off).
