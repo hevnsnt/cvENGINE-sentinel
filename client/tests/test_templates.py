@@ -523,6 +523,11 @@ class DaemonIndexPolicyTests(unittest.TestCase):
             d._execute({'id': 3, 'kind': 'nuclei_validate', 'target': {**target, 'mode': 'validate'}}, None)
 
 
+def _nuclei_runs(run):
+    """The calls of a patched ``tools._run`` that ran nuclei (the targets go in a list file, so they are not in the call)."""
+    return [c for c in run.call_args_list if c.args and c.args[0] and c.args[0][0] == 'nuclei']
+
+
 class RefusedTargetTests(unittest.TestCase):
     """Contract 11: a nuclei target scope refuses is named and left out; the other targets still run."""
 
@@ -531,7 +536,8 @@ class RefusedTargetTests(unittest.TestCase):
             return [(2, 1, 6, '', ('10.0.0.5' if host == 'inside.example.test' else '93.184.216.34', 0))]
         with mock.patch.object(tools, '_run', return_value='') as run, mock.patch('client.tools._resolver', return_value=resolve):
             out = tools.run_nuclei(['www.example.test', 'inside.example.test'], tags=['tech'])
-        self.assertEqual(run.call_count, 1)
+        # in an image that carries a template directory the credential-template scan also calls _run with its own arguments: only nuclei runs count
+        self.assertEqual(len(_nuclei_runs(run)), 1)
         self.assertIn('inside.example.test', out['unreachable'])
         refused = [n for n in out['not_checked'] if n['target'] == 'inside.example.test']
         self.assertTrue(refused and refused[0]['reason'].startswith(tools.flags.NUCLEI_REFUSED_PREFIX))
@@ -541,7 +547,7 @@ class RefusedTargetTests(unittest.TestCase):
         with mock.patch.object(tools, '_run', return_value='') as run, \
                 mock.patch('client.tools._resolver', return_value=lambda *a, **k: [(2, 1, 6, '', ('169.254.169.254', 0))]):
             out = tools.run_nuclei(['inside.example.test'])
-        run.assert_not_called()
+        self.assertEqual(_nuclei_runs(run), [])  # the credential-template scan may still call _run with its own arguments
         self.assertEqual(out['unreachable'], ['inside.example.test'])
         self.assertEqual(out['findings'], [])
         self.assertNotIn('no_templates', out)
