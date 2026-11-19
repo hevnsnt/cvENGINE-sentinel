@@ -484,7 +484,7 @@ class ContractVersionFiveTests(unittest.TestCase):
         self.assertTrue(self.check_port(self.port(service_extra='Ubuntu', method='probed', tunnel='ssl', hostname='web.example.test', ostype='Linux', devicetype='',
                                                   confidence='10', cpe='cpe:/a:igor_sysoev:nginx:1.25.3', cpes=['cpe:/a:igor_sysoev:nginx:1.25.3'], banner='hello',
                                                   scripts={'http-title': 'Welcome'}, tls=cert)))
-        for bad in ({'service_extra': 'x' * 201}, {'method': 'guessed'}, {'tunnel': 'tls'}, {'banner': 'x' * 1025}, {'cpes': ['cpe:/a:x'] * 9}, {'cpes': ['x' * 256]},
+        for bad in ({'service_extra': 'x' * 201}, {'method': 'guessed'}, {'tunnel': 'tls'}, {'banner': 'x' * 4097}, {'version_scripts': {'v': 'x' * 2001}}, {'version_scripts': {f'v{i}': 'x' for i in range(9)}}, {'cpes': ['cpe:/a:x'] * 9}, {'cpes': ['x' * 256]},
                     {'cpe': 5}, {'confidence': '11'}, {'scripts': {'banner': 'x' * 4001}}, {'scripts': {f's{i}': 'x' for i in range(25)}}, {'scripts': {'banner': 5}},
                     {'tls': {**cert, 'subject': 'x' * 301}}, {'tls': {**cert, 'sans': ['x'] * 41}}, {'tls': {**cert, 'fingerprint_sha1': 'zz'}},
                     {'tls': {**cert, 'surprise': 1}}, {'hostname': 'x' * 256}):

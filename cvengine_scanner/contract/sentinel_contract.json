@@ -664,7 +664,20 @@
         },
         "banner": {
           "type": "string",
-          "maxLength": 1024
+          "maxLength": 4096,
+          "description": "the banner script's text (at most 1024 characters), else nmap's escaped service fingerprint of a service it could not name (servicefp, at most 4096: the server decodes it); a longer one is cut and named in cuts as banner"
+        },
+        "version_scripts": {
+          "type": "object",
+          "maxProperties": 8,
+          "propertyNames": {
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "maxLength": 2000
+          },
+          "description": "Optional: the output of the scripts a version scan ran on its own (nmap's version category, which -sV runs whatever --script names: vmware-version, rpcinfo ...), by script id, never one of the reviewed scripts. At most 2000 characters a script and 8000 a port in all (a cut is named in cuts as version_script_output); text from a scanned host the server only reads for a version, never interpreted. A server that predates it ignores it."
         },
         "scripts": {
           "type": "object",
