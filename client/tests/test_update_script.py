@@ -2,7 +2,7 @@
 
 The stand-in `docker` sends `docker compose exec ... python3 -m client.control` to the real module (against a temporary state directory) and
 records `compose pull`, `build` and `up` (each can be made to fail with SHIM_FAIL_PULL, SHIM_FAIL_BUILD or SHIM_FAIL_UP; `compose config --images`
-lists SHIM_IMAGES, and `image inspect` fails for those in SHIM_MISSING); after `compose up` it
+lists SHIM_IMAGES, `image inspect` fails for those in SHIM_MISSING, and a plain `docker pull` fails with SHIM_FAIL_PULL); after `compose up` it
 writes the daemon status a rebuilt Sentinel would write. It proves the script's decisions, not Docker itself.
 """
 import fcntl
@@ -24,6 +24,10 @@ SHIM = """#!/bin/sh
 echo "docker $*" >> "$SHIM_LOG"
 if [ "$1" = image ] && [ "$2" = inspect ]; then  # an image is on this machine unless SHIM_MISSING names it
   case " ${SHIM_MISSING:-} " in *" $3 "*) exit 1 ;; esac
+  exit 0
+fi
+if [ "$1" = pull ]; then  # a plain `docker pull <image>`: SHIM_FAIL_PULL fails it with a registry's error
+  [ -z "${SHIM_FAIL_PULL:-}" ] || { echo 'Error response from daemon: Get "https://registry.example/v2/": net/http: TLS handshake timeout' >&2; exit 1; }
   exit 0
 fi
 [ "$1" = compose ] || exit 0
@@ -253,8 +257,36 @@ class UpdateScriptTests(unittest.TestCase):
         self.assertNotIn('client.control drain', self.calls())
 
     FEED = 'registry.example/community/vulnerability-tests:community'
+    PINNED = 'registry.example/community/gvmd:stable@sha256:' + 'a' * 64
 
-    def test_a_failed_pull_with_an_image_missing_here_puts_the_checkout_back_and_never_drains(self):
+    def test_an_update_pulls_nothing_when_every_image_is_here(self):
+        # the OpenVAS feed data images follow moving tags and take tens of minutes to pull: an update never re-pulls one it has
+        # (scripts/refresh-feeds.sh refreshes them daily), so a slow or broken registry cannot hold a code update back
+        self.publish()
+        self.status('automatic')
+        out = self.update(SHIM_FAIL_PULL='1', SHIM_IMAGES=f'cvengine-sentinel-local:latest {self.FEED} {self.PINNED}')
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertEqual(self.head(), self.origin_main()[:12])
+        self.assertEqual(control.updater_info()['last_result'], 'updated')
+        self.assertNotIn('docker pull', self.calls())
+        self.assertNotIn('compose pull', self.calls())
+        self.assertNotIn('image inspect cvengine-sentinel-local', self.calls())  # the image this checkout builds is never looked for
+        self.assertIn('nothing to pull', out.stdout)
+
+    def test_an_update_pulls_only_the_images_this_machine_lacks(self):
+        self.publish()
+        self.status('automatic')
+        out = self.update(SHIM_IMAGES=f'cvengine-sentinel-local:latest {self.FEED} {self.PINNED}', SHIM_MISSING=self.PINNED)
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        calls = self.calls()
+        self.assertIn(f'docker pull --quiet {self.PINNED}', calls)  # a changed pin is a new reference, so it is pulled
+        self.assertNotIn(f'docker pull --quiet {self.FEED}', calls)  # the feed data image it has is not
+        self.assertNotIn('compose pull', calls)
+        info = control.updater_info()
+        self.assertEqual(info['last_result'], 'updated')
+        self.assertIn('pulled 1 image(s) this machine did not have', info['detail'])
+
+    def test_a_failed_pull_of_an_image_missing_here_puts_the_checkout_back_and_never_drains(self):
         self.publish()
         before = self.head()
         self.status('automatic')
@@ -270,27 +302,14 @@ class UpdateScriptTests(unittest.TestCase):
         self.assertNotIn('client.control drain', self.calls())
         self.assertFalse(control.is_draining())
 
-    def test_a_failed_pull_with_every_image_here_still_updates_and_says_why(self):
-        # a registry that is down or rate-limiting (the Greenbone feed images are on floating tags) must not hold the Sentinel's own update back
-        self.publish()
-        self.status('automatic')
-        out = self.update(SHIM_FAIL_PULL='1', SHIM_IMAGES=f'cvengine-sentinel-local:latest {self.FEED}')
-        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
-        self.assertEqual(self.head(), self.origin_main()[:12])
-        info = control.updater_info()
-        self.assertEqual(info['last_result'], 'updated')
-        self.assertIn('pulling images failed', info['detail'])
-        self.assertIn('TLS handshake timeout', info['detail'])
-        self.assertNotIn('image inspect cvengine-sentinel-local', self.calls())  # the image this checkout builds is never looked for
-        self.assertIn('compose up', self.calls())
-
-    def test_a_compose_that_cannot_list_its_images_counts_them_as_missing(self):
+    def test_a_compose_that_cannot_list_its_images_pulls_everything_and_stops_if_that_fails(self):
         self.publish()
         before = self.head()
         self.status('automatic')
         out = self.update(SHIM_FAIL_PULL='1', SHIM_FAIL_CONFIG='1')
         self.assertNotEqual(out.returncode, 0)
         self.assertEqual(self.head(), before)
+        self.assertIn('compose pull', self.calls())
         self.assertIn('not on this machine: unknown', control.updater_info()['detail'])
 
     def test_a_failed_build_puts_the_checkout_back_and_the_next_run_tries_again(self):

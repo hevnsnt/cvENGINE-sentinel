@@ -117,7 +117,7 @@ wait_for_cvengine() {
   exit 0
 }
 # The images the stack needs that are neither on this machine nor built from this checkout (cvengine-sentinel-local is the image docker-compose.yml
-# builds), space separated; "unknown" when compose cannot list them, which counts as missing.
+# builds), space separated; "unknown" when compose cannot list them.
 missing_images() {
   IMAGES=$(docker compose config --images 2>/dev/null) || { printf 'unknown'; return; }
   printf '%s\n' "$IMAGES" | while read -r image; do
@@ -246,18 +246,28 @@ fi
 # The checkout must be exactly the commit that was approved before anything is built or restarted from it.
 [ "$(git rev-parse HEAD)" = "$TARGET_FULL" ] || rollback "after the checkout HEAD is not the target $TARGET, so nothing was built or restarted" code
 ctl report updating --phase images --detail "pulling images" --from "$CURRENT" --to "$TARGET" 2>/dev/null || true
-# The only images pulled are the ones this checkout does not build: today the Greenbone OpenVAS images, several on floating feed tags. A registry
-# that is down or rate-limiting must not hold the Sentinel's own update back while every image the stack needs is already on this machine (the feed
-# images are refreshed daily by scripts/refresh-feeds.sh anyway): the update goes on with them and says why the pull failed. An image that is
-# missing here stops it as before, with the pull's own error in the detail.
+# Only the images this machine does not have yet are pulled: an update needs the images its compose file names, not newer copies of the ones it
+# has. The Greenbone images are pinned by digest, so a changed pin is a new reference and is pulled; the OpenVAS feed data images follow moving tags
+# and are large (tens of minutes from their registry), so an update never re-pulls them: scripts/refresh-feeds.sh refreshes them daily. The image
+# this checkout builds is never pulled. When compose cannot list its images, everything it does not build is pulled, as before.
 PULL_NOTE=
-PULL_ERR=$(docker compose pull --quiet --ignore-buildable 2>&1 >/dev/null) || {
-  WHY=$(printf '%s\n' "$PULL_ERR" | grep -v '^[[:space:]]*$' | tail -n 1 | cut -c1-160)
-  MISSING=$(missing_images)
-  [ -z "$MISSING" ] || rollback "docker compose pull failed: ${WHY:-no reason given}; not on this machine: $MISSING" images
-  PULL_NOTE=" (pulling images failed: ${WHY:-no reason given}; every image the stack needs was already here, so they were used)"
-  say "pulling images failed (${WHY:-no reason given}); every image the stack needs is already on this machine, so the update goes on with them"
-}
+MISSING=$(missing_images)
+if [ "$MISSING" = unknown ]; then
+  PULL_ERR=$(docker compose pull --quiet --ignore-buildable 2>&1 >/dev/null) || {
+    WHY=$(printf '%s\n' "$PULL_ERR" | grep -v '^[[:space:]]*$' | tail -n 1 | cut -c1-160)
+    rollback "docker compose pull failed: ${WHY:-no reason given}; not on this machine: unknown (compose could not list its images)" images
+  }
+elif [ -n "$MISSING" ]; then
+  for image in $MISSING; do
+    PULL_ERR=$(docker pull --quiet "$image" 2>&1 >/dev/null) || {
+      WHY=$(printf '%s\n' "$PULL_ERR" | grep -v '^[[:space:]]*$' | tail -n 1 | cut -c1-160)
+      rollback "docker pull failed: ${WHY:-no reason given}; not on this machine: $image" images
+    }
+  done
+  PULL_NOTE=" (pulled $(printf '%s' "$MISSING" | wc -w | tr -d ' ') image(s) this machine did not have)"
+else
+  say "every image the stack needs is already on this machine: nothing to pull (the OpenVAS feed data is refreshed daily by scripts/refresh-feeds.sh)"
+fi
 ctl report updating --phase build --detail "building the new Sentinel image" --from "$CURRENT" --to "$TARGET" 2>/dev/null || true
 docker compose build || rollback "docker compose build failed" build
 
