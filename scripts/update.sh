@@ -118,6 +118,9 @@ wait_for_cvengine() {
 }
 # The images the stack needs that are neither on this machine nor built from this checkout (cvengine-sentinel-local is the image docker-compose.yml
 # builds), space separated; "unknown" when compose cannot list them.
+# The services built from this checkout: the Sentinel and the one-shot that hands its state volume to its user. Nothing else needs to run for an update.
+SENTINEL_SERVICES="sentinel-init sentinel"
+
 missing_images() {
   IMAGES=$(docker compose config --images 2>/dev/null) || { printf 'unknown'; return; }
   printf '%s\n' "$IMAGES" | while read -r image; do
@@ -305,8 +308,14 @@ elif [ "$rc" != 0 ]; then
   exit 0
 fi
 
-ctl report updating --phase restart --detail "restarting the stack on $TARGET" --from "$CURRENT" --to "$TARGET" 2>/dev/null || true
-docker compose up -d || fail "docker compose up failed" restart
+# Only the Sentinel is restarted before the update counts: it depends on nothing but sentinel-init. The rest of the stack (OpenVAS) is brought up
+# after the update is recorded, because its services wait on the feed data containers turning healthy, which can take a long time after a feed
+# refresh (scap-data at the 08:07Z update of Nov 20): a slow one there failed the whole update although the new Sentinel was already running.
+ctl report updating --phase restart --detail "restarting the Sentinel on $TARGET" --from "$CURRENT" --to "$TARGET" 2>/dev/null || true
+UP_ERR=$(docker compose up -d $SENTINEL_SERVICES 2>&1 >/dev/null) || {
+  WHY=$(printf '%s\n' "$UP_ERR" | grep -v '^[[:space:]]*$' | tail -n 1 | cut -c1-160)
+  fail "docker compose up failed for the Sentinel: ${WHY:-no reason given}" restart
+}
 
 # The recreated Sentinel starts undrained and writes its status within a minute; its version is the commit stamped into the new image.
 i=0
@@ -317,7 +326,15 @@ until docker compose exec -T sentinel python3 -m client.control status 2>/dev/nu
 done
 DRAINED=0
 printf '%s\n' "$TARGET_FULL" > "$MARKER.tmp" && mv "$MARKER.tmp" "$MARKER"
-ctl report 'done' --phase finished --detail "running $TARGET" --from "$CURRENT" --to "$TARGET" 2>/dev/null || true
+# The Sentinel runs the new code: now the rest of the stack. A service still waiting on a feed container is no failure of the update (the daemon
+# offers no OpenVAS work until gvmd is ready, client/tools.gvm_ready); it is said, and the next `docker compose up -d` or restart finishes it.
+STACK_NOTE=
+UP_ERR=$(docker compose up -d 2>&1 >/dev/null) || {
+  WHY=$(printf '%s\n' "$UP_ERR" | grep -v '^[[:space:]]*$' | tail -n 1 | cut -c1-160)
+  STACK_NOTE="; the rest of the stack (OpenVAS) is still starting: ${WHY:-no reason given}"
+  say "the Sentinel is updated; the rest of the stack did not come up yet (${WHY:-no reason given}): OpenVAS work waits until gvmd is ready"
+}
+ctl report 'done' --phase finished --detail "running $TARGET$STACK_NOTE" --from "$CURRENT" --to "$TARGET" 2>/dev/null || true
 RESULT=updated
-DETAIL="updated $CURRENT -> $TARGET$PULL_NOTE"
-say "updated $CURRENT -> $TARGET$PULL_NOTE"
+DETAIL="updated $CURRENT -> $TARGET$PULL_NOTE$STACK_NOTE"
+say "updated $CURRENT -> $TARGET$PULL_NOTE$STACK_NOTE"
