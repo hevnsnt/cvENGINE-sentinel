@@ -92,7 +92,8 @@ case "$1" in
 esac
 ''')
         # runuser -u USER -- command...: run the command, remember who it was meant for (never its stdin, so the blob cannot be in the log)
-        put(os.path.join(bin_dir, 'runuser'), f'#!/bin/sh\necho "runuser $*" >> {log}\nshift 3\nexec "$@"\n')
+        # STUB_BLOCKED names a directory the service user may not pass through: its `test -x` fails, as on a host whose /opt is private
+        put(os.path.join(bin_dir, 'runuser'), f'#!/bin/sh\necho "runuser $*" >> {log}\ncase " $* " in *" test -x ${{STUB_BLOCKED:-/no-such-dir}} "*) exit 1 ;; esac\nshift 3\nexec "$@"\n')
         put(os.path.join(bin_dir, 'chown'), f'#!/bin/sh\necho "chown $*" >> {log}\n')
         put(os.path.join(bin_dir, 'install'), f'''#!/bin/sh
 echo "install $*" >> {log}
@@ -126,6 +127,17 @@ class InstallTests(ServiceUserBase):
     @property
     def dest(self):
         return os.path.join(self.prefix, 'opt/cvengine-sentinel')
+
+    def test_a_directory_above_the_checkout_the_service_user_cannot_enter_is_named_before_any_clone(self):
+        # a live host whose /opt other software had made private: git clone, run as cvengine, said only "could not create work tree dir ... Permission denied"
+        opt = os.path.join(self.prefix, 'opt')
+        out = self.install('--light', '--external', '--yes', '--blob', '-', STUB_BLOCKED=opt)
+        self.assertNotEqual(out.returncode, 0)
+        self.assertIn(f'cannot get through {opt}', out.stderr + out.stdout)
+        self.assertIn(f'chmod o+x {opt}', out.stderr + out.stdout)
+        self.assertIn('--dir', out.stderr + out.stdout)
+        self.assertNotIn('clone', self.calls())
+        self.assertFalse(os.path.exists(self.dest))  # nothing was made for the service user
 
     def test_a_fresh_install_creates_the_user_clones_as_it_and_never_runs_as_root(self):
         out = self.install('--light', '--internal', '--name', 'lab-1', '--yes', '--blob', '-')
