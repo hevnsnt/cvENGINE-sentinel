@@ -12,7 +12,7 @@ Pillow==13.0.0
 redis==8.1.0
 # The browser of the web_screenshot kind (client/shot.py): Playwright drives the headless Chromium installed in the Dockerfile. The same pin the server's
 # web/requirements.txt carried while it took the screenshots itself.
-playwright==1.65.1
+playwright==1.65.2
 PyMySQL==1.2.4
 pymongo==4.20.0
 # The supplier_check kind (client/tools.py run_supplier_check) and the hygiene_check and dangling_dns_check kinds (cvengine_scanner.probes.hygiene, mailfail, dangling_dns): dnspython for the DNS

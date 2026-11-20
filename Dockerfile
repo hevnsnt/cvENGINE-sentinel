@@ -15,7 +15,7 @@ ARG BADDNS_VERSION=2.5.0
 ARG BADSECRETS_VERSION=1.3.0
 # bbot's own virtual environment is built in a stage of its own: one of its dependencies (yara-python) compiles from source on this Python, and
 # the compiler and the headers it needs stay in this stage. The final image copies the finished venv to the same path, on the same base image.
-FROM ubuntu:26.04@sha256:065aa8626841f16057b78b027b464cd59c4fac36c204c72dcbf48d66f5fa8a96 AS bbot-builder
+FROM ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db AS bbot-builder
 ARG BBOT_VERSION
 ARG TZDATA_VERSION
 ARG BLASTDNS_VERSION
@@ -36,7 +36,7 @@ RUN python3 -m venv /opt/bbot-venv && \
 # extension, on arm64) are built here, in a stage that is thrown away: the same toolchain the server repository's web/Dockerfile builds them with
 # (build-essential, python3-dev, rustc, cargo), on the same base image, so the wheels match the image's Python. Only the wheels are copied into the
 # image below, which installs them with --no-index: no Python headers or Rust toolchain ship in it, and nothing is compiled or fetched there.
-FROM ubuntu:26.04@sha256:065aa8626841f16057b78b027b464cd59c4fac36c204c72dcbf48d66f5fa8a96 AS wheels
+FROM ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db AS wheels
 ENV DEBIAN_FRONTEND="noninteractive" PIP_DISABLE_PIP_VERSION_CHECK=1
 RUN apt-get update -y && \
     apt-get install -y --no-install-recommends build-essential ca-certificates cargo python3 python3-dev python3-venv rustc && \
@@ -46,7 +46,7 @@ COPY requirements.txt /tmp/requirements.txt
 RUN /opt/wheelvenv/bin/pip install --no-cache-dir pip==26.3 setuptools==84.2.1 wheel==0.48.0 && \
     /opt/wheelvenv/bin/pip wheel --no-cache-dir -r /tmp/requirements.txt -w /wheels
 
-FROM ubuntu:26.04@sha256:065aa8626841f16057b78b027b464cd59c4fac36c204c72dcbf48d66f5fa8a96
+FROM ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db
 
 ARG GOVERSION=1.27.4
 ARG GO_SHA256_AMD64=7226736c2339719cda28fbf3a54d71aa63bcefe376e98cef00034268dab24840
@@ -254,7 +254,7 @@ RUN pip install --no-cache-dir wafw00f==${WAFW00F_VERSION} PySocks==${PYSOCKS_VE
 # default seccomp profile, which refuses the user namespaces the sandbox needs (so this check launches without it). The running container has Playwright's
 # seccomp profile (docker-compose.yml, vendored in config/seccomp) and proves the sandbox engages at every start (client/daemon.py) and before every task
 # (client/shot_child.py); a browser that cannot prove it takes no picture. A Playwright bump that moves the browser means rebuilding the image.
-ARG PLAYWRIGHT_CHROMIUM_VERSION=158.0.8127.18
+ARG PLAYWRIGHT_CHROMIUM_VERSION=159.0.8154.6
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers
 RUN set -e; playwright install --with-deps --only-shell chromium \
     && rm -rf /var/lib/apt/lists/* /opt/pw-browsers/ffmpeg-* \
