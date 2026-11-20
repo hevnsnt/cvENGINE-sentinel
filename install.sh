@@ -104,6 +104,15 @@ svc_check_dir() { # svc_check_dir DIR: an absolute, plain path the service user 
   esac
 }
 
+svc_blocked_by() { # svc_blocked_by DIR: the first directory above DIR the service user may not pass through (no execute permission for it), or nothing
+  local a chain=""
+  a=$(dirname "$1")
+  while :; do chain="$a $chain"; [ "$a" = / ] && break; a=$(dirname "$a"); done
+  for a in $chain; do  # svc_check_dir allows no spaces in the path, so the list splits safely
+    svc_run / test -x "$a" || { printf '%s' "$a"; return 0; }
+  done
+}
+
 # The compose project name Docker Compose would derive from a directory name: lower case, only a-z 0-9 - _ kept.
 svc_project_name_of() { printf '%s' "$(basename "$1")" | tr 'A-Z' 'a-z' | tr -cd 'a-z0-9_-' | sed 's/^[-_]*//'; }
 
@@ -161,6 +170,13 @@ main() {
   svc_ensure_user
   svc_add_to_docker_group
 
+  # The checkout belongs to the service user, which must get through every directory above it. On a host where one of them lets no other user in
+  # (an /opt that other software made private), git clone said only "could not create work tree dir ... Permission denied".
+  mkdir -p "$(dirname "$dir")"
+  local blocked
+  blocked=$(svc_blocked_by "$dir")
+  [ -z "$blocked" ] || die "the $SERVICE_USER user cannot get through $blocked to reach $dir ($blocked is $(stat -c %A "$blocked" 2>/dev/null || echo 'not readable'), so other users may not enter it). Either let users pass through it (enter, not list): chmod o+x $blocked   or install somewhere it can reach: --dir /srv/cvengine-sentinel"
+
   if [ -e "$dir/.git" ]; then
     local owner origin
     owner=$(stat -c %U "$dir" 2>/dev/null || echo UNKNOWN)
@@ -170,7 +186,6 @@ main() {
     say "Reusing the checkout in $dir."
   else
     if [ -e "$dir" ] && [ -n "$(ls -A "$dir" 2>/dev/null)" ]; then die "$dir exists and is not empty, and is not a Sentinel checkout"; fi
-    mkdir -p "$(dirname "$dir")"
     install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 755 "$dir"
     svc_run "$dir" git clone "$REPO" "$dir" || die "git clone of $REPO failed"
     say "Cloned $REPO into $dir as $SERVICE_USER."
