@@ -223,21 +223,6 @@ def _addresses(net, hosts):
     return out
 
 
-def ask_any(net, servers, qname, rdtype):
-    for server in list(servers)[:MAX_SERVERS]:
-        reply = net.ask(server, qname, rdtype)
-        if reply is not None:
-            return reply
-    return None
-
-
-def _addresses(net, hosts):
-    out = []
-    for host in hosts:
-        out += [a for a in net.addresses(host) if a not in out]
-    return out
-
-
 # ----------------------------------------------------------------------------- the zone cut
 
 @dataclass
