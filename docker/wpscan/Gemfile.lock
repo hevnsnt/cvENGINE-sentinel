@@ -64,10 +64,10 @@ GEM
       base64
       websocket-extensions (>= 0.1.0)
     websocket-extensions (0.1.5)
-    wpscan (4.2.0)
+    wpscan (4.2.1)
       activesupport (>= 7.1, < 8.2)
       addressable (~> 2.9)
-      ethon (>= 0.14, < 0.19)
+      ethon (>= 0.14, < 0.20)
       ferrum (~> 0.8)
       fiddle (~> 1.1)
       get_process_mem (>= 0.2.5, < 1.1.0)
@@ -88,7 +88,7 @@ PLATFORMS
   ruby
 
 DEPENDENCIES
-  wpscan (= 4.2.0)
+  wpscan (= 4.2.1)
 
 CHECKSUMS
   activesupport (8.1.4.1) sha256=16ac4f341ca65c85a1fcdb8ac73f68891aae9e3c4a6f9c3a27daed8b00017ed7
@@ -124,7 +124,7 @@ CHECKSUMS
   webrick (1.9.2) sha256=beb4a15fc474defed24a3bda4ffd88a490d517c9e4e6118c3edce59e45864131
   websocket-driver (0.8.2) sha256=97c556b019bf3410b4961002ac501621e9322d3f8a7bc02161a09301cc4c4146
   websocket-extensions (0.1.5) sha256=1c6ba63092cda343eb53fc657110c71c754c56484aad42578495227d717a8241
-  wpscan (4.2.0) sha256=04c93704ca4ecea32b13688754b5e09cbacfae53a4e11cfcf7f595fd0a158c09
+  wpscan (4.2.1) sha256=ae2133545bb1b9fae78cc16b0326f6dc550ac69801e8d90b10242f2c475006a4
   xmlrpc (0.3.4) sha256=53a2e08dcff82e58f652c88e1d1ad49467ae341b8a2020339c00315112de5442
   yajl-ruby (1.4.3) sha256=8c974d9c11ae07b0a3b6d26efea8407269b02e4138118fbe3ef0d2ec9724d1d2
 

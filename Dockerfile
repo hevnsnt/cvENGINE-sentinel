@@ -59,7 +59,7 @@ ARG NAABU_VERSION=2.7.0
 # nmap.org/dist/sigs/ (identical to the server repository's web/Dockerfile pins).
 ARG NMAP_SHA256=270e55f04915bfcecb5db8feb959d4c5ba86a48c094520a4f1c07571e1c79c59
 ARG NMAP_RPM_SHA256_AMD64=997cb830c84a429aaa1d41708a1ebb9b1cc36e75d21801c9d359fe930a8c1f93
-ARG WPSCAN_VERSION=4.2.0
+ARG WPSCAN_VERSION=4.2.1
 # wafw00f (BSD-3-Clause, run as a separate program) names the WAF in front of a site, mirroring cveFeed/waf_scan.py's invocation. The same pins as the server
 # repository's web/requirements.txt (wafw00f, and PySocks, which wafw00f's requests[socks] pulls in).
 ARG WAFW00F_VERSION=2.4.2
