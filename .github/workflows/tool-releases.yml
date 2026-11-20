@@ -2,7 +2,7 @@ name: Tool releases
 
 # Compares every pin of the Sentinel image (the Dockerfile ARGs, requirements.txt, the pip bootstrap pins, the Ubuntu base image digest and the Greenbone
 # image digests in docker-compose.yml) with the newest upstream release, by scripts/check_tool_versions.py.
-#   weekly (and by hand): keeps one open issue listing what is behind.
+#   weekly (and by hand): keeps one open issue listing what is behind, and closes it once nothing is.
 #   pull requests: a warning on the run for each tool that is behind, never a failure.
 # The release gate is a job of tag-release.yml: the same script with --fail-if-behind.
 on:
@@ -52,6 +52,17 @@ jobs:
             gh issue edit "$number" --body "$body"
           else
             gh issue create --title "$title" --body "$body"
+          fi
+      - name: Close that issue once nothing is behind
+        if: steps.check.outputs.behind != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          title="Sentinel tools behind their newest release"
+          number=$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number // empty')  # a failed listing stops the step
+          if [ -n "$number" ]; then
+            gh issue close "$number" --reason completed --comment "The weekly check finds every pinned tool current; closing."
           fi
 
   pull-request:
