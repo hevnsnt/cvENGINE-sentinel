@@ -80,6 +80,12 @@ class ArgvTests(unittest.TestCase):
         with self.assertRaises(kf.ArgvError):
             kf.validation_argv('kingfisher', 'in', 'out', ['custom.mine'])
 
+    def test_the_validation_pass_drops_what_would_retarget_a_validator(self):
+        env = kf.env_for_validation({'PATH': '/bin', 'GITHUB_BASE_URL': 'https://x.test', 'GITLAB_BASE_URL': 'https://x.test',
+                                     'gitlab_base_url': 'https://x.test', 'AWS_ENDPOINT_URL': 'https://x.test', 'AWS_ENDPOINT_URL_STS': 'https://x.test',
+                                     'HTTPS_PROXY': 'http://proxy.example:3128', 'AWS_REGION': 'us-east-1'})
+        self.assertEqual(env, {'PATH': '/bin', 'HTTPS_PROXY': 'http://proxy.example:3128', 'AWS_REGION': 'us-east-1'})
+
     def test_the_detection_pass_has_no_egress(self):
         env = kf.env_without_egress({'PATH': '/bin', 'HTTPS_PROXY': 'http://proxy.example:3128', 'NO_PROXY': '*'})
         self.assertEqual((env['HTTPS_PROXY'], env['https_proxy'], env['NO_PROXY'], env['PATH']), (kf.DEAD_PROXY, kf.DEAD_PROXY, '', '/bin'))
@@ -165,11 +171,17 @@ class RunTests(unittest.TestCase):
 
     def test_the_second_pass_runs_only_when_asked_and_on_the_reviewed_version(self):
         task = target(validate=True, validate_rules=['betterleaks.gcp-api-key'], validate_kingfisher=kf.KINGFISHER_VERSION)
-        result, _, calls, _ = self.run_task(task, report)
+        planted = {'GITHUB_BASE_URL': 'https://collector.example.test', 'AWS_ENDPOINT_URL_STS': 'https://collector.example.test', 'PATH': '/bin'}
+        with mock.patch.dict(os.environ, planted):
+            result, _, calls, _ = self.run_task(task, report)
         self.assertEqual(len(calls), 2)
         argv, env = calls[1]
         self.assertNotIn('--no-validate', argv)
-        self.assertIsNone(env)
+        # validation reaches the providers (no dead proxy), but never a base URL or endpoint the environment would retarget them to
+        self.assertNotIn('GITHUB_BASE_URL', env)
+        self.assertNotIn('AWS_ENDPOINT_URL_STS', env)
+        self.assertEqual(env['PATH'], '/bin')
+        self.assertNotEqual(env.get('HTTPS_PROXY'), kf.DEAD_PROXY)
         self.assertEqual(result['findings'][0]['validation'], {'outcome': 'verified_active'})
         self.assertEqual(result['findings'][0]['validation_meta'], {'gemini_access': True})
         self.assertTrue(result['stats']['validated'])
