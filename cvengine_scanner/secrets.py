@@ -297,6 +297,18 @@ def version_of(text):
     return found.group(1) if found else ''
 
 
+# what a validator could be pointed at another host by: the rules read the provider's base URL from the environment (``env.getOrDefault(
+# "GITHUB_BASE_URL", ...)``, ``GITLAB_BASE_URL``) and the AWS SDK behind ``aws.validate`` honours ``AWS_ENDPOINT_URL`` and ``AWS_ENDPOINT_URL_STS``
+REDIRECTING_ENV = re.compile(r'^(?:[A-Za-z0-9_]+_BASE_URL|AWS_ENDPOINT_URL(?:_[A-Za-z0-9_]+)?)$', re.IGNORECASE)
+
+
+def env_for_validation(base):
+    """The environment of a validation pass: ``base`` without any variable that would send a found secret to a host other than its provider's
+    own API (a ``*_BASE_URL`` the rules read, an ``AWS_ENDPOINT_URL*`` the AWS SDK honours). The allow-list was reviewed for the providers'
+    default endpoints; an operator's environment must not quietly retarget them."""
+    return {k: v for k, v in dict(base).items() if not REDIRECTING_ENV.match(k)}
+
+
 def env_without_egress(base):
     """The environment of a detection pass: ``base`` (the caller's environment), with every proxy variable pointing at a closed local port."""
     env = dict(base)

@@ -264,7 +264,8 @@ def run(target, register=None, rules=None, fetcher=fetch, resolver=None, sleep=t
             if target.get('validate') is True and findings:
                 if version and version == target.get('validate_kingfisher'):
                     checked = os.path.join(work, 'validate.json')
-                    _kingfisher(kf.validation_argv(tools.KINGFISHER_BIN, reader.dir, checked, target.get('validate_rules') or []), register)
+                    _kingfisher(kf.validation_argv(tools.KINGFISHER_BIN, reader.dir, checked, target.get('validate_rules') or []), register,
+                                env=kf.env_for_validation(os.environ))
                     validated, _ = _report(checked, reader.manifest, keep_validation=True)
                     findings = kf.merge_validation(findings, validated)
                     stats['validated'] = True
