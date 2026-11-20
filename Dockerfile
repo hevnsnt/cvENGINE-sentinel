@@ -74,9 +74,9 @@ ARG TESTSSL_SHA256=23bb53d50ae093b89631e9fff547c087f632bf35f7a3d7dc78dd4ffff56cd
 # Kingfisher (Apache-2.0, MongoDB; run as a separate program) finds secrets in the pages and scripts of the secrets_scan kind. The release tarball per
 # architecture, pinned by sha256 (its build attestation is verified in CI, .github/workflows/tests.yml); never the PyPI kingfisher-bin. The library's
 # cvengine_scanner/secrets.py KINGFISHER_VERSION is the same pin (a test holds them together), and so is the server's validation allow-list.
-ARG KINGFISHER_VERSION=2.18.1
-ARG KINGFISHER_SHA256_AMD64=8f29b5ba1818f13bccd0b079c798659cfd2eccf21998003c8aaf75f8a3794529
-ARG KINGFISHER_SHA256_ARM64=37a6341c9899693d6cf2ef18d54bf65395a8ad9b6c6152aea90f8626b4be9d8e
+ARG KINGFISHER_VERSION=2.19.1
+ARG KINGFISHER_SHA256_AMD64=3449ba41007df91e6774a816dd64cc9385900a304ef3cbb58ab61e0a83448e1c
+ARG KINGFISHER_SHA256_ARM64=273744b70304704e46fb980cbe37fc9a94a96f62d65aaf07af1f21ea94b4b09f
 # sshamble (BSD-2-Clause, runZero; run as a separate program) reads an SSH service's own handshake for the ssh_probe kind: the banner, host keys,
 # algorithms, offered authentication methods and the badkeys blocklist check. Release tarball per architecture, pinned by sha256. The library's
 # cvengine_scanner/probes/ssh_probe.py SSHAMBLE_VERSION is the same pin (a test holds them together). Only the host key check is ever run.
