@@ -532,6 +532,24 @@ class UpdateScriptTests(unittest.TestCase):
         self.assertEqual(self.head(), second[:12])
         self.assertEqual(self.calls().count('compose up -d sentinel-init sentinel'), 1)  # only the first update ever restarted anything
 
+    def test_a_stale_marker_does_not_turn_an_older_target_into_a_failure(self):
+        # vmi2645654, Nov 20: the stack was brought up by hand on a newer checkout, so the marker still named an old commit while HEAD ran. The server named
+        # a commit older than HEAD but newer than the marker: the run must wait (nothing to update to) and correct the marker, not fail "no downgrade".
+        stale = run(['git', 'rev-parse', 'HEAD'], self.work).stdout.strip()
+        first, second = self.publish_two()
+        run(self.git + ['merge', '-q', '--ff-only', second], self.work) if run(self.git + ['fetch', '-q', 'origin', 'main'], self.work).returncode == 0 else None
+        self.assertEqual(self.head(), second[:12])
+        put(os.path.join(self.work, '.deployed-commit'), stale + '\n', 'w')
+        self.publish()  # main moves on, so HEAD is not main's head
+        control.write_status(second[:12], 0, {'setting': 'automatic', 'mode': 'manual', 'requested': True, 'target': first})  # the running Sentinel reports HEAD
+        self.env['SHIM_SETTING'] = 'automatic'
+        out = self.update()
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertEqual(control.updater_info()['last_result'], 'waiting')
+        self.assertIn('older than the one this Sentinel runs', control.updater_info()['detail'])
+        self.assertEqual(self.marker(), second[:12])
+        self.assertEqual(self.head(), second[:12])
+
     def test_now_with_a_server_naming_an_older_commit_moves_to_the_head(self):
         # vmi2645654, Nov 16: the server pins an older build than the Sentinel runs, so it names that as the target. A person's --now must still
         # update (to the head of main) instead of refusing the downgrade and changing nothing.

@@ -151,8 +151,10 @@ AVAILABLE_FULL=$TARGET_FULL
 # The commit cvENGINE named in its last heartbeat answer (the daemon writes it to the status file; an older image has no such field, which reads as none).
 SERVER_TARGET=$(ctl status 2>/dev/null | sed -n 's/.*"target": "\([0-9a-f]\{7,40\}\)".*/\1/p' | head -n 1)
 
-# An install from before the marker existed counts as deployed at HEAD once the running Sentinel reports HEAD as its version.
-if [ ! -f "$MARKER" ] && ctl status 2>/dev/null | grep -q "\"version\": \"$CURRENT\""; then
+# The running Sentinel reports HEAD as its version: HEAD is what is deployed, whatever the marker says. That covers an install from before the marker
+# existed, and a marker left behind when a person brought the stack up by hand on a newer checkout (vmi2645654, Nov 20: the marker said 359f4dc while
+# 663ed8d ran, so a target older than 663ed8d but newer than 359f4dc was not seen as older and the hourly run failed "no downgrade" instead of waiting).
+if ctl status 2>/dev/null | grep -q "\"version\": \"$CURRENT\"" && [ "$(cat "$MARKER" 2>/dev/null || true)" != "$(git rev-parse HEAD)" ]; then
   git rev-parse HEAD > "$MARKER"
 fi
 DEPLOYED=$(cat "$MARKER" 2>/dev/null || true)
