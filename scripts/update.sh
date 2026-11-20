@@ -116,6 +116,16 @@ wait_for_cvengine() {
   fi
   exit 0
 }
+# The images the stack needs that are neither on this machine nor built from this checkout (cvengine-sentinel-local is the image docker-compose.yml
+# builds), space separated; "unknown" when compose cannot list them, which counts as missing.
+missing_images() {
+  IMAGES=$(docker compose config --images 2>/dev/null) || { printf 'unknown'; return; }
+  printf '%s\n' "$IMAGES" | while read -r image; do
+    case "$image" in ''|cvengine-sentinel-local|cvengine-sentinel-local:*) continue ;; esac
+    docker image inspect "$image" >/dev/null 2>&1 || printf '%s ' "$image"
+  done
+}
+
 cannot() {
   DETAIL="cannot update: $1"
   say "$DETAIL"
@@ -236,7 +246,18 @@ fi
 # The checkout must be exactly the commit that was approved before anything is built or restarted from it.
 [ "$(git rev-parse HEAD)" = "$TARGET_FULL" ] || rollback "after the checkout HEAD is not the target $TARGET, so nothing was built or restarted" code
 ctl report updating --phase images --detail "pulling images" --from "$CURRENT" --to "$TARGET" 2>/dev/null || true
-docker compose pull --quiet --ignore-buildable || rollback "docker compose pull failed" images
+# The only images pulled are the ones this checkout does not build: today the Greenbone OpenVAS images, several on floating feed tags. A registry
+# that is down or rate-limiting must not hold the Sentinel's own update back while every image the stack needs is already on this machine (the feed
+# images are refreshed daily by scripts/refresh-feeds.sh anyway): the update goes on with them and says why the pull failed. An image that is
+# missing here stops it as before, with the pull's own error in the detail.
+PULL_NOTE=
+PULL_ERR=$(docker compose pull --quiet --ignore-buildable 2>&1 >/dev/null) || {
+  WHY=$(printf '%s\n' "$PULL_ERR" | grep -v '^[[:space:]]*$' | tail -n 1 | cut -c1-160)
+  MISSING=$(missing_images)
+  [ -z "$MISSING" ] || rollback "docker compose pull failed: ${WHY:-no reason given}; not on this machine: $MISSING" images
+  PULL_NOTE=" (pulling images failed: ${WHY:-no reason given}; every image the stack needs was already here, so they were used)"
+  say "pulling images failed (${WHY:-no reason given}); every image the stack needs is already on this machine, so the update goes on with them"
+}
 ctl report updating --phase build --detail "building the new Sentinel image" --from "$CURRENT" --to "$TARGET" 2>/dev/null || true
 docker compose build || rollback "docker compose build failed" build
 
@@ -288,5 +309,5 @@ DRAINED=0
 printf '%s\n' "$TARGET_FULL" > "$MARKER.tmp" && mv "$MARKER.tmp" "$MARKER"
 ctl report 'done' --phase finished --detail "running $TARGET" --from "$CURRENT" --to "$TARGET" 2>/dev/null || true
 RESULT=updated
-DETAIL="updated $CURRENT -> $TARGET"
-say "updated $CURRENT -> $TARGET"
+DETAIL="updated $CURRENT -> $TARGET$PULL_NOTE"
+say "updated $CURRENT -> $TARGET$PULL_NOTE"
