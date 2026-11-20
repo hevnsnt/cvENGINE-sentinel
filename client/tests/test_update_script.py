@@ -1,8 +1,9 @@
 """scripts/update.sh against a local git origin and a stand-in `docker`: what each self-update setting lets it do, and what every run records.
 
 The stand-in `docker` sends `docker compose exec ... python3 -m client.control` to the real module (against a temporary state directory) and
-records `compose pull`, `build` and `up` (each can be made to fail with SHIM_FAIL_PULL, SHIM_FAIL_BUILD or SHIM_FAIL_UP; `compose config --images`
-lists SHIM_IMAGES, and `image inspect` fails for those in SHIM_MISSING); after `compose up` it
+records `compose pull`, `build` and `up` (each can be made to fail with SHIM_FAIL_PULL, SHIM_FAIL_BUILD or SHIM_FAIL_UP, and SHIM_FAIL_STACK_UP fails
+only the `up -d` of the whole stack; `compose config --images`
+lists SHIM_IMAGES, `image inspect` fails for those in SHIM_MISSING, and a plain `docker pull` fails with SHIM_FAIL_PULL); after `compose up` it
 writes the daemon status a rebuilt Sentinel would write. It proves the script's decisions, not Docker itself.
 """
 import fcntl
@@ -26,6 +27,10 @@ if [ "$1" = image ] && [ "$2" = inspect ]; then  # an image is on this machine u
   case " ${SHIM_MISSING:-} " in *" $3 "*) exit 1 ;; esac
   exit 0
 fi
+if [ "$1" = pull ]; then  # a plain `docker pull <image>`: SHIM_FAIL_PULL fails it with a registry's error
+  [ -z "${SHIM_FAIL_PULL:-}" ] || { echo 'Error response from daemon: Get "https://registry.example/v2/": net/http: TLS handshake timeout' >&2; exit 1; }
+  exit 0
+fi
 [ "$1" = compose ] || exit 0
 shift
 case "$1" in
@@ -33,7 +38,11 @@ case "$1" in
   pull) [ -z "${SHIM_FAIL_PULL:-}" ] || { echo 'Error response from daemon: Get "https://registry.example/v2/": net/http: TLS handshake timeout' >&2; exit 1; } ;;
   config) [ -z "${SHIM_FAIL_CONFIG:-}" ] || exit 1; [ -z "${SHIM_IMAGES:-}" ] || printf '%s\n' $SHIM_IMAGES ;;
   build) [ -z "${SHIM_FAIL_BUILD:-}" ] ;;
-  up) [ -z "${SHIM_FAIL_UP:-}" ] || exit 1
+  up) shift
+    [ -z "${SHIM_FAIL_UP:-}" ] || exit 1
+    if [ -n "${SHIM_FAIL_STACK_UP:-}" ] && [ "$*" = "-d" ]; then  # the whole stack: a feed container that is slow to turn healthy
+      echo 'dependency failed to start: container openvas-scap-data is unhealthy' >&2; exit 1
+    fi
     cd "$SENTINEL_SRC" && python3 - <<PY
 from client import control
 import subprocess, os
@@ -253,8 +262,36 @@ class UpdateScriptTests(unittest.TestCase):
         self.assertNotIn('client.control drain', self.calls())
 
     FEED = 'registry.example/community/vulnerability-tests:community'
+    PINNED = 'registry.example/community/gvmd:stable@sha256:' + 'a' * 64
 
-    def test_a_failed_pull_with_an_image_missing_here_puts_the_checkout_back_and_never_drains(self):
+    def test_an_update_pulls_nothing_when_every_image_is_here(self):
+        # the OpenVAS feed data images follow moving tags and take tens of minutes to pull: an update never re-pulls one it has
+        # (scripts/refresh-feeds.sh refreshes them daily), so a slow or broken registry cannot hold a code update back
+        self.publish()
+        self.status('automatic')
+        out = self.update(SHIM_FAIL_PULL='1', SHIM_IMAGES=f'cvengine-sentinel-local:latest {self.FEED} {self.PINNED}')
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertEqual(self.head(), self.origin_main()[:12])
+        self.assertEqual(control.updater_info()['last_result'], 'updated')
+        self.assertNotIn('docker pull', self.calls())
+        self.assertNotIn('compose pull', self.calls())
+        self.assertNotIn('image inspect cvengine-sentinel-local', self.calls())  # the image this checkout builds is never looked for
+        self.assertIn('nothing to pull', out.stdout)
+
+    def test_an_update_pulls_only_the_images_this_machine_lacks(self):
+        self.publish()
+        self.status('automatic')
+        out = self.update(SHIM_IMAGES=f'cvengine-sentinel-local:latest {self.FEED} {self.PINNED}', SHIM_MISSING=self.PINNED)
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        calls = self.calls()
+        self.assertIn(f'docker pull --quiet {self.PINNED}', calls)  # a changed pin is a new reference, so it is pulled
+        self.assertNotIn(f'docker pull --quiet {self.FEED}', calls)  # the feed data image it has is not
+        self.assertNotIn('compose pull', calls)
+        info = control.updater_info()
+        self.assertEqual(info['last_result'], 'updated')
+        self.assertIn('pulled 1 image(s) this machine did not have', info['detail'])
+
+    def test_a_failed_pull_of_an_image_missing_here_puts_the_checkout_back_and_never_drains(self):
         self.publish()
         before = self.head()
         self.status('automatic')
@@ -270,27 +307,38 @@ class UpdateScriptTests(unittest.TestCase):
         self.assertNotIn('client.control drain', self.calls())
         self.assertFalse(control.is_draining())
 
-    def test_a_failed_pull_with_every_image_here_still_updates_and_says_why(self):
-        # a registry that is down or rate-limiting (the Greenbone feed images are on floating tags) must not hold the Sentinel's own update back
+    def test_the_sentinel_is_restarted_alone_before_the_rest_of_the_stack(self):
         self.publish()
         self.status('automatic')
-        out = self.update(SHIM_FAIL_PULL='1', SHIM_IMAGES=f'cvengine-sentinel-local:latest {self.FEED}')
+        out = self.update()
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        calls = self.calls()
+        self.assertIn('docker compose up -d sentinel-init sentinel', calls)
+        self.assertLess(calls.index('compose up -d sentinel-init sentinel'), calls.index('compose up -d\n'))  # the whole stack only after it
+
+    def test_a_feed_container_slow_to_turn_healthy_does_not_fail_the_update(self):
+        # the 08:07Z update of Nov 20: openvas-scap-data was slow to report healthy, `docker compose up -d` failed, and the update with it,
+        # although the new Sentinel was already running
+        self.publish()
+        self.status('automatic')
+        out = self.update(SHIM_FAIL_STACK_UP='1')
         self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
         self.assertEqual(self.head(), self.origin_main()[:12])
+        self.assertEqual(self.marker(), self.head())
         info = control.updater_info()
         self.assertEqual(info['last_result'], 'updated')
-        self.assertIn('pulling images failed', info['detail'])
-        self.assertIn('TLS handshake timeout', info['detail'])
-        self.assertNotIn('image inspect cvengine-sentinel-local', self.calls())  # the image this checkout builds is never looked for
-        self.assertIn('compose up', self.calls())
+        self.assertIn('the rest of the stack (OpenVAS) is still starting', info['detail'])
+        self.assertIn('openvas-scap-data is unhealthy', info['detail'])
+        self.assertFalse(control.is_draining())
 
-    def test_a_compose_that_cannot_list_its_images_counts_them_as_missing(self):
+    def test_a_compose_that_cannot_list_its_images_pulls_everything_and_stops_if_that_fails(self):
         self.publish()
         before = self.head()
         self.status('automatic')
         out = self.update(SHIM_FAIL_PULL='1', SHIM_FAIL_CONFIG='1')
         self.assertNotEqual(out.returncode, 0)
         self.assertEqual(self.head(), before)
+        self.assertIn('compose pull', self.calls())
         self.assertIn('not on this machine: unknown', control.updater_info()['detail'])
 
     def test_a_failed_build_puts_the_checkout_back_and_the_next_run_tries_again(self):
@@ -317,12 +365,12 @@ class UpdateScriptTests(unittest.TestCase):
         out = self.update()
         self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
         self.assertNotIn('up to date', out.stdout)
-        self.assertEqual(self.calls().count('compose up -d'), 2)
+        self.assertEqual(self.calls().count('compose up -d sentinel-init sentinel'), 2)
         self.assertEqual(self.marker(), target)
         self.assertEqual(control.updater_info()['last_result'], 'updated')
         out = self.update()  # and now it is up to date
         self.assertIn('up to date', out.stdout)
-        self.assertEqual(self.calls().count('compose up -d'), 2)
+        self.assertEqual(self.calls().count('compose up -d sentinel-init sentinel'), 2)
 
     # --- the commit an update moves to is the one cvENGINE named (SN-3) ---------------------------------------------------------------------
 
@@ -443,7 +491,7 @@ class UpdateScriptTests(unittest.TestCase):
         self.assertIn('up to date', out.stdout)
         self.assertEqual(self.head(), deployed)
         self.assertEqual(self.marker(), deployed)
-        self.assertEqual(self.calls().count('compose up -d'), 1)  # only the first update ever restarted anything
+        self.assertEqual(self.calls().count('compose up -d sentinel-init sentinel'), 1)  # only the first update ever restarted anything
 
     def test_a_downgrade_is_never_made_and_is_waiting_not_a_failure(self):
         # FB-7: the server may pin an older commit than the Sentinel runs (a Sentinel that went ahead of its server): nothing moves, and the hourly run is not a failure
@@ -457,7 +505,7 @@ class UpdateScriptTests(unittest.TestCase):
         self.assertEqual(control.updater_info()['last_result'], 'waiting')
         self.assertIn('older than the one this Sentinel runs', control.updater_info()['detail'])
         self.assertEqual(self.head(), second[:12])
-        self.assertEqual(self.calls().count('compose up -d'), 1)  # only the first update ever restarted anything
+        self.assertEqual(self.calls().count('compose up -d sentinel-init sentinel'), 1)  # only the first update ever restarted anything
 
     def test_now_with_a_server_naming_an_older_commit_moves_to_the_head(self):
         # vmi2645654, Nov 16: the server pins an older build than the Sentinel runs, so it names that as the target. A person's --now must still
@@ -472,7 +520,7 @@ class UpdateScriptTests(unittest.TestCase):
         self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
         self.assertEqual(self.head(), newest[:12])
         self.assertEqual(self.marker(), newest[:12])
-        self.assertEqual(self.calls().count('compose up -d'), 2)
+        self.assertEqual(self.calls().count('compose up -d sentinel-init sentinel'), 2)
 
     def test_the_default_drain_outlasts_the_longest_task_budget(self):
         # a deep nuclei scan may run its full hour: a 30-minute drain gave up on it and the update never happened
