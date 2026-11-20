@@ -19,6 +19,13 @@ x-logging: &logging
     max-size: "10m"
     max-file: "3"
 
+# The OpenVAS feed data images carry their own health check (a state file that appears once the image's data is copied into its volume) with a
+# five-minute start period. Copying a new scap-data or vulnerability-tests feed takes longer than that on a small VPS (more than six minutes at the
+# 15:51Z start of Nov 20), so the container was marked unhealthy before it finished and every service that waits on it gave up. Only the start
+# period is set here: the image's own test, interval and retries stay as they are (an unset field is inherited from the image).
+x-feed-health: &feed-health
+  start_period: 30m
+
 services:
   # The Sentinel runs as an unprivileged user (uid 10001). A state volume made by an older image holds files owned by root (the token, the GVM login),
   # which that user could not read: this one-shot service hands them over before the Sentinel starts. It runs as root for that one command, with no
@@ -156,6 +163,7 @@ services:
   openvas-vulnerability-tests:
     profiles: ["openvas"]
     logging: *logging
+    healthcheck: *feed-health
     image: "registry.community.greenbone.net/community/vulnerability-tests:community"
     environment:
       FEED_RELEASE: "24.10"
@@ -168,6 +176,7 @@ services:
   openvas-notus-data:
     profiles: ["openvas"]
     logging: *logging
+    healthcheck: *feed-health
     image: "registry.community.greenbone.net/community/notus-data:community"
     environment:
       KEEP_ALIVE: 1
@@ -179,6 +188,7 @@ services:
   openvas-scap-data:
     profiles: ["openvas"]
     logging: *logging
+    healthcheck: *feed-health
     image: "registry.community.greenbone.net/community/scap-data:community"
     environment:
       KEEP_ALIVE: 1
@@ -190,6 +200,7 @@ services:
   openvas-cert-bund-data:
     profiles: ["openvas"]
     logging: *logging
+    healthcheck: *feed-health
     image: "registry.community.greenbone.net/community/cert-bund-data:community"
     environment:
       KEEP_ALIVE: 1
@@ -201,6 +212,7 @@ services:
   openvas-dfn-cert-data:
     profiles: ["openvas"]
     logging: *logging
+    healthcheck: *feed-health
     image: "registry.community.greenbone.net/community/dfn-cert-data:community"
     environment:
       KEEP_ALIVE: 1
@@ -215,6 +227,7 @@ services:
   openvas-data-objects:
     profiles: ["openvas"]
     logging: *logging
+    healthcheck: *feed-health
     image: "registry.community.greenbone.net/community/data-objects:community"
     environment:
       FEED_RELEASE: "24.10"
@@ -227,6 +240,7 @@ services:
   openvas-report-formats:
     profiles: ["openvas"]
     logging: *logging
+    healthcheck: *feed-health
     image: "registry.community.greenbone.net/community/report-formats:community"
     environment:
       FEED_RELEASE: "24.10"
