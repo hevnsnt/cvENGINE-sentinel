@@ -160,8 +160,12 @@ class HTTPConnection(http.client.HTTPConnection):
 COMPRESSED_SLACK = 4096  # compressed bytes read beyond the decoded cap (headers and framing of a small page, never a larger allowance)
 
 
-def read_body(response, max_bytes):
-    """At most ``max_bytes`` of a response body, decoded. Every in-process reader asks for ``Accept-Encoding: identity`` (``http.client`` adds
+WIRE_HEAD = 16  # the bytes of a body ``read_body`` hands back as they came over the wire (``wire``)
+
+
+def read_body(response, max_bytes, wire=None):
+    """At most ``max_bytes`` of a response body, decoded. ``wire``, a dict when given, receives ``head``: the first ``WIRE_HEAD`` bytes as
+    they came over the connection, before any content decoding (a gzip file's own header, whose timestamp a version digest reads). Every in-process reader asks for ``Accept-Encoding: identity`` (``http.client`` adds
     it by itself) and some embedded servers (printers, relays, cameras) answer gzip or deflate anyway, so a body with that
     ``Content-Encoding`` is decompressed here instead of the page being dropped or read as binary. The cap is on the DECOMPRESSED output (a
     compressed bomb stops at it: ``decompress`` is asked for no more than what is left) and the compressed input is bounded too, so neither
@@ -170,7 +174,10 @@ def read_body(response, max_bytes):
     max_bytes = max(0, int(max_bytes))
     encoding = (response.getheader('Content-Encoding') or 'identity').strip().lower()
     if encoding in ('', 'identity'):
-        return response.read(max_bytes) or b''
+        body = response.read(max_bytes) or b''
+        if wire is not None:
+            wire['head'] = body[:WIRE_HEAD]
+        return body
     if encoding not in ('gzip', 'deflate'):
         raise ValueError('unsupported probe content encoding')
     decoder, parts, remaining = None, [], max_bytes
@@ -180,6 +187,8 @@ def read_body(response, max_bytes):
         if not chunk:
             break
         compressed_budget -= len(chunk)
+        if wire is not None and 'head' not in wire:
+            wire['head'] = chunk[:WIRE_HEAD]
         if decoder is None:
             if encoding == 'gzip':
                 wbits = 16 + zlib.MAX_WBITS

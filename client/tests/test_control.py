@@ -48,6 +48,52 @@ class DrainTests(Base):
         self.assertEqual(control.read_status()['in_flight'], 0)
 
 
+class SettleUpdateTests(Base):
+    """An update left "updating" (the daemon wrote it and exited for the supervisor, or an updater died) is settled at the next daemon start, so
+    cvENGINE does not show "Updating" for ever."""
+
+    def test_a_daemon_that_left_to_update_records_done_when_it_runs_the_target(self):
+        control.record_update('updating', 'exiting', 'idle: leaving', 'old1234', 'abc1234def')
+        self.assertEqual(control.settle_update('abc1234def5678'), 'done')
+        self.assertEqual({k: control.read_update()[k] for k in ('status', 'from', 'to')}, {'status': 'done', 'from': 'old1234', 'to': 'abc1234def'})
+
+    def test_a_daemon_that_came_back_on_another_build_records_failed_with_a_reason(self):
+        for status, phase, words in (('updating', 'exiting', 'supervisor did not bring'), ('draining', 'draining', 'while draining')):
+            with self.subTest(phase=phase):
+                control.record_update(status, phase, '', 'old1234', 'abc1234def')
+                self.assertEqual(control.settle_update('old1234'), 'failed')
+                update = control.read_update()
+                self.assertEqual(update['status'], 'failed')
+                self.assertIn(words, update['detail'])
+                self.assertIn('old1234', update['detail'])
+        control.record_update('updating', 'exiting', '', 'old1234', 'abc1234def')
+        self.assertEqual(control.settle_update(None), 'failed')  # an unknown running version cannot be the target
+
+    def test_the_host_updaters_run_is_left_to_it_until_it_is_stale(self):
+        control.record_update('updating', 'build', 'building the new Sentinel image', 'old1234', 'abc1234def')
+        self.assertIsNone(control.settle_update('old1234'))  # update.sh may still be building: it reports the outcome itself
+        self.assertEqual(control.read_update()['status'], 'updating')
+        self.assertEqual(control.settle_update('old1234', now=time.time() + control.DRAIN_TTL + 60), 'failed')
+        self.assertIn('did not finish', control.read_update()['detail'])
+        control.record_update('updating', 'restart', 'restarting the stack', 'old1234', 'abc1234def')
+        self.assertEqual(control.settle_update('abc1234def'), 'done')  # running the target: done, as update.sh is about to write anyway
+
+    def test_a_settled_or_missing_status_is_left_alone(self):
+        self.assertIsNone(control.settle_update('abc1234'))
+        for status in ('waiting', 'done', 'failed'):
+            control.record_update(status, 'x', 'kept', 'old1234', 'abc1234')
+            self.assertIsNone(control.settle_update('abc1234'))
+            self.assertEqual((control.read_update()['status'], control.read_update()['detail']), (status, 'kept'))
+
+    def test_a_daemon_start_settles_the_update_it_left_for(self):
+        control.record_update('updating', 'exiting', 'idle: leaving', 'old1234', 'abc1234def')
+        d = daemon.Daemon('https://x.example', 'tok', client=FakeClient())
+        d.request_stop()
+        with mock.patch.object(config, 'version', return_value='abc1234def'):
+            d.run()
+        self.assertEqual(control.read_update()['status'], 'done')
+
+
 class StatusTests(Base):
     def test_idle_needs_a_fresh_status_with_no_task(self):
         self.assertFalse(control.idle())  # nothing written: the daemon is not running
@@ -81,10 +127,21 @@ class StatusTests(Base):
             while not seen and time.monotonic() < deadline:
                 time.sleep(0.01)
             gate.set()
-            while d._active_count() and time.monotonic() < deadline:
+            # wait on the condition, not on the clock: the task is counted out before its status line is written, so a slow runner read 1 here
+            done = time.monotonic() + 10
+            while (d._active_count() or control.read_status()['in_flight']) and time.monotonic() < done:
                 time.sleep(0.01)
         self.assertEqual(seen, [1])
         self.assertEqual(control.read_status()['in_flight'], 0)
+
+
+class TargetTests(Base):
+    def test_the_commit_the_server_named_is_written_for_the_updater_and_nothing_else_is(self):
+        control.write_status('v1', 0, {'requested': True, 'target': 'ABCDEF1234567890abcdef1234567890abcdef12'})
+        self.assertEqual(control.read_status()['target'], 'abcdef1234567890abcdef1234567890abcdef12')
+        for bad in ('main', 'origin/main; rm -rf /', '', None, 12, 'abc'):
+            control.write_status('v1', 0, {'requested': True, 'target': bad})
+            self.assertIsNone(control.read_status()['target'], bad)
 
 
 class UpdateReportTests(Base):
@@ -99,7 +156,8 @@ class UpdateReportTests(Base):
             control.record_update('done', 'up', 'ok', 'old', 'abc123def456')
             info = daemon.info()
             info.pop('openvas', None)  # the GVM readiness has its own test (test_daemon)
-            self.assertEqual(info, {'contract_version': config.CONTRACT_VERSION, 'features': ['bbot_keys'], 'version': 'abc123def456', 'update': control.read_update(),
+            self.assertIsInstance(info.pop('machine'), dict)  # the machine report has its own test (test_machine)
+            self.assertEqual(info, {'contract_version': config.CONTRACT_VERSION, 'features': ['bbot_keys', 'credential_filter'], 'version': 'abc123def456', 'update': control.read_update(),
                                     'updater': {'installed': False, 'running': False}, 'waiting': []})
             fc = FakeClient()
             with mock.patch('client.tools.detect_tools', return_value=[]):

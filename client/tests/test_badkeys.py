@@ -79,6 +79,15 @@ class RefreshTests(Base):
         data = [n for n in os.listdir(self.root) if n.startswith('data-')]
         self.assertLessEqual(len(data), badkeys.KEEP_VERSIONS)
 
+    def test_the_directory_just_made_current_survives_pruning_when_file_times_tie(self):
+        for name in ('data-1-aaaaaa', 'data-2-bbbbbb', 'data-3-cccccc', 'data-4-dddddd'):
+            os.makedirs(os.path.join(self.root, name))
+            os.utime(os.path.join(self.root, name), (1000, 1000))  # one clock tick: the file times cannot tell them apart
+        badkeys._prune(self.root, keep='data-1-aaaaaa')
+        left = sorted(n for n in os.listdir(self.root) if n.startswith('data-'))
+        self.assertIn('data-1-aaaaaa', left)
+        self.assertEqual(len(left), badkeys.KEEP_VERSIONS)
+
     def test_a_failed_refresh_keeps_the_old_data(self):
         self.refresh(FakeRunner(writer=lambda c: write_data(c, lookup='0000000000000001;old/path\n')), now=time.time())
         for runner in (FakeRunner(raises=RuntimeError('network down')), FakeRunner(writer=None),

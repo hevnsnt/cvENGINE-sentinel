@@ -3,10 +3,561 @@
   "$id": "https://github.com/hevnsnt/CVEngine/agentapi/sentinel_contract.json",
   "title": "cvENGINE Sentinel result contract",
   "description": "Both halves of the exchange between cvENGINE and a Sentinel. $defs/targets is what the server hands a Sentinel for each task kind (the task's target); $defs/results is what a Sentinel sends to POST /api/v1/sentinel/tasks/{id}/result; $defs/partials is what a streamed kind (bbot_discovery) sends to POST /api/v1/sentinel/tasks/{id}/partial while it runs, before the result that closes it. The server clips and validates every result anyway (agentapi.sentinel_broker.clean_result); this file is what a correct client keeps to, so the server never has to. Bounds are asserted equal to the server's own limits, and every target the server builds is validated against it, by tests/test_sentinel_contract.py. Bump contract_version (and say so in CHANGELOG) for any change a client must follow.",
-  "contract_version": 3,
+  "contract_version": 11,
   "min_supported_contract_version": 1,
-  "kind_since": {"nmap": 1, "naabu": 1, "nuclei_light": 1, "nuclei_targeted": 1, "nuclei_deep": 1, "testssl": 1, "nmap_udp": 1, "wpscan": 1, "discover": 1, "openvas": 1, "waf": 2, "bbot_discovery": 3, "http_probe": 3, "dns_resolve": 3, "bucket_check": 3, "vhost_probe": 3, "subdir_probe": 3, "alive_check": 3, "supplier_check": 3, "secrets_scan": 3, "nmap_full": 3, "nmap_verify": 3, "node2shell": 3, "rdp_shot": 3, "db_probe": 3, "path_probe": 3, "nuclei_validate": 3, "hygiene_check": 3, "dangling_dns_check": 3, "route_probe": 3, "wpscan_thorough": 3, "identity_check": 3, "web_screenshot": 3, "route_probe_signed": 3, "page_read": 3, "ssh_probe": 3},
+  "kind_since": {"nmap": 1, "naabu": 1, "nuclei_light": 1, "nuclei_targeted": 1, "nuclei_deep": 1, "testssl": 1, "nmap_udp": 1, "wpscan": 1, "discover": 1, "openvas": 1, "waf": 2, "bbot_discovery": 3, "http_probe": 3, "dns_resolve": 3, "bucket_check": 3, "vhost_probe": 3, "subdir_probe": 3, "alive_check": 3, "supplier_check": 3, "secrets_scan": 3, "nmap_full": 3, "nmap_verify": 3, "node2shell": 3, "rdp_shot": 3, "db_probe": 3, "path_probe": 3, "nuclei_validate": 3, "hygiene_check": 3, "dangling_dns_check": 3, "route_probe": 3, "wpscan_thorough": 3, "identity_check": 3, "web_screenshot": 3, "route_probe_signed": 3, "page_read": 3, "ssh_probe": 3, "java_runtime": 6, "version_read": 7, "version_digest": 8, "version_rows": 9},
+  "external_since": {"nuclei_validate": 4, "path_probe": 3},
   "$defs": {
+    "version_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "read"
+      ],
+      "description": "one anonymous GET of a path on the entry's base, and which part of its answer comes back",
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "pattern": "^/[A-Za-z0-9._~!$&'()*+,;=:@%/?-]{0,199}$",
+          "description": "the path (and query) on the base: never another host, never a '.' or '..' segment"
+        },
+        "read": {
+          "enum": [
+            "json",
+            "text",
+            "metrics",
+            "headers"
+          ],
+          "description": "json: only the named fields of a JSON object; text: an excerpt; metrics: the *_info samples with their version-like labels; headers: no body"
+        },
+        "fields": {
+          "type": "array",
+          "maxItems": 12,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,60}(\\.[A-Za-z0-9_-]{1,60}){0,5}$"
+          },
+          "description": "json only: the dotted fields to return (a part that is a number, at most 63, indexes an array: models.0.name)"
+        },
+        "find": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "description": "text only: the excerpt starts at the first occurrence of this literal (never a pattern)"
+        },
+        "headers": {
+          "type": "array",
+          "maxItems": 6,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,40}$",
+            "not": {
+              "enum": [
+                "set-cookie",
+                "cookie",
+                "authorization",
+                "proxy-authorization",
+                "www-authenticate",
+                "proxy-authenticate"
+              ]
+            }
+          },
+          "description": "the response headers to return"
+        }
+      }
+    },
+    "version_digest_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "read"
+      ],
+      "description": "one anonymous GET of a path on the entry's base (a version_digest request, contract 8), and which part of its answer comes back: any version_read read, or a digest of the body instead of the body",
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "pattern": "^/[A-Za-z0-9._~!$&'()*+,;=:@%/?-]{0,199}$",
+          "description": "the path (and query) on the base: never another host, never a '.' or '..' segment"
+        },
+        "read": {
+          "enum": [
+            "json",
+            "text",
+            "metrics",
+            "headers",
+            "digest"
+          ],
+          "description": "json: only the named fields of a JSON object; text: an excerpt; metrics: the *_info samples with their version-like labels; headers: no body; digest: the body's SHA-256 and its first bytes, never the body"
+        },
+        "fields": {
+          "type": "array",
+          "maxItems": 12,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,60}(\\.[A-Za-z0-9_-]{1,60}){0,5}$"
+          },
+          "description": "json only: the dotted fields to return (a part that is a number, at most 63, indexes an array: models.0.name)"
+        },
+        "find": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "description": "text only: the excerpt starts at the first occurrence of this literal (never a pattern)"
+        },
+        "headers": {
+          "type": "array",
+          "maxItems": 6,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,40}$",
+            "not": {
+              "enum": [
+                "set-cookie",
+                "cookie",
+                "authorization",
+                "proxy-authorization",
+                "www-authenticate",
+                "proxy-authenticate"
+              ]
+            }
+          },
+          "description": "the response headers to return"
+        }
+      }
+    },
+    "version_rows_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "read"
+      ],
+      "description": "one anonymous GET of a path on the entry's base (a version_rows request, contract 9), and which part of its answer comes back: any version_read read, or only the named version rows of a status page",
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "pattern": "^/[A-Za-z0-9._~!$&'()*+,;=:@%/?-]{0,199}$",
+          "description": "the path (and query) on the base: never another host, never a '.' or '..' segment"
+        },
+        "read": {
+          "enum": [
+            "json",
+            "text",
+            "metrics",
+            "headers",
+            "rows"
+          ],
+          "description": "json: only the named fields of a JSON object; text: an excerpt; metrics: the *_info samples with their version-like labels; headers: no body; rows: only the named rows of a status page (a 'Name: value' line or the first two cells of a table row), each a short version-like value"
+        },
+        "fields": {
+          "type": "array",
+          "maxItems": 12,
+          "items": {
+            "type": "string",
+            "anyOf": [
+              {
+                "pattern": "^[A-Za-z0-9_-]{1,60}(\\.[A-Za-z0-9_-]{1,60}){0,5}$"
+              },
+              {
+                "pattern": "^[A-Za-z][A-Za-z0-9 ._()/-]{0,59}$"
+              }
+            ]
+          },
+          "description": "json: the dotted fields to return (a part that is a number, at most 63, indexes an array: models.0.name); rows: the names of the rows to return (the first cell of a table row, or the text before ':' on a line)"
+        },
+        "find": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "description": "text only: the excerpt starts at the first occurrence of this literal (never a pattern)"
+        },
+        "headers": {
+          "type": "array",
+          "maxItems": 6,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,40}$",
+            "not": {
+              "enum": [
+                "set-cookie",
+                "cookie",
+                "authorization",
+                "proxy-authorization",
+                "www-authenticate",
+                "proxy-authenticate"
+              ]
+            }
+          },
+          "description": "the response headers to return"
+        }
+      }
+    },
+    "version_value": {
+      "anyOf": [
+        {
+          "type": "string",
+          "maxLength": 200
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "size"
+          ],
+          "properties": {
+            "type": {
+              "enum": [
+                "object",
+                "array"
+              ]
+            },
+            "size": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      ]
+    },
+    "version_answer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "status"
+      ],
+      "description": "one answer of a version_read request: never a body, only the part its read keeps",
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "status": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 999
+        },
+        "error": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "content_type": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "headers": {
+          "type": "object",
+          "maxProperties": 6,
+          "additionalProperties": {
+            "type": "string",
+            "maxLength": 200
+          }
+        },
+        "json": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "maxProperties": 12,
+              "additionalProperties": {
+                "$ref": "#/$defs/version_value"
+              }
+            }
+          ],
+          "description": "null when the answer is not one JSON object"
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 1024
+        },
+        "lines": {
+          "type": "array",
+          "maxItems": 40,
+          "items": {
+            "type": "string",
+            "maxLength": 400
+          }
+        }
+      }
+    },
+    "version_digest_answer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "status"
+      ],
+      "description": "one answer of a version_digest request: never a body, only the part its read keeps (a digest read: the body's SHA-256 and first bytes)",
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "status": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 999
+        },
+        "error": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "content_type": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "headers": {
+          "type": "object",
+          "maxProperties": 6,
+          "additionalProperties": {
+            "type": "string",
+            "maxLength": 200
+          }
+        },
+        "json": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "maxProperties": 12,
+              "additionalProperties": {
+                "$ref": "#/$defs/version_value"
+              }
+            }
+          ],
+          "description": "null when the answer is not one JSON object"
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 1024
+        },
+        "lines": {
+          "type": "array",
+          "maxItems": 40,
+          "items": {
+            "type": "string",
+            "maxLength": 400
+          }
+        },
+        "digest": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "head"
+          ],
+          "description": "a digest read: the SHA-256 of the decoded body (only when the whole body was read) and its first 16 bytes as they came over the wire, in hex (a static asset's magic number and header, a gzip file's timestamp)",
+          "properties": {
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "head": {
+              "type": "string",
+              "maxLength": 32,
+              "pattern": "^([0-9a-f]{2}){0,16}$"
+            }
+          }
+        },
+        "redirected": {
+          "type": "boolean",
+          "description": "a digest read whose answer another path served after a redirect: it carries no digest"
+        }
+      }
+    },
+    "version_rows_answer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "status"
+      ],
+      "description": "one answer of a version_rows request: never a body, only the part its read keeps (a rows read: the named rows, each a short version-like value)",
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "status": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 999
+        },
+        "error": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "content_type": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "headers": {
+          "type": "object",
+          "maxProperties": 6,
+          "additionalProperties": {
+            "type": "string",
+            "maxLength": 200
+          }
+        },
+        "json": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "maxProperties": 12,
+              "additionalProperties": {
+                "$ref": "#/$defs/version_value"
+              }
+            }
+          ],
+          "description": "null when the answer is not one JSON object"
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 1024
+        },
+        "lines": {
+          "type": "array",
+          "maxItems": 40,
+          "items": {
+            "type": "string",
+            "maxLength": 400
+          }
+        },
+        "rows": {
+          "type": "object",
+          "maxProperties": 12,
+          "propertyNames": {
+            "pattern": "^[A-Za-z][A-Za-z0-9 ._()/-]{0,59}$"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120,
+            "pattern": "^[A-Za-z0-9 ._+~:()/,#-]{1,120}$"
+          },
+          "description": "a rows read: the rows named, found in the page, whose value is version-like text; nothing else of the page"
+        }
+      }
+    },
+    "java_reading": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "major",
+        "vendor",
+        "source",
+        "confidence"
+      ],
+      "description": "one reading of the Java runtime (cvengine_scanner.java.reading): what the host stated, never a guess. The server normalises the version again and stores it as a Java runtime observation",
+      "properties": {
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40,
+          "description": "the normalised version: 8u392, 17.0.9, 21.0.2, or a line alone (17)"
+        },
+        "major": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 99
+        },
+        "vendor": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "runtime": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "build": {
+          "type": "string",
+          "maxLength": 60
+        },
+        "line_only": {
+          "type": "boolean"
+        },
+        "source": {
+          "enum": [
+            "jdwp",
+            "actuator",
+            "jolokia",
+            "status_page",
+            "header",
+            "error_page"
+          ]
+        },
+        "confidence": {
+          "enum": [
+            "exact",
+            "inferred",
+            "weak"
+          ]
+        },
+        "url": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "evidence": {
+          "type": "string",
+          "maxLength": 300,
+          "description": "what the host said, clipped: untrusted text"
+        }
+      }
+    },
     "envelope": {
       "type": "object",
       "required": [
@@ -26,6 +577,9 @@
         "summary": {
           "type": "string",
           "maxLength": 300
+        },
+        "service_features": {
+          "$ref": "#/$defs/service_features"
         }
       }
     },
@@ -64,6 +618,136 @@
         "version": {
           "type": "string",
           "maxLength": 80
+        },
+        "service_extra": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Optional (5): nmap extra info of the service (extrainfo)."
+        },
+        "ostype": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "method": {
+          "enum": [
+            "probed",
+            "table"
+          ],
+          "description": "Optional (5): probed (the service answered) or table (the name was guessed from the port number)."
+        },
+        "tunnel": {
+          "enum": [
+            "ssl"
+          ],
+          "description": "Optional (5): the service is wrapped in TLS (name http and tunnel ssl is HTTPS). Absent for a plain service."
+        },
+        "hostname": {
+          "type": "string",
+          "maxLength": 255
+        },
+        "devicetype": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "confidence": {
+          "type": "string",
+          "pattern": "^([0-9]|10)$"
+        },
+        "cpe": {
+          "type": "string",
+          "maxLength": 255
+        },
+        "cpes": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "string",
+            "maxLength": 255
+          }
+        },
+        "banner": {
+          "type": "string",
+          "maxLength": 4096,
+          "description": "the banner script's text (at most 1024 characters), else nmap's escaped service fingerprint of a service it could not name (servicefp, at most 4096: the server decodes it); a longer one is cut and named in cuts as banner"
+        },
+        "version_scripts": {
+          "type": "object",
+          "maxProperties": 8,
+          "propertyNames": {
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "maxLength": 2000
+          },
+          "description": "Optional: the output of the scripts a version scan ran on its own (nmap's version category, which -sV runs whatever --script names: vmware-version, rpcinfo ...), by script id, never one of the reviewed scripts. At most 2000 characters a script and 8000 a port in all (a cut is named in cuts as version_script_output); text from a scanned host the server only reads for a version, never interpreted. A server that predates it ignores it."
+        },
+        "scripts": {
+          "type": "object",
+          "maxProperties": 24,
+          "propertyNames": {
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "maxLength": 4000
+          },
+          "description": "Optional (5): the output of the reviewed NSE scripts that ran, by script id. At most 4000 characters a script (a longer one is cut and named in cuts as script_output) and 16000 a port or host in all; control characters other than newline and tab removed; text from a scanned host, never interpreted."
+        },
+        "tls": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Optional (5): the certificate nmap read (ssl-cert), each field clipped; text from the scanned host.",
+          "properties": {
+            "subject": {
+              "type": "string",
+              "maxLength": 300
+            },
+            "issuer": {
+              "type": "string",
+              "maxLength": 300
+            },
+            "sans": {
+              "type": "array",
+              "maxItems": 40,
+              "items": {
+                "type": "string",
+                "maxLength": 200
+              }
+            },
+            "not_before": {
+              "type": "string",
+              "maxLength": 40
+            },
+            "not_after": {
+              "type": "string",
+              "maxLength": 40
+            },
+            "key_type": {
+              "type": "string",
+              "maxLength": 20
+            },
+            "key_bits": {
+              "type": "string",
+              "maxLength": 10
+            },
+            "signature": {
+              "type": "string",
+              "maxLength": 60
+            },
+            "fingerprint_sha1": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$"
+            },
+            "fingerprint_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "fingerprint_md5": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{32}$"
+            }
+          }
         }
       }
     },
@@ -180,6 +864,92 @@
                     "timed_out": {
                       "type": "boolean",
                       "description": "Optional: true when nmap gave up on this host (its host timeout). The host was not fingerprinted and is not a clean host."
+                    },
+                    "os_accuracy": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 0,
+                      "maximum": 100
+                    },
+                    "os_matches": {
+                      "type": "array",
+                      "maxItems": 3,
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "name"
+                        ],
+                        "properties": {
+                          "name": {
+                            "type": "string",
+                            "maxLength": 100
+                          },
+                          "accuracy": {
+                            "type": [
+                              "integer",
+                              "null"
+                            ],
+                            "minimum": 0,
+                            "maximum": 100
+                          },
+                          "cpe": {
+                            "type": "string",
+                            "maxLength": 120
+                          }
+                        }
+                      },
+                      "description": "Optional (5): the best OS guesses, runners-up included."
+                    },
+                    "closed_tcp": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 65535,
+                      "description": "Optional (5): the closed TCP port nmap used for OS detection (a reset came back): the path check probes it."
+                    },
+                    "scanned_ranges": {
+                      "type": "array",
+                      "maxItems": 4096,
+                      "items": {
+                        "type": "array",
+                        "minItems": 2,
+                        "maxItems": 2,
+                        "items": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 65535
+                        }
+                      },
+                      "description": "Optional (5): the TCP ports the run probed, as [low, high] ranges, so the server can close a port that was probed and is not open now."
+                    },
+                    "hostscripts": {
+                      "type": "object",
+                      "maxProperties": 24,
+                      "propertyNames": {
+                        "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+                      },
+                      "additionalProperties": {
+                        "type": "string",
+                        "maxLength": 4000
+                      },
+                      "description": "Optional (5): output of host-level NSE scripts (smb-os-discovery, nbstat)."
+                    },
+                    "status": {
+                      "enum": [
+                        "up",
+                        "down"
+                      ]
+                    },
+                    "extraports": {
+                      "type": "array",
+                      "maxItems": 8,
+                      "items": {
+                        "type": "string",
+                        "maxLength": 20
+                      },
+                      "description": "Optional (5): the states of the ports nmap summarised instead of listing (closed, filtered...): \"closed\" says the host answered."
                     }
                   }
                 }
@@ -187,6 +957,9 @@
               "os_reliable": {
                 "type": "boolean",
                 "description": "send the literal false on Docker Desktop; anything else means reliable"
+              },
+              "cuts": {
+                "$ref": "#/$defs/cuts"
               }
             }
           }
@@ -352,10 +1125,36 @@
                 },
                 "description": "Optional: the targets nuclei could not reach (no answer, refused, no such host, or a timeout on every request). They were not scanned: the server records them as failed, not done."
               },
+              "not_checked": {
+                "type": "array",
+                "maxItems": 64,
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "target",
+                    "reason"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "target": {
+                      "type": "string",
+                      "maxLength": 260
+                    },
+                    "reason": {
+                      "type": "string",
+                      "maxLength": 200
+                    }
+                  }
+                },
+                "description": "Optional: each target nuclei did not fully check, and why in plain words (nothing answered on the port, a run failed or ran out of time, the task holds at most six non-web ports and this one is for another task). From contract 11 a target scope refused (a name that resolves to an address no Sentinel may scan) is not run and is named here with a reason that starts with \"refused by scope: \" (flags.NUCLEI_REFUSED_PREFIX), instead of failing the task. A target named here is also in unreachable when it must be scanned again."
+              },
               "templates_release": {
                 "type": "string",
                 "maxLength": 80,
-                "description": "Optional: the template set this run used: approved:<bundle sha256> for an approved bundle, image:<release> for the templates baked into the Sentinel image."
+                "description": "Optional: the template set this run used: index:<release>:<policy> for the set built from the template index (contract 11), approved:<bundle sha256> for an older server's approved bundle, image:<release> for the templates baked into the Sentinel image."
+              },
+              "cuts": {
+                "$ref": "#/$defs/cuts"
               }
             }
           }
@@ -482,10 +1281,36 @@
                 },
                 "description": "Optional: the targets nuclei could not reach (no answer, refused, no such host, or a timeout on every request). They were not scanned: the server records them as failed, not done."
               },
+              "not_checked": {
+                "type": "array",
+                "maxItems": 64,
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "target",
+                    "reason"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "target": {
+                      "type": "string",
+                      "maxLength": 260
+                    },
+                    "reason": {
+                      "type": "string",
+                      "maxLength": 200
+                    }
+                  }
+                },
+                "description": "Optional: each target nuclei did not fully check, and why in plain words (nothing answered on the port, a run failed or ran out of time, the task holds at most six non-web ports and this one is for another task). From contract 11 a target scope refused (a name that resolves to an address no Sentinel may scan) is not run and is named here with a reason that starts with \"refused by scope: \" (flags.NUCLEI_REFUSED_PREFIX), instead of failing the task. A target named here is also in unreachable when it must be scanned again."
+              },
               "templates_release": {
                 "type": "string",
                 "maxLength": 80,
-                "description": "Optional: the template set this run used: approved:<bundle sha256> for an approved bundle, image:<release> for the templates baked into the Sentinel image."
+                "description": "Optional: the template set this run used: index:<release>:<policy> for the set built from the template index (contract 11), approved:<bundle sha256> for an older server's approved bundle, image:<release> for the templates baked into the Sentinel image."
+              },
+              "cuts": {
+                "$ref": "#/$defs/cuts"
               }
             }
           }
@@ -612,10 +1437,36 @@
                 },
                 "description": "Optional: the targets nuclei could not reach (no answer, refused, no such host, or a timeout on every request). They were not scanned: the server records them as failed, not done."
               },
+              "not_checked": {
+                "type": "array",
+                "maxItems": 64,
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "target",
+                    "reason"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "target": {
+                      "type": "string",
+                      "maxLength": 260
+                    },
+                    "reason": {
+                      "type": "string",
+                      "maxLength": 200
+                    }
+                  }
+                },
+                "description": "Optional: each target nuclei did not fully check, and why in plain words (nothing answered on the port, a run failed or ran out of time, the task holds at most six non-web ports and this one is for another task). From contract 11 a target scope refused (a name that resolves to an address no Sentinel may scan) is not run and is named here with a reason that starts with \"refused by scope: \" (flags.NUCLEI_REFUSED_PREFIX), instead of failing the task. A target named here is also in unreachable when it must be scanned again."
+              },
               "templates_release": {
                 "type": "string",
                 "maxLength": 80,
-                "description": "Optional: the template set this run used: approved:<bundle sha256> for an approved bundle, image:<release> for the templates baked into the Sentinel image."
+                "description": "Optional: the template set this run used: index:<release>:<policy> for the set built from the template index (contract 11), approved:<bundle sha256> for an older server's approved bundle, image:<release> for the templates baked into the Sentinel image."
+              },
+              "cuts": {
+                "$ref": "#/$defs/cuts"
               }
             }
           }
@@ -693,7 +1544,8 @@
               "xml": {
                 "type": "string",
                 "minLength": 1,
-                "maxLength": 4194304
+                "maxLength": 524288,
+                "description": "the raw nmap -oX report, at most 512 KiB (the server's agentapi.sentinel_broker.MAX_NMAP_UDP_XML): 18 UDP ports of one address are a few KiB, so only a runaway report is larger, and the client refuses it"
               }
             }
           }
@@ -959,7 +1811,8 @@
               "generic": {
                 "type": "boolean",
                 "description": "something blocked the probes but wafw00f could name no product"
-              }
+              },
+              "service_features": true
             },
             "if": {
               "properties": {
@@ -1081,7 +1934,11 @@
                   ]
                 },
                 "description": "modules whose set-up failed (gowitness without a working browser)"
-              }
+              },
+              "cuts": {
+                "$ref": "#/$defs/cuts"
+              },
+              "service_features": true
             },
             "if": {
               "properties": {
@@ -1225,7 +2082,8 @@
                   "maxLength": 260
                 },
                 "description": "every host a hop (a redirect, a script) was refused for by the scope policy"
-              }
+              },
+              "service_features": true
             },
             "if": {
               "properties": {
@@ -1296,7 +2154,8 @@
                   "minLength": 1,
                   "maxLength": 253
                 }
-              }
+              },
+              "service_features": true
             },
             "if": {
               "properties": {
@@ -1425,7 +2284,8 @@
                   "minLength": 1,
                   "maxLength": 260
                 }
-              }
+              },
+              "service_features": true
             },
             "if": {
               "properties": {
@@ -1501,7 +2361,8 @@
                   "minLength": 1,
                   "maxLength": 260
                 }
-              }
+              },
+              "service_features": true
             },
             "if": {
               "properties": {
@@ -1913,7 +2774,8 @@
                   "minLength": 1,
                   "maxLength": 260
                 }
-              }
+              },
+              "service_features": true
             },
             "if": {
               "properties": {
@@ -2199,7 +3061,8 @@
                   "minLength": 1,
                   "maxLength": 260
                 }
-              }
+              },
+              "service_features": true
             },
             "if": {
               "properties": {
@@ -2467,7 +3330,8 @@
                   "minLength": 1,
                   "maxLength": 260
                 }
-              }
+              },
+              "service_features": true
             },
             "if": {
               "properties": {
@@ -2722,7 +3586,11 @@
                     "type": "boolean"
                   }
                 }
-              }
+              },
+              "cuts": {
+                "$ref": "#/$defs/cuts"
+              },
+              "service_features": true
             },
             "if": {
               "properties": {
@@ -2759,7 +3627,8 @@
                 "type": "string",
                 "maxLength": 4194304,
                 "description": "the raw nmap -oX report; cvENGINE reads it with the same hardened parser as a local run"
-              }
+              },
+              "service_features": true
             },
             "if": {
               "properties": {
@@ -2795,7 +3664,8 @@
                 "type": "string",
                 "maxLength": 4194304,
                 "description": "the raw nmap -oX report; cvENGINE reads it with the same hardened parser as a local run"
-              }
+              },
+              "service_features": true
             },
             "if": {
               "properties": {
@@ -2853,7 +3723,8 @@
               "evidence": {
                 "type": "string",
                 "maxLength": 2048
-              }
+              },
+              "service_features": true
             },
             "if": {
               "properties": {
@@ -2896,7 +3767,8 @@
                 "contentEncoding": "base64",
                 "contentMediaType": "image/png",
                 "description": "the pre-authentication screen as a PNG of at most 4 MiB; the reading of it stays on the server"
-              }
+              },
+              "service_features": true
             },
             "if": {
               "properties": {
@@ -2933,12 +3805,13 @@
                   "boolean",
                   "null"
                 ],
-                "description": "true: the one credential-less attempt was let through; null: this Sentinel has no client for the database"
+                "description": "true: the one credential-less attempt was let through; false: the server answered and refused it; null: unknown (this Sentinel has no client for the database, or the attempt got no answer: refused connection, timeout, reset), which the server keeps due"
               },
               "evidence": {
                 "type": "string",
                 "maxLength": 300
-              }
+              },
+              "service_features": true
             },
             "if": {
               "properties": {
@@ -3004,7 +3877,8 @@
                     }
                   }
                 }
-              }
+              },
+              "service_features": true
             },
             "if": {
               "properties": {
@@ -3054,6 +3928,17 @@
               "fixture_note": {
                 "type": "string",
                 "maxLength": 300
+              },
+              "template_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$",
+                "description": "contract 4: the sha256 of the template text this Sentinel verified and ran, as the task named it"
+              },
+              "template": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200000,
+                "description": "contract 11, a test that named template_path only: the text of the installed template this Sentinel read from its image and ran (it hashes to template_sha256), so the server can read what a hit showed without keeping a copy of the templates"
               },
               "outcomes": {
                 "type": "array",
@@ -3194,7 +4079,8 @@
                     }
                   }
                 }
-              }
+              },
+              "service_features": true
             },
             "if": {
               "properties": {
@@ -3320,6 +4206,16 @@
                         "legacy_tls": {
                           "type": "boolean"
                         },
+                        "alpn": {
+                          "type": "string",
+                          "enum": [
+                            "h2",
+                            "http/1.1",
+                            "none",
+                            "unknown"
+                          ],
+                          "description": "the application protocol the server chose from the h2 and http/1.1 the certificate handshake offered (ALPN): none when it chose nothing, unknown when not read (the legacy TLS 1.0 / 1.1 client, or a server that refused the offer). Optional: a Sentinel before this field sends none, which reads as unknown"
+                        },
                         "legacy_handshake": {
                           "type": "object",
                           "additionalProperties": false,
@@ -3438,7 +4334,8 @@
                   "maxLength": 253
                 },
                 "description": "Optional: the mail names whose MX or CNAME lookup failed (a resolver timeout). They were not reviewed: cvENGINE reads them as unknown, never as having no mail records."
-              }
+              },
+              "service_features": true
             },
             "if": {
               "properties": {
@@ -3535,7 +4432,8 @@
                   "minLength": 1,
                   "maxLength": 260
                 }
-              }
+              },
+              "service_features": true
             },
             "if": {
               "properties": {
@@ -3695,7 +4593,8 @@
                   "minLength": 1,
                   "maxLength": 260
                 }
-              }
+              },
+              "service_features": true
             },
             "if": {
               "properties": {
@@ -3847,7 +4746,8 @@
                   "minLength": 1,
                   "maxLength": 260
                 }
-              }
+              },
+              "service_features": true
             },
             "if": {
               "properties": {
@@ -4182,7 +5082,8 @@
                   "minLength": 1,
                   "maxLength": 260
                 }
-              }
+              },
+              "service_features": true
             },
             "if": {
               "properties": {
@@ -4314,7 +5215,8 @@
                   "minLength": 1,
                   "maxLength": 260
                 }
-              }
+              },
+              "service_features": true
             },
             "if": {
               "properties": {
@@ -4451,7 +5353,8 @@
                 "type": "integer",
                 "minimum": 0,
                 "description": "sub-resource requests the scope refused"
-              }
+              },
+              "service_features": true
             },
             "if": {
               "properties": {
@@ -4612,7 +5515,8 @@
                   "minLength": 1,
                   "maxLength": 260
                 }
-              }
+              },
+              "service_features": true
             },
             "if": {
               "properties": {
@@ -4627,6 +5531,406 @@
             "then": {
               "required": [
                 "hosts",
+                "touched"
+              ]
+            }
+          }
+        ]
+      },
+      "java_runtime": {
+        "allOf": [
+          {
+            "$ref": "#/$defs/envelope"
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "outcome": true,
+              "error": true,
+              "summary": true,
+              "web": {
+                "type": "array",
+                "maxItems": 50,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "id",
+                    "readings"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "readings": {
+                      "type": "array",
+                      "maxItems": 10,
+                      "items": {
+                        "$ref": "#/$defs/java_reading"
+                      }
+                    },
+                    "asked": {
+                      "type": "array",
+                      "maxItems": 20,
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "path",
+                          "status"
+                        ],
+                        "properties": {
+                          "path": {
+                            "type": "string",
+                            "maxLength": 200
+                          },
+                          "status": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 999
+                          },
+                          "error": {
+                            "type": "string",
+                            "maxLength": 40
+                          }
+                        }
+                      }
+                    },
+                    "error": {
+                      "type": "string",
+                      "maxLength": 200,
+                      "description": "the host was not asked or the check failed: unknown, not clean"
+                    }
+                  }
+                }
+              },
+              "jdwp": {
+                "type": "array",
+                "maxItems": 25,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "id",
+                    "speaks"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "speaks": {
+                      "type": [
+                        "boolean",
+                        "null"
+                      ],
+                      "description": "true: the debuggee echoed JDWP-Handshake (anyone who reaches it can run code); false: something else answered; null: nothing answered, unknown"
+                    },
+                    "reading": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/java_reading"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "error": {
+                      "type": "string",
+                      "maxLength": 200
+                    }
+                  }
+                }
+              },
+              "touched": {
+                "type": "array",
+                "maxItems": 2000,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 260
+                },
+                "description": "every host a request or a connection was sent to"
+              },
+              "refused": {
+                "type": "array",
+                "maxItems": 2000,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 260
+                },
+                "description": "every host a hop or an endpoint was refused for by the scope policy"
+              },
+              "service_features": true
+            },
+            "if": {
+              "properties": {
+                "outcome": {
+                  "const": "done"
+                }
+              },
+              "required": [
+                "outcome"
+              ]
+            },
+            "then": {
+              "required": [
+                "web",
+                "jdwp"
+              ]
+            }
+          }
+        ]
+      },
+      "version_read": {
+        "allOf": [
+          {
+            "$ref": "#/$defs/envelope"
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "outcome": true,
+              "error": true,
+              "summary": true,
+              "reads": {
+                "type": "array",
+                "maxItems": 100,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "id",
+                    "answers"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "answers": {
+                      "type": "array",
+                      "maxItems": 4,
+                      "items": {
+                        "$ref": "#/$defs/version_answer"
+                      }
+                    },
+                    "error": {
+                      "type": "string",
+                      "maxLength": 200
+                    }
+                  }
+                }
+              },
+              "touched": {
+                "type": "array",
+                "maxItems": 2000,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 260
+                },
+                "description": "every host a request was sent to"
+              },
+              "refused": {
+                "type": "array",
+                "maxItems": 2000,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 260
+                },
+                "description": "every host a hop was refused for by the scope policy"
+              },
+              "service_features": true
+            },
+            "if": {
+              "properties": {
+                "outcome": {
+                  "const": "done"
+                }
+              },
+              "required": [
+                "outcome"
+              ]
+            },
+            "then": {
+              "required": [
+                "reads",
+                "touched"
+              ]
+            }
+          }
+        ]
+      },
+      "version_digest": {
+        "allOf": [
+          {
+            "$ref": "#/$defs/envelope"
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "outcome": true,
+              "error": true,
+              "summary": true,
+              "reads": {
+                "type": "array",
+                "maxItems": 100,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "id",
+                    "answers"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "answers": {
+                      "type": "array",
+                      "maxItems": 4,
+                      "items": {
+                        "$ref": "#/$defs/version_digest_answer"
+                      }
+                    },
+                    "error": {
+                      "type": "string",
+                      "maxLength": 200
+                    }
+                  }
+                }
+              },
+              "touched": {
+                "type": "array",
+                "maxItems": 2000,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 260
+                },
+                "description": "every host a request was sent to"
+              },
+              "refused": {
+                "type": "array",
+                "maxItems": 2000,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 260
+                },
+                "description": "every host a hop was refused for by the scope policy"
+              },
+              "service_features": true
+            },
+            "if": {
+              "properties": {
+                "outcome": {
+                  "const": "done"
+                }
+              },
+              "required": [
+                "outcome"
+              ]
+            },
+            "then": {
+              "required": [
+                "reads",
+                "touched"
+              ]
+            }
+          }
+        ]
+      },
+      "version_rows": {
+        "allOf": [
+          {
+            "$ref": "#/$defs/envelope"
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "outcome": true,
+              "error": true,
+              "summary": true,
+              "reads": {
+                "type": "array",
+                "maxItems": 100,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "id",
+                    "answers"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "answers": {
+                      "type": "array",
+                      "maxItems": 4,
+                      "items": {
+                        "$ref": "#/$defs/version_rows_answer"
+                      }
+                    },
+                    "error": {
+                      "type": "string",
+                      "maxLength": 200
+                    }
+                  }
+                }
+              },
+              "touched": {
+                "type": "array",
+                "maxItems": 2000,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 260
+                },
+                "description": "every host a request was sent to"
+              },
+              "refused": {
+                "type": "array",
+                "maxItems": 2000,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 260
+                },
+                "description": "every host a hop was refused for by the scope policy"
+              },
+              "service_features": true
+            },
+            "if": {
+              "properties": {
+                "outcome": {
+                  "const": "done"
+                }
+              },
+              "required": [
+                "outcome"
+              ]
+            },
+            "then": {
+              "required": [
+                "reads",
                 "touched"
               ]
             }
@@ -4741,12 +6045,57 @@
             },
             "description": "tags the run must always exclude (dos)"
           },
+          "services": {
+            "type": "object",
+            "description": "optional: what speaks on each host:port of targets (a target with no port is web). web: an http or https service, which gets the web templates and nothing that is not http-typed or ssl or dns; unknown: the service has no class of its own or nothing is known, which gets the generic network templates (tcp, javascript and ssl types that belong to no class) and never an http template; any other value is a protocol class (ssh, smtp, imap, tls ...), which gets only that protocol's network templates. A port with no entry is read by the Sentinel from its port number, and a port in no table is unknown, never web. Keys are targets, at most 64.",
+            "maxProperties": 64,
+            "propertyNames": {
+              "maxLength": 500
+            },
+            "additionalProperties": {
+              "type": "string",
+              "maxLength": 20
+            }
+          },
+          "allow_credential_checks": {
+            "type": "boolean",
+            "description": "optional, additive: true only when a person turned on \"Allow checks that send credentials\" at the server. Without it (absent or false) the web pass leaves out the default-login and bruteforce templates and never takes either as a tag; a Sentinel that does not know the field never runs them. It never reaches the service ports, which send no credentials."
+          },
+          "network_detection": {
+            "type": "boolean",
+            "description": "optional (contract 10): true makes this light task the network detection pass. Only the targets that are not web (a host:port whose service label, or else its port number, is not web) are run, each with the nuclei templates of its class that are on the Sentinel's service-port allowlist AND whose reviewed library path is under network/detection/ (nuclei's raw tcp type only), one template at a time under the service budget, with dos, default-login, bruteforce, fuzz and intrusive always excluded; tags are not used for those ports. A web target is not run and is named in not_checked. The server sends it only to a Sentinel that declared contract 10 or later (cvengine_scanner.flags.NUCLEI_DETECTION_SINCE): an older one ignores the field and its light pass checks nothing on these ports. The result is a nuclei_light result like any other."
+          },
+          "budget": {
+            "type": "object",
+            "description": "optional: what one host:port may receive from this task. pause_ms: the least pause between two template runs on a non-web host:port (nuclei paces only its http and dns requests, so a Sentinel runs one template at a time on a service and waits this long between runs); seconds: the most time one non-web host:port is kept busy; web_rate: the most requests a second one web host receives (nuclei's per-host rate limit). A Sentinel holds each value to its own bound (cvengine_scanner.flags.NUCLEI_SERVICE_BUDGET): a task can make a run gentler (a longer pause, fewer seconds, a lower rate), never harsher.",
+            "additionalProperties": false,
+            "properties": {
+              "pause_ms": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 600000
+              },
+              "seconds": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3600
+              },
+              "web_rate": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1000
+              }
+            }
+          },
+          "external": {
+            "type": "boolean",
+            "description": "contract 11, optional: true when the targets are outside any private network (every task the server does not send as internal work). The Sentinel judges each target, and every address a name resolves to, as a Sentinel that is not internal does, whatever its own setting: the server looks no name up itself, so a name that now points into a private network is refused here and named in not_checked"
+          },
           "template_policy": {
             "type": "object",
             "required": [
               "rev",
-              "read_only",
-              "bundle_sha256"
+              "read_only"
             ],
             "properties": {
               "rev": {
@@ -4761,7 +6110,14 @@
                   "string",
                   "null"
                 ],
-                "pattern": "^[0-9a-f]{64}$"
+                "pattern": "^[0-9a-f]{64}$",
+                "description": "before contract 11, always present: the sha256 of the approved template archive the Sentinel fetches from GET sentinel/template-policy/bundle (null until the server packed it). A server of contract 11 or later sends source instead and keeps no template archive"
+              },
+              "source": {
+                "enum": [
+                  "index"
+                ],
+                "description": "contract 11: the Sentinel builds the approved set itself, from the templates baked into its image and the template index of its scanner library (cvengine_scanner.template_index): only a file whose path and sha256 the index records, and whose recorded verdict passes this policy (read_only; allow_credential_checks of the target), runs. The server sends it only to a Sentinel that declared 11 or later (flags.TEMPLATE_INDEX_SINCE)"
               }
             }
           }
@@ -4815,12 +6171,53 @@
             },
             "description": "tags the run must always exclude (dos)"
           },
+          "services": {
+            "type": "object",
+            "description": "optional: what speaks on each host:port of targets (a target with no port is web). web: an http or https service, which gets the web templates and nothing that is not http-typed or ssl or dns; unknown: the service has no class of its own or nothing is known, which gets the generic network templates (tcp, javascript and ssl types that belong to no class) and never an http template; any other value is a protocol class (ssh, smtp, imap, tls ...), which gets only that protocol's network templates. A port with no entry is read by the Sentinel from its port number, and a port in no table is unknown, never web. Keys are targets, at most 64.",
+            "maxProperties": 64,
+            "propertyNames": {
+              "maxLength": 500
+            },
+            "additionalProperties": {
+              "type": "string",
+              "maxLength": 20
+            }
+          },
+          "allow_credential_checks": {
+            "type": "boolean",
+            "description": "optional, additive: true only when a person turned on \"Allow checks that send credentials\" at the server. Without it (absent or false) the web pass leaves out the default-login and bruteforce templates and never takes either as a tag; a Sentinel that does not know the field never runs them. It never reaches the service ports, which send no credentials."
+          },
+          "budget": {
+            "type": "object",
+            "description": "optional: what one host:port may receive from this task. pause_ms: the least pause between two template runs on a non-web host:port (nuclei paces only its http and dns requests, so a Sentinel runs one template at a time on a service and waits this long between runs); seconds: the most time one non-web host:port is kept busy; web_rate: the most requests a second one web host receives (nuclei's per-host rate limit). A Sentinel holds each value to its own bound (cvengine_scanner.flags.NUCLEI_SERVICE_BUDGET): a task can make a run gentler (a longer pause, fewer seconds, a lower rate), never harsher.",
+            "additionalProperties": false,
+            "properties": {
+              "pause_ms": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 600000
+              },
+              "seconds": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3600
+              },
+              "web_rate": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1000
+              }
+            }
+          },
+          "external": {
+            "type": "boolean",
+            "description": "contract 11, optional: true when the targets are outside any private network (every task the server does not send as internal work). The Sentinel judges each target, and every address a name resolves to, as a Sentinel that is not internal does, whatever its own setting: the server looks no name up itself, so a name that now points into a private network is refused here and named in not_checked"
+          },
           "template_policy": {
             "type": "object",
             "required": [
               "rev",
-              "read_only",
-              "bundle_sha256"
+              "read_only"
             ],
             "properties": {
               "rev": {
@@ -4835,7 +6232,14 @@
                   "string",
                   "null"
                 ],
-                "pattern": "^[0-9a-f]{64}$"
+                "pattern": "^[0-9a-f]{64}$",
+                "description": "before contract 11, always present: the sha256 of the approved template archive the Sentinel fetches from GET sentinel/template-policy/bundle (null until the server packed it). A server of contract 11 or later sends source instead and keeps no template archive"
+              },
+              "source": {
+                "enum": [
+                  "index"
+                ],
+                "description": "contract 11: the Sentinel builds the approved set itself, from the templates baked into its image and the template index of its scanner library (cvengine_scanner.template_index): only a file whose path and sha256 the index records, and whose recorded verdict passes this policy (read_only; allow_credential_checks of the target), runs. The server sends it only to a Sentinel that declared 11 or later (flags.TEMPLATE_INDEX_SINCE)"
               }
             }
           }
@@ -4889,12 +6293,53 @@
             },
             "description": "tags the run must always exclude (dos)"
           },
+          "services": {
+            "type": "object",
+            "description": "optional: what speaks on each host:port of targets (a target with no port is web). web: an http or https service, which gets the web templates and nothing that is not http-typed or ssl or dns; unknown: the service has no class of its own or nothing is known, which gets the generic network templates (tcp, javascript and ssl types that belong to no class) and never an http template; any other value is a protocol class (ssh, smtp, imap, tls ...), which gets only that protocol's network templates. A port with no entry is read by the Sentinel from its port number, and a port in no table is unknown, never web. Keys are targets, at most 64.",
+            "maxProperties": 64,
+            "propertyNames": {
+              "maxLength": 500
+            },
+            "additionalProperties": {
+              "type": "string",
+              "maxLength": 20
+            }
+          },
+          "allow_credential_checks": {
+            "type": "boolean",
+            "description": "optional, additive: true only when a person turned on \"Allow checks that send credentials\" at the server. Without it (absent or false) the web pass leaves out the default-login and bruteforce templates and never takes either as a tag; a Sentinel that does not know the field never runs them. It never reaches the service ports, which send no credentials."
+          },
+          "budget": {
+            "type": "object",
+            "description": "optional: what one host:port may receive from this task. pause_ms: the least pause between two template runs on a non-web host:port (nuclei paces only its http and dns requests, so a Sentinel runs one template at a time on a service and waits this long between runs); seconds: the most time one non-web host:port is kept busy; web_rate: the most requests a second one web host receives (nuclei's per-host rate limit). A Sentinel holds each value to its own bound (cvengine_scanner.flags.NUCLEI_SERVICE_BUDGET): a task can make a run gentler (a longer pause, fewer seconds, a lower rate), never harsher.",
+            "additionalProperties": false,
+            "properties": {
+              "pause_ms": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 600000
+              },
+              "seconds": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3600
+              },
+              "web_rate": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1000
+              }
+            }
+          },
+          "external": {
+            "type": "boolean",
+            "description": "contract 11, optional: true when the targets are outside any private network (every task the server does not send as internal work). The Sentinel judges each target, and every address a name resolves to, as a Sentinel that is not internal does, whatever its own setting: the server looks no name up itself, so a name that now points into a private network is refused here and named in not_checked"
+          },
           "template_policy": {
             "type": "object",
             "required": [
               "rev",
-              "read_only",
-              "bundle_sha256"
+              "read_only"
             ],
             "properties": {
               "rev": {
@@ -4909,7 +6354,14 @@
                   "string",
                   "null"
                 ],
-                "pattern": "^[0-9a-f]{64}$"
+                "pattern": "^[0-9a-f]{64}$",
+                "description": "before contract 11, always present: the sha256 of the approved template archive the Sentinel fetches from GET sentinel/template-policy/bundle (null until the server packed it). A server of contract 11 or later sends source instead and keeps no template archive"
+              },
+              "source": {
+                "enum": [
+                  "index"
+                ],
+                "description": "contract 11: the Sentinel builds the approved set itself, from the templates baked into its image and the template index of its scanner library (cvengine_scanner.template_index): only a file whose path and sha256 the index records, and whose recorded verdict passes this policy (read_only; allow_credential_checks of the target), runs. The server sends it only to a Sentinel that declared 11 or later (flags.TEMPLATE_INDEX_SINCE)"
               }
             }
           }
@@ -5217,6 +6669,16 @@
                     "maxLength": 260
                   },
                   "description": "the names a redirect may lead to (the host's apex and www)"
+                },
+                "features": {
+                  "type": "array",
+                  "maxItems": 16,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 32
+                  },
+                  "description": "Optional, additive: the service feature reads to make on this base after the probe, once per base (cvengine_scanner.probes.service_reads.READS: webdav sends one OPTIONS /; vpn_fortinet, vpn_globalprotect, vpn_cisco, vpn_citrix and vpn_ivanti GET that vendor's portal pages and one path that cannot exist beside them). A name a Sentinel does not know is ignored, and a Sentinel that does not know the field makes none of them. The readings come back in the result's service_features."
                 }
               },
               "required": [
@@ -6014,7 +7476,24 @@
         "type": "object",
         "required": [
           "mode",
-          "template"
+          "template_sha256"
+        ],
+        "oneOf": [
+          {
+            "required": [
+              "template"
+            ]
+          },
+          {
+            "required": [
+              "template_path"
+            ],
+            "properties": {
+              "mode": {
+                "const": "test"
+              }
+            }
+          }
         ],
         "additionalProperties": false,
         "properties": {
@@ -6028,7 +7507,19 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 200000,
-            "description": "the template text: a new AI-written one (at most 20,000 bytes) or an installed, approved one (at most 200,000)"
+            "description": "the template text: a new AI-written one (at most 20,000 bytes), or (before contract 11) an installed, approved one (at most 200,000)"
+          },
+          "template_path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300,
+            "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?(?:/|$))[A-Za-z0-9_./+-]+\\.ya?ml$",
+            "description": "contract 11, a test only, in place of template: an installed template of the pinned nuclei-templates release, by its path in the release. The Sentinel reads it from the templates baked into its image and runs it only when the template index records that path with template_sha256 and the file is exactly that; the server keeps no copy of the templates and sends no text"
+          },
+          "template_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "description": "contract 4: the sha256 (lowercase hex) of the template text as UTF-8. A Sentinel runs the text only when what it wrote to disk hashes to this and its server names this hash for the task (GET sentinel/tasks/{id}/check)"
           },
           "targets": {
             "type": "array",
@@ -6108,6 +7599,31 @@
           "rdap": {
             "type": "boolean",
             "description": "ask a registry whether a domain an SPF include or DMARC report address names is registered (default true)"
+          },
+          "slp": {
+            "type": "array",
+            "maxItems": 50,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "host",
+                "port"
+              ],
+              "properties": {
+                "host": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 260
+                },
+                "port": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65535
+                }
+              }
+            },
+            "description": "Optional, additive: endpoints (VMware ESXi hosts, or 427 open) asked one SLPv2 service request for service:VMwareInfrastructure over TCP (cvengine_scanner.probes.service_reads.read_slp), never a registration; the slp readings come back in service_features. A Sentinel that does not know the field asks nothing."
           },
           "scope": {
             "$ref": "#/$defs/probe_scope"
@@ -6607,6 +8123,308 @@
             "$ref": "#/$defs/probe_scope"
           }
         }
+      },
+      "java_runtime": {
+        "description": "the Java runtime reads of a set of hosts (cveFeed.java_runtime): fixed GETs per check on web hosts already identified as that product, and the JDWP handshake plus VirtualMachine.Version on JDWP or unidentified debug ports",
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "scope"
+        ],
+        "minProperties": 2,
+        "properties": {
+          "web": {
+            "type": "array",
+            "maxItems": 50,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "host",
+                "base",
+                "checks",
+                "allowed"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "host": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 260
+                },
+                "base": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 300,
+                  "description": "scheme://host[:port] of that host"
+                },
+                "checks": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 6,
+                  "uniqueItems": true,
+                  "items": {
+                    "enum": [
+                      "actuator",
+                      "jolokia",
+                      "solr",
+                      "geoserver",
+                      "druid",
+                      "elasticsearch"
+                    ]
+                  }
+                },
+                "allowed": {
+                  "type": "array",
+                  "maxItems": 20,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 260
+                  },
+                  "description": "the names a redirect may lead to (the host's apex and www)"
+                }
+              }
+            }
+          },
+          "jdwp": {
+            "type": "array",
+            "maxItems": 25,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "address",
+                "port"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "address": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 60,
+                  "description": "one IP address, asked as itself"
+                },
+                "port": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65535
+                }
+              }
+            }
+          },
+          "scope": {
+            "$ref": "#/$defs/probe_scope"
+          }
+        }
+      },
+      "version_read": {
+        "description": "the version source reads of a set of hosts (cveFeed.version_sources): per web base, up to four anonymous GETs from the server's catalogue of version sources, each with which part of its answer to return. Only a host already identified as the product, or a port whose service suggests it, is listed",
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "reads",
+          "scope"
+        ],
+        "properties": {
+          "reads": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 100,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "host",
+                "base",
+                "requests",
+                "allowed"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "host": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 260
+                },
+                "base": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 300,
+                  "description": "scheme://host[:port] of that host"
+                },
+                "requests": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 4,
+                  "items": {
+                    "$ref": "#/$defs/version_request"
+                  }
+                },
+                "allowed": {
+                  "type": "array",
+                  "maxItems": 20,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 260
+                  },
+                  "description": "the names a redirect may lead to (the host's apex and www)"
+                }
+              }
+            }
+          },
+          "scope": {
+            "$ref": "#/$defs/probe_scope"
+          }
+        }
+      },
+      "version_digest": {
+        "description": "the version digest reads of a set of hosts (cveFeed.version_sources, contract 8): a version_read target whose requests may also ask for a digest of a static asset's body (its SHA-256 and first bytes) instead of the body. Only a host already identified as the product is listed",
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "reads",
+          "scope"
+        ],
+        "properties": {
+          "reads": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 100,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "host",
+                "base",
+                "requests",
+                "allowed"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "host": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 260
+                },
+                "base": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 300,
+                  "description": "scheme://host[:port] of that host"
+                },
+                "requests": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 4,
+                  "items": {
+                    "$ref": "#/$defs/version_digest_request"
+                  }
+                },
+                "allowed": {
+                  "type": "array",
+                  "maxItems": 20,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 260
+                  },
+                  "description": "the names a redirect may lead to (the host's apex and www)"
+                }
+              }
+            }
+          },
+          "scope": {
+            "$ref": "#/$defs/probe_scope"
+          }
+        }
+      },
+      "version_rows": {
+        "description": "the version row reads of a set of hosts (cveFeed.version_sources, contract 9): a version_read target whose requests may also ask for only the named version rows of a status page (Apache's /server-status?auto, a phpinfo page cvENGINE already found) instead of any of its body. Only a host already identified as the product, or a page already found on it, is listed",
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "reads",
+          "scope"
+        ],
+        "properties": {
+          "reads": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 100,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "host",
+                "base",
+                "requests",
+                "allowed"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "host": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 260
+                },
+                "base": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 300,
+                  "description": "scheme://host[:port] of that host"
+                },
+                "requests": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 4,
+                  "items": {
+                    "$ref": "#/$defs/version_rows_request"
+                  }
+                },
+                "allowed": {
+                  "type": "array",
+                  "maxItems": 20,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 260
+                  },
+                  "description": "the names a redirect may lead to (the host's apex and www)"
+                }
+              }
+            }
+          },
+          "scope": {
+            "$ref": "#/$defs/probe_scope"
+          }
+        }
       }
     },
     "scope_policy": {
@@ -6867,6 +8685,12 @@
                 "module": {
                   "type": "string",
                   "maxLength": 64
+                },
+                "port": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65535,
+                  "description": "Optional (5): the port the finding is about (bbot FINDING events carry one for TCP and TLS findings)."
                 }
               },
               "required": [
@@ -7106,6 +8930,94 @@
             "maxLength": 50
           },
           "description": "CIDR ranges the server never scans"
+        }
+      }
+    },
+    "cuts": {
+      "type": "array",
+      "maxItems": 24,
+      "description": "Optional (5): everything this result cut, in one shape, so a capped list or a clipped text never looks like a whole one. what names the thing (events, http, screenshots, findings, ports, script_output, banner, evidence, fetched, references, time_limit...), kind says how it was counted (items dropped from a list, chars clipped from a text, time: a tool stopped at its limit, limit in seconds, dropped not counted), limit is the cap that applied, dropped how many were lost (absent for kind time), target the address or host it applies to when it is one.",
+      "items": {
+        "type": "object",
+        "required": [
+          "what",
+          "kind"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "what": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 40,
+            "pattern": "^[a-z0-9_]+$"
+          },
+          "kind": {
+            "enum": [
+              "items",
+              "chars",
+              "time"
+            ]
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "dropped": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "target": {
+            "type": "string",
+            "maxLength": 260
+          }
+        }
+      }
+    },
+    "service_features": {
+      "type": "array",
+      "maxItems": 128,
+      "description": "Optional on every result kind: what this Sentinel read about one feature of the service on a host and port (cvengine_scanner.features: the closed vocabulary and clean_features, which both sides apply). An item not taken is unknown, never \"no\". A server before this field ignores it.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "host",
+          "port",
+          "transport",
+          "feature",
+          "value"
+        ],
+        "properties": {
+          "host": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 253
+          },
+          "port": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65535
+          },
+          "transport": {
+            "enum": [
+              "tcp",
+              "udp"
+            ]
+          },
+          "feature": {
+            "type": "string",
+            "pattern": "^[a-z0-9_]{1,32}$"
+          },
+          "value": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_.@+/-]{1,64}(,[A-Za-z0-9_.@+/-]{1,64})*$"
+          },
+          "detail": {
+            "type": "string",
+            "maxLength": 200
+          }
         }
       }
     }

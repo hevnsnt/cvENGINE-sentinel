@@ -1,8 +1,14 @@
 # Copy to docker-compose.override.yml (git-ignored; ./setup.sh --host-network does it) to let the Sentinel scan this machine's LAN directly
 # instead of only what the Docker bridge network reaches. docker compose reads the override file on its own, and because it is not tracked the
-# updater can still fast-forward the checkout. nmap's OS detection, naabu's SYN scan and the UDP sweep keep using the NET_RAW and NET_ADMIN
-# capabilities docker-compose.yml already grants, so host networking needs no privileged mode. With it, loopback and every address of this
-# machine belong to the Sentinel's network too.
+# updater can still fast-forward the checkout. nmap's OS detection, naabu's SYN scan and the UDP sweep keep using the one capability
+# docker-compose.yml grants (NET_RAW, with every other capability dropped, NET_ADMIN included), so host networking needs no privileged mode and the
+# set is the same as on the bridge network. With it, loopback and every address of this machine belong to the Sentinel's network too.
+#
+# What is still exposed with host networking: the container shares the host's network namespace, so a tool compromised by hostile scan output can
+# still open raw and packet sockets there (NET_RAW), which means it can sniff the traffic that reaches the host's interfaces and send forged packets
+# from them, and it can connect to every service that listens on the host's loopback or LAN addresses (set CVENGINE_SENTINEL_NETWORK and
+# CVENGINE_SENTINEL_DENY_RANGES to keep the scanner itself away from them). It cannot change the host's routes, firewall or interfaces (that needs
+# NET_ADMIN, which is dropped), and the root filesystem is read-only.
 services:
   sentinel:
     network_mode: host

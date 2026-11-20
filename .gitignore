@@ -9,4 +9,5 @@ dist/
 .update.lock
 .deployed-commit
 .deployed-commit.tmp
+.update-no-target
 docker-compose.override.yml

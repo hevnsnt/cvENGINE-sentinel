@@ -142,6 +142,19 @@ class RunTests(unittest.TestCase):
         self.assertEqual({r['kind'] for r in result['references']}, {'firebase_rtdb', 's3'})
         self.assertFalse(os.path.exists(dirs[0]))  # the bodies are gone with the task
 
+    def test_findings_and_references_over_their_caps_are_counted_in_the_result(self):
+        """SN-6 / TL-13: ``stats.truncated`` says a cap was hit; ``cuts`` says what and how many."""
+        def many(directory):
+            page = next(name for name in os.listdir(directory) if name.endswith('.html'))
+            record = {'rule': {'id': 'betterleaks.gcp-api-key', 'name': 'gcp'}, 'finding': {'snippet': 'AIzaSyA1B2C3D4E5F6G7H8I9J0KLMNOPQRSTUVw', 'path': f'{directory}/{page}', 'line': 1}}
+            return json.dumps({'findings': [record] * 6})
+        with mock.patch.object(kf, 'MAX_FINDINGS', 4):
+            result, _site, _calls, _dirs = self.run_task(target(), many)
+        self.assertTrue(result['stats']['truncated'])
+        self.assertEqual(result['cuts'], [{'what': 'findings', 'kind': 'items', 'limit': 4, 'dropped': 2}])
+        clean, _s, _c, _d = self.run_task(target(), report)
+        self.assertNotIn('cuts', clean)
+
     def test_a_host_outside_the_scope_or_behind_the_floor_is_never_read(self):
         task = target(hosts=[{'host': 'inside.example.test', 'urls': ['https://inside.example.test/']},
                              {'host': 'other.example.test', 'urls': ['https://other.example.test/']}])
@@ -167,6 +180,31 @@ class RunTests(unittest.TestCase):
         self.assertIs(tools.RUNNERS['secrets_scan'], tools.run_secrets_scan)
         self.assertIn('secrets_scan', config.CAPABILITIES)
         self.assertEqual(config.KIND_SINCE['secrets_scan'], 3)
+
+
+class DeadNameTests(unittest.TestCase):
+    run_task = RunTests.run_task
+
+    def test_a_name_that_does_not_resolve_is_skipped_and_the_rest_of_the_batch_is_read(self):
+        """On the VPS a batch of up to 25 hosts failed whole ("[Errno -5] No address associated with hostname") for one dead name in it."""
+        import copy
+        import socket
+        task = target()
+        dead = copy.deepcopy(task['hosts'][0])
+        dead['host'], dead['urls'], dead['script_urls'] = 'gone.example.test', ['https://gone.example.test/'], []
+        task['hosts'].insert(0, dead)
+        task['scope']['names'] = list(task['scope']['names']) + ['gone.example.test']
+
+        def gai(name, port, *args, **kwargs):
+            if name == 'gone.example.test':
+                raise socket.gaierror(-5, 'No address associated with hostname')
+            return fake_getaddrinfo(name, port, *args, **kwargs)
+        with mock.patch('socket.getaddrinfo', side_effect=gai):
+            result, site, calls, _ = self.run_task(task, report)
+        self.assertNotIn('gone.example.test', {u.split('/')[2] for u, _ in site.asked})
+        self.assertIn('https://www.example.test/', [u for u, _ in site.asked])  # the live host was read
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(result['fetched'])
 
 
 class DeclareTests(unittest.TestCase):

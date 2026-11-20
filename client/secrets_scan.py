@@ -27,6 +27,7 @@ import time
 from urllib.parse import urlsplit
 
 from cvengine_scanner import secrets as kf
+from cvengine_scanner.parsers import Cuts
 
 from . import scope, tools
 
@@ -88,7 +89,10 @@ def _address_of(host, resolver):
         return host
     except ValueError:
         pass
-    addresses = sorted({info[4][0].split('%')[0] for info in resolver(host, None)})
+    try:
+        addresses = sorted({info[4][0].split('%')[0] for info in resolver(host, None)})
+    except OSError as exc:  # socket.gaierror: no address for the name. Before, it ended the whole task: 22 batches of up to 25 hosts on the VPS (11/8 to 11/10)
+        raise scope.ScopeError(f'the name does not resolve ({exc.__class__.__name__})') from None
     if not addresses:
         raise scope.ScopeError('the name does not resolve')
     for address in addresses:
@@ -200,7 +204,7 @@ def _body_reader(directory):
     return read
 
 
-def _report(path, manifest, keep_validation, directory=None):
+def _report(path, manifest, keep_validation, directory=None, cuts=None):
     try:
         with open(path, encoding='utf-8', errors='replace') as handle:
             text = handle.read(kf.MAX_REPORT_BYTES + 1)
@@ -208,7 +212,7 @@ def _report(path, manifest, keep_validation, directory=None):
         return [], False  # exit 3, no inputs: nothing to report
     if len(text) > kf.MAX_REPORT_BYTES:
         raise tools.ToolOutputError('the Kingfisher report is larger than this Sentinel reads')
-    return kf.read_report(text, manifest, keep_validation=keep_validation, body_of=_body_reader(directory) if directory else None)
+    return kf.read_report(text, manifest, keep_validation=keep_validation, body_of=_body_reader(directory) if directory else None, cuts=cuts)
 
 
 def _clean_words(values, most, length):
@@ -232,11 +236,15 @@ def run(target, register=None, rules=None, fetcher=fetch, resolver=None, sleep=t
                 continue
             try:
                 address = _address_of(host, resolver)
+            except OSError as exc:  # a resolver failure inside the scope check itself: this host is skipped, the rest of the batch is read
+                logger.info('secrets scan: %s skipped, its name did not resolve (%s)', host[:100], exc.__class__.__name__)
+                continue
             except scope.ScopeError as exc:
                 logger.info('secrets scan: %s refused (%s)', host[:100], exc)
                 continue
             reader.read_host(host, [u for u in item.get('urls') or [] if isinstance(u, str)],
                              [u for u in item.get('script_urls') or [] if isinstance(u, str)], address)
+        cuts = Cuts()
         stats = {'files': len(reader.manifest), 'bytes': reader.total, 'findings': 0, 'truncated': False, 'validated': False}
         findings = []
         if reader.manifest:
@@ -249,7 +257,7 @@ def run(target, register=None, rules=None, fetcher=fetch, resolver=None, sleep=t
             argv = kf.scan_argv(tools.KINGFISHER_BIN, reader.dir, out, rules_path=rules_path,
                                 skip_words=_clean_words(target.get('skip_words'), 100, 100), skip_regex=_clean_words(target.get('skip_regex'), 50, 200))
             _kingfisher(argv, register, env=kf.env_without_egress(os.environ))
-            findings, truncated = _report(out, reader.manifest, keep_validation=False, directory=reader.dir)
+            findings, truncated = _report(out, reader.manifest, keep_validation=False, directory=reader.dir, cuts=cuts)
             stats['truncated'] = truncated
             version = _version()
             stats['kingfisher_version'] = version
@@ -264,8 +272,13 @@ def run(target, register=None, rules=None, fetcher=fetch, resolver=None, sleep=t
                     logger.warning('secrets scan: not validating, this Kingfisher is %s and the allow-list was reviewed for %s', version or 'unknown',
                                    target.get('validate_kingfisher'))
         stats['findings'] = len(findings)
-        return {'summary': f'Kingfisher read {stats["files"]} files ({stats["bytes"]} bytes): {len(findings)} findings',
-                'findings': findings, 'fetched': reader.fetched[:1000], 'references': reader.references[:kf.MAX_REFERENCES], 'stats': stats}
+        cuts.items('fetched', 1000, len(reader.fetched) - 1000)
+        cuts.items('references', kf.MAX_REFERENCES, len(reader.references) - kf.MAX_REFERENCES)
+        result = {'summary': f'Kingfisher read {stats["files"]} files ({stats["bytes"]} bytes): {len(findings)} findings',
+                  'findings': findings, 'fetched': reader.fetched[:1000], 'references': reader.references[:kf.MAX_REFERENCES], 'stats': stats}
+        if cuts:
+            result['cuts'] = cuts.as_list()  # a list cut at its cap says how many it dropped (contract 5)
+        return result
     finally:
         shutil.rmtree(work, ignore_errors=True)
 

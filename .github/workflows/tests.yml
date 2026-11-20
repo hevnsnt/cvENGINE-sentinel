@@ -79,7 +79,7 @@ jobs:
           from cvengine_scanner import contract, fingerprint, flags, nmap, parsers
           assert cvengine_scanner.__version__ == '99.0.0', cvengine_scanner.__version__
           assert (contract.FIXTURES / 'results' / 'v1' / 'nmap.json').is_file()
-          assert flags.NUCLEI_FLAGS[flags.NUCLEI_FLAGS.index('-etags') + 1] == 'dos'
+          assert flags.NUCLEI_FLAGS[flags.NUCLEI_FLAGS.index('-etags') + 1] == 'dos,default-login,bruteforce'
           print('installed', cvengine_scanner.__version__, 'contract', contract.version())
           PY
       - name: Install by commit sha (the server's pin since T7, no tag needed) and read the contract
@@ -160,7 +160,7 @@ jobs:
           python -m unittest cvengine_scanner.tests.test_contract -v
       - name: The sha the server pins is on main
         env:
-          SERVER_REQUIREMENTS_URL: https://raw.githubusercontent.com/hevnsnt/CVEngine/1.4-develop/web/requirements.txt
+          SERVER_REQUIREMENTS_URL: https://raw.githubusercontent.com/hevnsnt/CVEngine/develop/web/requirements.txt
         run: |
           reqs="$RUNNER_TEMP/server_requirements.txt"
           # Fails closed: a file that cannot be fetched (after three tries with a growing wait) fails the job, because a skipped check would let a
@@ -206,11 +206,11 @@ jobs:
       - name: Scripts parse
         run: |
           for f in scripts/*.sh docker-entrypoint.sh; do sh -n "$f"; done
-          bash -n setup.sh
+          bash -n setup.sh install.sh scripts/migrate-to-service-user.sh
       - name: shellcheck
         run: |
           command -v shellcheck >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q shellcheck; }
-          shellcheck --severity=warning scripts/*.sh docker-entrypoint.sh setup.sh
+          shellcheck --severity=warning scripts/*.sh docker-entrypoint.sh setup.sh install.sh
 
   compose:
     name: Compose file

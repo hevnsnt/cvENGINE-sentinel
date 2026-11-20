@@ -10,10 +10,15 @@ from cvengine_scanner import contract
 
 CAPABILITIES = ['nmap', 'naabu', 'nuclei_light', 'nuclei_targeted', 'nuclei_deep', 'testssl', 'nmap_udp', 'wpscan', 'openvas', 'waf', 'bbot_discovery',
                 'http_probe', 'dns_resolve',
-                # contract 3: asked for only from a server whose contract has them (server_knows). path_probe and nuclei_validate are offered
-                # only to the install's built-in scanner; an external Sentinel declares them and is never handed one.
+                # contract 3: asked for only from a server whose contract has them (server_knows). path_probe and nuclei_validate go to the
+                # install's built-in scanner while it has one; with none, a contract-4 server offers them to the project's own Sentinels
+                # (external_since), and this one runs an AI-written check only after the checks in client/daemon.py and tools._verified_template.
                 'nmap_full', 'nmap_verify', 'node2shell', 'rdp_shot', 'db_probe', 'path_probe', 'nuclei_validate',
                 'secrets_scan', 'alive_check', 'bucket_check', 'vhost_probe', 'subdir_probe', 'route_probe', 'supplier_check', 'hygiene_check', 'dangling_dns_check', 'identity_check', 'web_screenshot', 'wpscan_thorough', 'page_read', 'ssh_probe',
+                'java_runtime',  # contract 6: asked for only from a server whose contract has it (server_knows)
+                'version_read',  # contract 7: the GETs of the server's version source catalogue (cvengine_scanner.probes.version_read)
+                'version_digest',  # contract 8: the same with a digest of a static asset instead of its body (an edge appliance's build)
+                'version_rows',  # contract 9: the same with only the named version rows of a status page (Apache server-status, a phpinfo page)
                 'route_probe_signed']  # route_probe_signed: the built-in scanner's alone (runnable_kinds drops it elsewhere); it reads a stored sign-in
 CONTRACT_VERSION = contract.version()  # the result contract this Sentinel speaks: the packaged sentinel_contract.json's, declared at registration and every heartbeat
 KIND_SINCE = contract.load()['kind_since']  # the contract version that introduced each kind (waf: 2, bbot_discovery, http_probe, dns_resolve, secrets_scan, alive_check, bucket_check, vhost_probe, subdir_probe, route_probe, supplier_check, hygiene_check, dangling_dns_check, identity_check, page_read and ssh_probe: 3)
@@ -29,11 +34,15 @@ BUILTIN_NAME = 'CVEngine Scanner'  # what the install's own scanner is called; t
 # What the built-in scanner can do beyond the kinds, reported in ``info.features``: ``secret_read`` (signed-in nuclei through the server's single-use read
 # of a stored credential, client/signed_in.py) and ``vantage`` (it applies the server's egress proxy and private-target settings, ``vantage()``). The
 # server offers that work, and stops warning about the vantage point, only to a built-in scanner that says so.
-BUILTIN_FEATURES = ('secret_read', 'vantage')
+# ``credential_filter`` (every Sentinel, built-in or not): this client leaves default-login and bruteforce templates, and every installed template that sends a fixed
+# credential (``credential_templates``), out of a nuclei web run whose task does not carry ``allow_credential_checks``. The server hands nuclei web work to a
+# Sentinel that does not say so only while credential checks are allowed.
+CREDENTIAL_FEATURE = 'credential_filter'
+BUILTIN_FEATURES = ('secret_read', 'vantage', CREDENTIAL_FEATURE)
 # What every other Sentinel reports in ``info.features``: ``bbot_keys`` says this client reads a bbot discovery task's API keys through the single-use
 # secret read, keeps them only in a private file for the run, and masks them in everything it reports. A server sends keys only to a Sentinel that says so
 # (and the owner has not switched it off); an old Sentinel does not say it and never gets them. Optional: a server that does not know it ignores it.
-EXTERNAL_FEATURES = ('bbot_keys',)
+EXTERNAL_FEATURES = ('bbot_keys', CREDENTIAL_FEATURE)
 
 logger = logging.getLogger('sentinel.config')
 

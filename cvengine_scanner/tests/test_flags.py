@@ -11,18 +11,25 @@ class NucleiFlagTests(unittest.TestCase):
         for argv in (flags.NUCLEI_FLAGS, flags.NUCLEI_BASE_FLAGS, flags.nuclei_flags(), flags.nuclei_flags(['rce'], 'light'),
                      flags.nuclei_flags(tech=True), flags.nuclei_flags(['wordpress'], secret_file='/tmp/x/secrets.json')):
             with self.subTest(argv=argv):
-                self.assertEqual(argv[argv.index('-etags') + 1], 'dos')
+                self.assertEqual(argv[argv.index('-etags') + 1], 'dos,default-login,bruteforce')  # credential checks are off unless a person turns them on (TL-2)
 
     def test_the_sentinel_run_keeps_the_raw_request_and_response(self):
         # what a Sentinel ran before the builders moved here, less -omit-raw: a finding keeps its request and response (clipped, credentials redacted by
         # parse_nuclei_jsonl) as the evidence a person can repeat (review M2). Every other flag is as it was.
         self.assertEqual(flags.NUCLEI_FLAGS, ['-jsonl', '-silent', '-duc', '-ni', '-nc', '-rl', '150', '-c', '40', '-timeout', '10', '-retries', '1',
-                                              '-etags', 'dos'])
+                                              '-etags', 'dos,default-login,bruteforce'])
         self.assertNotIn('-omit-raw', flags.NUCLEI_FLAGS)
 
     def test_the_server_run_is_unchanged(self):
         self.assertEqual(flags.NUCLEI_BASE_FLAGS, ['-severity', 'info,low,medium,high,critical', '-jsonl', '-silent', '-duc', '-ni', '-nc', '-rl', '150',
-                                                   '-c', '40', '-timeout', '10', '-retries', '1', '-etags', 'dos'])
+                                                   '-c', '40', '-timeout', '10', '-retries', '1', '-etags', 'dos,default-login,bruteforce'])
+
+    def test_credential_checks_come_back_only_when_asked_for(self):
+        for build in (flags.nuclei_flags, flags.nuclei_web_flags):
+            on, off = build(allow_credential_checks=True), build()
+            self.assertEqual(on[on.index('-etags') + 1], 'dos')
+            self.assertEqual(off[off.index('-etags') + 1], 'dos,default-login,bruteforce')
+        self.assertEqual(flags.nuclei_flags(['rce'], 'light', allow_credential_checks=True).count('-etags'), 1)
 
     def test_the_light_profile_lowers_rate_and_concurrency(self):
         normal, light = flags.nuclei_flags(), flags.nuclei_flags(profile='light')
@@ -86,6 +93,13 @@ class NmapFlagTests(unittest.TestCase):
         self.assertEqual(flags.NMAP_FAST_FLAGS[flags.NMAP_FAST_FLAGS.index('--top-ports') + 1], str(flags.TOP_PORTS))
         self.assertEqual(len(flags.EXTRA_PORTS), len(set(flags.EXTRA_PORTS)))
         self.assertTrue({6379, 27017, 2375, 10250} <= set(flags.EXTRA_PORTS))
+
+    def test_the_ai_servers_default_ports_are_fingerprinted_and_spoken_to_as_web(self):
+        self.assertEqual(set(flags.AI_PORTS), {7860, 8188, 8265, 9119, 11434, 18789})  # Gradio/Langflow, ComfyUI, Ray, Hermes, Ollama, OpenClaw
+        self.assertTrue(set(flags.AI_PORTS) <= set(flags.EXTRA_PORTS))
+        argument = flags.nmap_pass_flags([22])[-1]
+        self.assertTrue(all(str(p) in argument for p in flags.AI_PORTS))
+        self.assertEqual({flags.NUCLEI_SERVICE_PORTS[p] for p in flags.AI_PORTS}, {'web'})
 
     def test_the_port_argument_is_compact(self):
         self.assertEqual(flags.port_argument([8080, 22, 80, 81, 82, 443, 22]), '22,80-82,443,8080')
@@ -173,3 +187,153 @@ class NmapPassFlagsTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class NucleiTaskLimitTests(unittest.TestCase):
+    """A nuclei run ends before the server stops waiting for it (agentapi.sentinel_dispatch: COMPLETION_CEILING + PER_TARGET_SECONDS x (targets - 1)), so its
+    findings arrive. The server's numbers are copied here on purpose: a change on one side must fail this until the other side matches."""
+    SERVER = {'nuclei_light': (900, 20), 'nuclei_targeted': (1800, 30), 'nuclei_deep': (3600, 60)}
+
+    def test_every_nuclei_run_ends_at_least_a_minute_before_the_server_gives_up(self):
+        from cvengine_scanner.flags import task_seconds
+        for kind, (base, per) in self.SERVER.items():
+            for count in (1, 2, 5, 9, 21, 64, 200):
+                with self.subTest(kind=kind, targets=count):
+                    self.assertLessEqual(task_seconds(kind, count), base + per * (count - 1) - 60)
+
+    def test_the_limits_cover_the_longest_runs_seen_in_production(self):
+        """The longest completed runs on the VPS (11/8 to 11/10) fit: a limit is a ceiling on a stuck run, never on a normal one."""
+        from cvengine_scanner.flags import task_seconds
+        for kind, count, longest in (('nuclei_light', 63, 926), ('nuclei_targeted', 9, 1714), ('nuclei_deep', 21, 3008), ('nuclei_deep', 1, 1335)):
+            with self.subTest(kind=kind, targets=count):
+                self.assertGreater(task_seconds(kind, count), longest)
+
+
+class NucleiServiceBudgetTests(unittest.TestCase):
+    """What one host:port of a non-web service may receive from one task, and which templates it may receive."""
+
+    def test_the_pace_of_a_service_run_is_a_pause_between_template_runs(self):
+        spend = flags.nuclei_service_budget(None)
+        self.assertEqual(spend, {'pause_ms': 500, 'seconds': 300, 'web_rate': 25})
+        self.assertGreaterEqual(spend['pause_ms'], 500)  # at most two template runs a second on one host:port: nuclei's own -rl does not pace tcp, javascript or ssl
+
+    def test_the_ssh_class_has_a_pause_of_its_own(self):
+        self.assertEqual(flags.nuclei_service_pause_ms('ssh'), 5500)
+        self.assertEqual(flags.nuclei_service_pause_ms('ssh', {'pause_ms': 9000}), 9000)
+        self.assertEqual(flags.nuclei_service_pause_ms('smtp'), flags.NUCLEI_SERVICE_BUDGET['pause_ms'])
+        self.assertGreaterEqual(flags.NUCLEI_SERVICE_CLASS_PAUSE_MS['ssh'], 5000)  # one failed authentication costs 5 s of OpenSSH source penalty
+
+    def test_a_task_makes_the_budget_gentler_and_never_harsher(self):
+        self.assertEqual(flags.nuclei_service_budget({'pause_ms': 2000, 'seconds': 30, 'web_rate': 5}), {'pause_ms': 2000, 'seconds': 30, 'web_rate': 5})
+        self.assertEqual(flags.nuclei_service_budget({'pause_ms': 1, 'seconds': 10 ** 6, 'web_rate': 10 ** 6}), flags.NUCLEI_SERVICE_BUDGET)
+        self.assertEqual(flags.nuclei_service_budget({'pause_ms': 10 ** 9, 'seconds': 0, 'web_rate': 0}),
+                         {'pause_ms': flags.NUCLEI_SERVICE_PAUSE_MAX, **flags.NUCLEI_SERVICE_FLOOR})
+        self.assertEqual(flags.nuclei_service_budget({'pause_ms': True, 'seconds': '9', 'web_rate': 1.5}), flags.NUCLEI_SERVICE_BUDGET)
+        self.assertEqual(flags.nuclei_service_budget('x'), flags.NUCLEI_SERVICE_BUDGET)
+
+    def test_a_service_run_is_one_template_at_a_time_with_no_credential_template(self):
+        selection = flags.nuclei_service_selection('smtp')
+        argv = flags.nuclei_service_flags(selection, None)
+        at = lambda name: argv[argv.index(name) + 1]  # noqa: E731
+        self.assertEqual([at(f) for f in ('-rl', '-c', '-bs', '-pc', '-jsc', '-retries', '-mhe', '-pt')], ['1', '1', '1', '1', '1', '0', '10', 'tcp,javascript'])
+        self.assertIn('-nh', argv)
+        self.assertEqual(set(at('-etags').split(',')), {'dos', 'default-login', 'bruteforce', 'fuzz', 'intrusive'})  # the exclusion floor, and no credential attempts
+        self.assertNotIn('http', at('-pt').split(','))
+        self.assertEqual(flags.nuclei_service_flags(flags.nuclei_service_selection('tls'))[flags.nuclei_service_flags(flags.nuclei_service_selection('tls')).index('-pt') + 1], 'ssl')
+
+    def test_the_web_flags_leave_out_the_raw_socket_templates_and_bound_each_host(self):
+        argv = flags.nuclei_web_flags()
+        self.assertEqual(argv[argv.index('-ept') + 1], 'tcp,javascript')
+        self.assertNotIn('-pt', argv)
+        self.assertIn('-per-host-rate-limit', argv)
+        self.assertEqual(argv[argv.index('-rl') + 1], '25')  # one host never receives the whole global rate (150 a second)
+        self.assertEqual([a for a in argv if a not in ('-per-host-rate-limit',) and a != '25'], [a for a in flags.NUCLEI_FLAGS if a != '150'] + ['-ept', 'tcp,javascript'])
+
+    def test_the_global_rate_is_shared_among_the_hosts_of_a_web_pass(self):
+        rate = lambda hosts, budget=None: int(flags.nuclei_web_flags(hosts, budget)[flags.nuclei_web_flags(hosts, budget).index('-rl') + 1])  # noqa: E731
+        self.assertEqual([rate(1), rate(2), rate(6), rate(10), rate(64)], [25, 25, 25, 15, 2])
+        self.assertLessEqual(64 * rate(64), 150)  # a chunk of 64 hosts together stays at the global rate
+        self.assertEqual(rate(1, {'web_rate': 5}), 5)
+        self.assertEqual(rate(1, {'web_rate': 500}), 25)
+
+    def test_every_service_name_and_port_points_at_a_class_that_exists(self):
+        for table in (flags.NUCLEI_SERVICE_NAMES, flags.NUCLEI_SERVICE_PORTS):
+            self.assertLessEqual(set(table.values()), {*flags.NUCLEI_SERVICES, flags.NUCLEI_WEB})
+        for tags, types in flags.NUCLEI_SERVICES.values():
+            self.assertTrue(types and set(types) <= {'tcp', 'javascript', 'ssl'})  # never an http template type
+        self.assertTrue(set(flags.NUCLEI_DEFAULT_PORTS) <= set(flags.NUCLEI_SERVICE_PORTS))
+        self.assertEqual({flags.NUCLEI_SERVICE_PORTS[p] for p in flags.NUCLEI_DEFAULT_PORTS}, {'web'})
+
+    def test_the_class_of_a_port_comes_from_the_label_then_the_port_number_and_never_defaults_to_web(self):
+        self.assertEqual(flags.nuclei_service_class(22, 'web'), 'web')
+        self.assertEqual(flags.nuclei_service_class(8080, 'ssh'), 'ssh')
+        self.assertEqual(flags.nuclei_service_class(22), 'ssh')
+        self.assertEqual(flags.nuclei_service_class(8080), 'web')
+        self.assertEqual(flags.nuclei_service_class(5000), 'unknown')  # in no table: not web
+        self.assertEqual(flags.nuclei_service_class(22, 'unknown'), 'unknown')
+        self.assertEqual(flags.nuclei_service_class(22, 'from-a-newer-server'), 'unknown')
+
+    def test_the_templates_of_a_class_are_narrowed_to_the_tags_the_task_asked_for(self):
+        sel = flags.nuclei_service_selection
+        self.assertEqual(sel('ssh')['tags'], ['openssh', 'ssh'])
+        self.assertEqual(sel('ssh', ['apache', 'ssh'])['tags'], ['ssh'])
+        self.assertIsNone(sel('ssh', ['tech']))
+        self.assertEqual(sel('tls', ['tls'])['tags'], ['tls'])
+        self.assertEqual(sel('tls')['tags'], [])
+        self.assertEqual(sel('ssh')['etags'], list(flags.NUCLEI_SERVICE_EXCLUDED_TAGS))
+
+    def test_the_unknown_class_takes_the_network_templates_that_no_class_owns_and_never_http(self):
+        selection = flags.nuclei_service_selection('unknown')
+        self.assertEqual(selection['types'], ['tcp', 'javascript', 'ssl'])
+        self.assertTrue({'ssh', 'ftp', 'smtp', 'postgresql', 'redis', 'smb'} <= set(selection['etags']))  # a class's templates are left to its own ports
+        self.assertTrue(set(flags.NUCLEI_SERVICE_EXCLUDED_TAGS) <= set(selection['etags']))
+        self.assertEqual(flags.nuclei_service_selection('unknown', ['rce'])['tags'], ['rce'])
+        self.assertNotIn('http', selection['types'])
+        self.assertNotIn('-tags', flags.nuclei_service_listing_flags(selection))
+
+    def test_labels_are_keyed_the_same_way_whatever_the_spelling(self):
+        key = flags.nuclei_label_key
+        self.assertEqual(key('WWW.Example.COM.:0443'), ('www.example.com', 443))
+        self.assertEqual(key('[2001:DB8:0::1]:22'), ('2001:db8::1', 22))
+        self.assertEqual(key('192.0.2.1:22'), ('192.0.2.1', 22))
+        self.assertEqual(key('b\u00fccher.example:22'), ('xn--bcher-kva.example', 22))
+        for not_a_port in ('example.com', 'https://example.com:22', '2001:db8::1', 'example.com:x', ':22', 5):
+            self.assertIsNone(key(not_a_port))
+
+
+class NucleiNetworkDetectionTests(unittest.TestCase):
+    """Contract 10: the network detection pass (a light task's ``network_detection``) takes only the raw tcp templates of a non-web class, with the service
+    exclusion floor, and fits a light task's own time."""
+
+    def test_a_service_class_takes_its_own_tcp_templates_with_every_intrusive_tag_excluded(self):
+        for klass in ('ssh', 'ftp', 'redis', 'rdp', 'vnc', 'mongodb', 'mssql', 'smb', flags.NUCLEI_UNKNOWN):
+            with self.subTest(klass=klass):
+                selection = flags.nuclei_detection_selection(klass)
+                self.assertEqual(selection['types'], ['tcp'])
+                self.assertTrue({'dos', 'default-login', 'bruteforce', 'fuzz', 'intrusive'} <= set(selection['etags']))
+                self.assertNotIn('tech', selection['tags'])
+        self.assertEqual(flags.nuclei_detection_selection('ssh')['tags'], ['openssh', 'ssh'])
+        self.assertEqual(flags.nuclei_detection_selection(flags.NUCLEI_UNKNOWN)['tags'], [])  # every network template no class owns, then the path decides
+        self.assertIn('redis', flags.nuclei_detection_selection(flags.NUCLEI_UNKNOWN)['etags'])
+
+    def test_web_tls_and_an_unknown_label_take_nothing(self):
+        for klass in (flags.NUCLEI_WEB, 'tls', 'a-class-from-the-future', '', None):
+            with self.subTest(klass=klass):
+                self.assertIsNone(flags.nuclei_detection_selection(klass))
+
+    def test_only_a_plain_path_under_network_detection_is_a_detection_template(self):
+        for path, ok in (('network/detection/openssh-detect.yaml', True), ('network/detection/ftp/vsftpd-detect.yaml', True), ('network/cves/2001/CVE-2001-1473.yaml', False),
+                         ('network/misconfig/erlang-daemon.yaml', False), ('javascript/detection/mssql-detect.yaml', False), ('network/detection/../cves/x.yaml', False),
+                         ('/network/detection/x.yaml', False), ('network\\detection\\x.yaml', False), ('network/detection/./x.yaml', False),
+                         ('network/detections/x.yaml', False), ('network/detection/x.yml', False), (None, False), (3, False)):
+            with self.subTest(path=path):
+                self.assertIs(flags.is_detection_path(path), ok)
+
+    def test_the_budget_is_within_the_service_bounds_and_a_task_fits_the_light_time(self):
+        self.assertEqual(flags.nuclei_service_budget(flags.NUCLEI_DETECTION_BUDGET), flags.NUCLEI_DETECTION_BUDGET)  # gentler than the cap, never harsher
+        self.assertLessEqual(flags.NUCLEI_DETECTION_BUDGET['seconds'], flags.NUCLEI_SERVICE_BUDGET['seconds'])
+        self.assertLessEqual(flags.NUCLEI_DETECTION_MAX_PORTS, flags.NUCLEI_SERVICE_MAX_PORTS)
+        smallest = flags.TASK_LIMITS['nuclei_light'][0]
+        self.assertLessEqual(flags.NUCLEI_DETECTION_MAX_PORTS * flags.NUCLEI_DETECTION_BUDGET['seconds'], smallest)
+        self.assertLessEqual(flags.NUCLEI_DETECTION_MAX_PORTS * flags.NUCLEI_DETECTION_BUDGET['seconds'],
+                             flags.task_seconds('nuclei_light', flags.NUCLEI_DETECTION_MAX_PORTS))

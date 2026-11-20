@@ -8,6 +8,8 @@ import threading
 import unittest
 from unittest import mock
 
+import requests
+
 from client import config, dbprobe, rdp, scope, tools
 from cvengine_scanner import contract
 
@@ -22,7 +24,8 @@ def report(ip='93.184.215.14', ports=''):
 def setUpModule():
     for patcher in (mock.patch('socket.getaddrinfo', side_effect=OSError('no DNS in these tests')),
                     mock.patch.object(scope, 'own_addresses', return_value=frozenset({'172.19.0.2'})),
-                    mock.patch.object(scope, 'internal_allowed', return_value=False)):
+                    mock.patch.object(scope, 'internal_allowed', return_value=False),
+                    mock.patch.object(tools, 'nuclei_version', return_value=(3, 11, 1))):  # not the nuclei of the machine running the tests
         patcher.start()
         unittest.addModuleCleanup(patcher.stop)
 
@@ -144,9 +147,52 @@ class DbProbeTests(unittest.TestCase):
                 with self.subTest(code=code):
                     self.assertEqual(dbprobe.check_postgres('127.0.0.1', self.serve(code)), (False, ''))
 
-    def test_a_checker_crash_is_not_open_and_evidence_is_clipped(self):
+    def test_a_port_that_did_not_answer_is_unknown_never_auth_required(self):
+        """TL-14: a refused connection or a timeout is None (unknown: the server keeps the service due), False only when the server answered and said no."""
+        closed = socket.socket()
+        closed.bind(('127.0.0.1', 0))
+        dead_port = closed.getsockname()[1]
+        closed.close()  # nothing listens here now: connection refused
+        for name in ('postgres', 'memcached', 'elastic', 'couchdb', 'redis'):
+            with self.subTest(db=name):
+                self.assertEqual(dbprobe.CHECKS[name]('127.0.0.1', dead_port), (None, ''))
+        import pymongo.errors
+        import pymysql.err
+        import redis.exceptions
+        with mock.patch('redis.Redis') as fake:
+            fake.return_value.ping.side_effect = redis.exceptions.TimeoutError('slow')
+            self.assertEqual(dbprobe.check_redis('127.0.0.1', 6379), (None, ''))
+            fake.return_value.ping.side_effect = redis.exceptions.AuthenticationError('Authentication required.')
+            self.assertEqual(dbprobe.check_redis('127.0.0.1', 6379), (False, ''))
+            fake.return_value.ping.side_effect = redis.exceptions.ResponseError('DENIED Redis is running in protected mode')
+            self.assertEqual(dbprobe.check_redis('127.0.0.1', 6379), (False, ''))
+        for error, expected in ((pymysql.err.OperationalError(1045, 'Access denied'), False), (pymysql.err.OperationalError(2003, "Can't connect"), None),
+                                (pymysql.err.OperationalError(2013, 'Lost connection'), None)):
+            with self.subTest(error=error), mock.patch('pymysql.connect', side_effect=error):
+                self.assertEqual(dbprobe.check_mysql('127.0.0.1', 3306), (expected, ''))
+        for error, expected in ((pymongo.errors.OperationFailure('not authorized', 13), False), (pymongo.errors.ServerSelectionTimeoutError('x'), None),
+                                (pymongo.errors.AutoReconnect('x'), None)):
+            with self.subTest(error=error), mock.patch('pymongo.MongoClient') as fake:
+                fake.return_value.admin.command.side_effect = error
+                self.assertEqual(dbprobe.check_mongodb('127.0.0.1', 27017), (expected, ''))
+
+    def test_a_server_that_answers_with_an_error_or_a_closed_http_door_is_a_no(self):
+        with mock.patch('socket.getaddrinfo', _real_getaddrinfo):
+            handler = type('Handler', (socketserver.BaseRequestHandler,), {'handle': lambda self: (self.request.recv(1024), self.request.sendall(b'E\x00\x00\x00\x05\x00'))})
+            server = socketserver.TCPServer(('127.0.0.1', 0), handler)
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            self.addCleanup(server.server_close)
+            self.addCleanup(server.shutdown)
+            self.assertEqual(dbprobe.check_postgres('127.0.0.1', server.server_address[1]), (False, ''))
+        with mock.patch.object(dbprobe, '_bounded_json', side_effect=dbprobe._Refused('401')):
+            self.assertEqual(dbprobe.check_elasticsearch('127.0.0.1', 9200), (False, ''))
+            self.assertEqual(dbprobe.check_couchdb('127.0.0.1', 5984), (False, ''))
+        with mock.patch.object(dbprobe, '_bounded_json', side_effect=requests.ConnectionError('refused')):
+            self.assertEqual(dbprobe.check_elasticsearch('127.0.0.1', 9200), (None, ''))
+
+    def test_a_checker_crash_is_unknown_and_evidence_is_clipped(self):
         with mock.patch.dict(dbprobe.CHECKS, {'redis': mock.Mock(side_effect=RuntimeError('x'))}):
-            self.assertEqual(dbprobe.probe('93.184.215.14', 6379, 'redis'), {'open': False, 'evidence': ''})
+            self.assertEqual(dbprobe.probe('93.184.215.14', 6379, 'redis'), {'open': None, 'evidence': ''})
         with mock.patch.dict(dbprobe.CHECKS, {'redis': mock.Mock(return_value=(True, 'PONG\x07' + 'v' * 400))}):
             out = dbprobe.probe('93.184.215.14', 6379, 'redis')
         self.assertEqual(len(out['evidence']), dbprobe.EVIDENCE_LEN)
@@ -189,6 +235,13 @@ class PathProbeTests(unittest.TestCase):
 TEMPLATE = 'id: example\ninfo:\n  name: Example\n  severity: info\nhttp:\n  - method: GET\n    path: ["{{BaseURL}}/"]\n'
 
 
+def approved(mode, targets=()):
+    """The hash of TEMPLATE and the server's answer for it (hash, mode, sorted targets): what a contract-4 task carries (client.tests.test_ai_checks
+    covers each refusal)."""
+    from cvengine_scanner import checks
+    return {'template_sha256': checks.digest(TEMPLATE), 'approved': (checks.digest(TEMPLATE), mode, sorted(targets))}
+
+
 class NucleiValidateTests(unittest.TestCase):
     def test_a_template_that_reads_files_or_runs_code_is_refused(self):
         for key in ('code', 'file', 'headless', 'javascript', 'flow', 'workflows'):
@@ -198,12 +251,12 @@ class NucleiValidateTests(unittest.TestCase):
 
     def test_validate_runs_the_fixture_only_after_the_syntax_check_passes(self):
         with mock.patch.object(tools, '_run_status', return_value=(1, '', 'error: bad')), mock.patch.object(tools, '_benign_fixture') as fixture:
-            out = tools.run_nuclei_validate('validate', TEMPLATE)
+            out = tools.run_nuclei_validate('validate', TEMPLATE, **approved('validate'))
         self.assertEqual((out['valid'], out['fixture_ok']), (False, None))
         fixture.assert_not_called()
         with mock.patch.object(tools, '_run_status', return_value=(0, '', '')), \
                 mock.patch.object(tools, '_benign_fixture', return_value=(True, 'no match')):
-            out = tools.run_nuclei_validate('validate', TEMPLATE)
+            out = tools.run_nuclei_validate('validate', TEMPLATE, **approved('validate'))
         self.assertEqual((out['valid'], out['fixture_ok'], out['fixture_note']), (True, True, 'no match'))
 
     def test_test_mode_gives_one_outcome_per_target_and_counts_only_matcher_hits(self):
@@ -211,7 +264,8 @@ class NucleiValidateTests(unittest.TestCase):
         extract_only = {'host': 'https://93.184.215.20', 'matcher-status': False}
         lines = json.dumps(hit) + '\n' + json.dumps(extract_only) + '\n'
         with mock.patch.object(tools, '_run_status', return_value=(0, lines, '')):
-            out = tools.run_nuclei_validate('test', TEMPLATE, ['https://93.184.215.14', 'https://93.184.215.20', 'https://10.0.0.1'])
+            out = tools.run_nuclei_validate('test', TEMPLATE, ['https://93.184.215.14', 'https://93.184.215.20', 'https://10.0.0.1'],
+                                            **approved('test', ['https://93.184.215.14', 'https://93.184.215.20', 'https://10.0.0.1']))
         first, second, third = out['outcomes']
         self.assertTrue(first['vulnerable'])
         self.assertEqual(len(first['hit']['request']), 8000)
@@ -221,13 +275,13 @@ class NucleiValidateTests(unittest.TestCase):
     def test_the_template_test_takes_the_egress_proxy_and_the_loopback_fixture_does_not(self):
         with mock.patch.object(tools, '_proxy_args', return_value=['-proxy', 'http://proxy.example.test:3128']) as proxy, \
                 mock.patch.object(tools, '_run_status', return_value=(0, '', '')) as run:
-            tools.run_nuclei_validate('test', TEMPLATE, ['https://93.184.215.14'])
+            tools.run_nuclei_validate('test', TEMPLATE, ['https://93.184.215.14'], **approved('test', ['https://93.184.215.14']))
         proxy.assert_called_once_with('nuclei', ['https://93.184.215.14'])
         self.assertEqual(run.call_args[0][0][-2:], ['-proxy', 'http://proxy.example.test:3128'])
 
     def test_a_nuclei_failure_is_an_error_for_every_target(self):
         with mock.patch.object(tools, '_run_status', return_value=(2, '', 'boom')):
-            out = tools.run_nuclei_validate('test', TEMPLATE, ['https://93.184.215.14'])
+            out = tools.run_nuclei_validate('test', TEMPLATE, ['https://93.184.215.14'], **approved('test', ['https://93.184.215.14']))
         self.assertEqual(out['outcomes'][0]['error'], 'boom')
 
     def test_an_unknown_mode_or_oversized_template_is_refused(self):

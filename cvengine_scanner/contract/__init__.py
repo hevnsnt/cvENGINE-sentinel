@@ -28,6 +28,13 @@ def kind_since(kind):
     return load()['kind_since'][kind]
 
 
+def external_since(kind):
+    """The contract version from which a Sentinel that is not the install's built-in scanner may be offered a ``kind`` the built-in scanner used to
+    keep to itself (``external_since``, contract 4: ``nuclei_validate`` needs the template hash and the server's approval, version 4; ``path_probe``
+    is unchanged, version 3), or ``None`` for every other kind and for a contract without the table: never offered outside, as before."""
+    return (load().get('external_since') or {}).get(kind)
+
+
 def result_schema(kind):
     """A self-contained schema for the result of a ``kind`` task (``$defs`` included, so a validator needs nothing else). ``KeyError`` for a
     kind the contract does not describe."""

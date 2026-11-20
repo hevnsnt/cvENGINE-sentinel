@@ -56,7 +56,8 @@
       "host": "api.example.com",
       "url": "https://api.example.com/",
       "description": "Possible subdomain takeover: api.example.com points to an unclaimed bucket",
-      "module": "baddns"
+      "module": "baddns",
+      "port": 443
     }
   ],
   "http": [

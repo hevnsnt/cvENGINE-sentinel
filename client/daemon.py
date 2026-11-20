@@ -19,11 +19,14 @@ import math
 import os
 import random
 import re
+import subprocess
 import tempfile
 import threading
 import time
 
 import requests
+
+from cvengine_scanner import flags
 
 from . import admission
 from . import badkeys
@@ -32,6 +35,7 @@ from . import blob as blob_mod
 from . import config
 from . import control
 from . import httpclient
+from . import machine
 from . import openvas
 from . import selfupdate
 from . import spool as spool_mod
@@ -82,6 +86,7 @@ SPOOL_MIN_BACKOFF = 2.0  # seconds between delivery passes while the server is u
 SPOOL_MAX_BACKOFF = 60.0  # ... this, forever within the spool window
 SPOOL_IDLE_SECONDS = 30.0  # how often an empty-handed spool thread looks again
 QUIET_LOG_SECONDS = 600.0  # the same outage is named in the log this often (the first failure at once)
+CHECKS_CONTRACT = 4  # the server contract from which an AI-written check (nuclei_validate) names its hash and the server answers GET sentinel/tasks/<id>/check
 MAX_RESULT_BYTES = 23 * 1024 * 1024  # the server's result route refuses a body over 24 MB with a 400 that would end the task
 RELEASE_WAIT_SECONDS = 10.0  # after the grace period, how long shutdown waits for a task thread that is still delivering its result
 AUTH_STATUSES = (401, 403)  # the server no longer accepts this Sentinel's token
@@ -99,6 +104,10 @@ WAIT_LOG_AFTER_SECONDS = 30.0  # ... once it has waited this long
 THREAD_FAILURE_PAUSE = 5.0  # seconds to wait after a task thread could not be started (the container is out of threads)
 HELD_STATUSES = ('pending', 'suspended')  # cvENGINE holds the Sentinel (approval, or an administrator's decision): its poll answers 403, its token still works
 _TASK_ID = re.compile(r'[A-Za-z0-9_-]{1,64}')  # an id goes into URL paths, thread names and log lines
+BLOCKED_CODE = 'agent_blocked'  # 403 ``code``: an active agent whose user or token cannot be given work now (user disabled, read-only or expired token, MFA to set up)
+REVOKED_CODE = 'token_revoked'  # 403 ``code``: the token itself is revoked or invalid
+BLOCKED_TEXT = 'no work can be assigned'  # what a server that sends no ``code`` yet says for such a refusal
+_REVOKED_TEXT = re.compile(r'\b(revoked|invalid)\b', re.IGNORECASE)
 
 
 def _retryable(exc):
@@ -107,6 +116,26 @@ def _retryable(exc):
         return True
     status = getattr(exc, 'status', None)
     return isinstance(status, int) and (status >= 500 or status == 429)
+
+
+def _blocked_reason(exc):
+    """The server's reason when ``exc`` is a 403 for an agent cvENGINE cannot give work now while its token is still good (``code`` ``agent_blocked``,
+    or from a server that sends no code a message with "no work can be assigned" that does not say revoked or invalid), else None. Such a Sentinel
+    waits like a held one; only a 401, or a 403 with ``code`` ``token_revoked`` or a revoked/invalid message, means the token is gone."""
+    if getattr(exc, 'status', None) != 403:
+        return None
+    code, message = getattr(exc, 'code', None), str(getattr(exc, 'message', '') or '')
+    if code == BLOCKED_CODE:
+        return _clip(getattr(exc, 'reason', None) or message, 300)
+    if code or BLOCKED_TEXT not in message.lower() or _REVOKED_TEXT.search(message):
+        return None
+    return _clip(message, 300)
+
+
+def _token_refused(exc):
+    """Whether ``exc`` says the token itself is revoked or invalid: a 401, a 403 with ``code`` ``token_revoked``, or a 403 that says revoked/invalid."""
+    status = getattr(exc, 'status', None)
+    return status == 401 or (status == 403 and (getattr(exc, 'code', None) == REVOKED_CODE or bool(_REVOKED_TEXT.search(str(getattr(exc, 'message', '') or '')))))
 
 
 def _valid_task(task):
@@ -213,14 +242,49 @@ def declared_kinds():
 
 
 _detected = {}
+_reprobe = {'thread': None}
+DETECT_RECHECK_SECONDS = 300  # a tool that is installed but did not answer its version probe is probed again this often, off the poll thread
 
 
 def detected_tools():
     """``tools.detect_tools()``, probed once per process: the tools only change with the image, and probing runs five subprocesses that would
-    otherwise delay a heartbeat at every re-registration."""
+    otherwise delay a heartbeat at every re-registration. A tool that is installed but did not answer (a probe that timed out on a loaded host) is
+    probed again in the background, so a slow start never drops it until the next restart; the registration check then notices the new capabilities."""
     if 'tools' not in _detected:
         _detected['tools'] = tools.detect_tools()
+        _detected['probed_at'] = time.monotonic()
+    else:
+        _maybe_reprobe()
     return _detected['tools']
+
+
+def _maybe_reprobe():
+    if 'probed_at' not in _detected or time.monotonic() - _detected['probed_at'] < DETECT_RECHECK_SECONDS:
+        return
+    thread = _reprobe['thread']
+    if (thread is not None and thread.is_alive()) or not tools.unprobed_tools(_detected['tools']):
+        return
+
+    def probe():
+        try:
+            found = tools.detect_tools()
+            _detected['versions'] = tools.tool_versions()
+            _detected['tools'] = found
+        except Exception:  # noqa: BLE001 - a probe must never stop the poll that started it
+            logger.exception('the tool probe failed')
+        finally:
+            _detected['probed_at'] = time.monotonic()
+    _detected['probed_at'] = time.monotonic()
+    _reprobe['thread'] = threading.Thread(target=probe, name='tool-probe', daemon=True)
+    _reprobe['thread'].start()
+
+
+def detected_versions():
+    """``tools.tool_versions()``: the versions the same probes printed, kept once per process like the tool names."""
+    detected_tools()  # the probes run once, for the names; the versions come out of those runs
+    if 'versions' not in _detected:
+        _detected['versions'] = tools.tool_versions()
+    return _detected['versions']
 
 
 def _cap_concurrency(value):
@@ -276,6 +340,13 @@ def info():
         out['spool'] = dict(_spool_report)  # optional: a server that does not know the field ignores it
     if _watchdog_report:
         out['watchdog'] = dict(_watchdog_report)  # optional: a server that does not know the field ignores it; no target, finding or secret is ever in it
+    versions = detected_versions()
+    if versions:
+        out['tool_versions'] = dict(versions)  # {tool: version} from the start-up probes: the server compares them with the versions it ships (optional: an older server ignores it)
+    try:
+        out['machine'] = machine.report()  # CPU, load, memory and the kernel's kills by kind: cvENGINE sizes this Sentinel's slots from it (optional: an older server ignores it)
+    except Exception:  # noqa: BLE001 - a status line must never stop a heartbeat
+        logger.exception('the machine report could not be read')
     out['waiting'] = list(_waiting_report)[:6]  # heavy kinds that wait for memory, tasks taken back and still stopping: shown on the Sentinels page (empty says nothing waits now)
     if 'ssh_probe' in declared_kinds():
         try:
@@ -295,6 +366,17 @@ def register(client, name, max_concurrent):
             'tools': detected_tools(), 'max_concurrent': _cap_concurrency(max_concurrent), 'settings': config.local_settings(), 'info': info()}
     return client.call('PUT', 'sentinel', body)
 
+
+
+def _error_text(exc):
+    """The error a task reports: the exception's own text, clipped to 280 characters, except for a tool stopped at its time limit, whose ``str`` is the
+    whole command line followed by ``timed out after N seconds`` (clipped before the words for the fingerprint pass)."""
+    if isinstance(exc, subprocess.TimeoutExpired):
+        argv = exc.cmd if isinstance(exc.cmd, (list, tuple)) and exc.cmd else ['the tool']
+        seconds = exc.timeout
+        return (f'{os.path.basename(str(argv[0]))} ran past its time limit of {int(seconds) if isinstance(seconds, (int, float)) else "?"} seconds and was stopped; '
+                'what it had not finished writing was not kept')[:280]
+    return str(exc)[:280]
 
 class Daemon:
     guard = None  # the watchdog (client/watchdog.py), set in __init__ unless CVENGINE_SENTINEL_WATCHDOG=0
@@ -347,6 +429,10 @@ class Daemon:
 
     def run(self):
         control.set_draining(False)  # a fresh start is never drained, whatever an updater that died half way left behind
+        try:  # an update this Sentinel left for (or that died half way) ends as done or failed, not "updating" for ever
+            control.settle_update(config.version())
+        except (OSError, ValueError):
+            logger.warning('could not record how the last update ended', exc_info=True)
         bbot.sweep_stale()  # a key file a crashed run left in the temp directory goes before any task starts
         self._write_control()
         self._deliver_spool_at_start()  # held results go out before the first heartbeat: that heartbeat's list of running tasks must not make the server drop them
@@ -365,6 +451,10 @@ class Daemon:
         except RuntimeError:  # out of threads: the poll loop and the heartbeat reap as well
             logger.exception('the reaper thread could not be started')
         self._ensure_badkeys()
+        try:  # the list of image templates that send a credential is made at start (about 40 s for the whole set), not inside the first task's time limit
+            threading.Thread(target=tools.warm_credential_templates, name='sentinel-credential-templates', daemon=True).start()
+        except RuntimeError:
+            logger.exception('the credential template list thread could not be started')
         if shot.available():  # the browser's sandbox is checked once at every start, as the server's celery container once did (never blocks a start)
             threading.Thread(target=self._check_screenshot_sandbox, name='sentinel-shot-sandbox', daemon=True).start()
         try:
@@ -443,10 +533,14 @@ class Daemon:
         with self._lock:
             return len(self._in_flight)
 
-    def _auth_failed(self, exc):
+    def _auth_failed(self, exc, judged=False):
         """Stop for good when the server says this Sentinel's token is no longer valid: backing off and polling forever would hide it. The built-in
         scanner stops with ``REENROLL`` instead, and its entry point enrols it again with the next blob the server writes (no person is involved)."""
         if getattr(exc, 'status', None) not in AUTH_STATUSES:
+            return False
+        blocked = None if judged else _blocked_reason(exc)  # ``judged``: ``_wait_while_held`` already found it is neither held nor blocked
+        if blocked is not None:  # the agent is active and its token good, but its user or token cannot be given work now: wait, never re-enrol
+            self._note_blocked(blocked)
             return False
         if config.builtin():
             if not self.exit_code:
@@ -848,12 +942,12 @@ class Daemon:
         except (httpclient.ApiError, requests.RequestException) as exc:
             self._polling = False
             self._write_control()
-            if getattr(exc, 'status', None) == 403 and self._wait_while_held():
+            if getattr(exc, 'status', None) == 403 and self._wait_while_held(exc):
                 return
             if getattr(exc, 'status', None) == 429:
                 self._wait_rate_limited(exc)
                 return
-            if not self._auth_failed(exc):
+            if not self._auth_failed(exc, judged=getattr(exc, 'status', None) == 403):
                 self._quiet_warning('poll', 'poll failed: %s', exc)
                 self._sleep_backoff()
             return
@@ -880,23 +974,42 @@ class Daemon:
         self._start_task(task, kinds)
         self._write_control()
 
-    def _wait_while_held(self):
+    def _note_blocked(self, reason):
+        """Say once why cvENGINE gives this active Sentinel no work (its user is disabled, its token is read only or expired, MFA must be set up)."""
+        if self._held_logged != ('blocked', reason):
+            self._held_logged = ('blocked', reason)
+            logger.warning('cvENGINE gives this Sentinel no work (%s). Its token is kept: do not re-enroll. It keeps heartbeating and takes work again once '
+                           'this is fixed in cvENGINE', reason)
+
+    def _wait_while_held(self, exc=None):
         """The poll was refused with a 403. A Sentinel cvENGINE holds (``pending`` approval, or ``suspended`` by an administrator or by the rule that
         holds a new agent of a user whose other agent was suspended or revoked) is answered so ("no work can be assigned: ...") while its token is
         fine, and stopping then would only crash-loop the container and tell the operator to re-enroll, which a held user's new Sentinel inherits
         anyway. So ask the server where this Sentinel stands (``GET sentinel``): when it is held, say why once, keep heartbeating and ask again after a
         heartbeat interval. Returns False when it is not held (revoked, or a refusal of the token itself), so the caller stops as before; a check
-        that fails on the network or a server error backs off and is tried again, never read as revoked."""
+        that fails on the network or a server error backs off and is tried again, never read as revoked.
+
+        An active Sentinel whose user or token cannot be given work (``exc`` is a 403 with ``code`` ``agent_blocked``, or "no work can be assigned"
+        without a ``code``: ``_blocked_reason``) is held the same way, unless ``GET sentinel`` says its token or the agent is revoked."""
+        blocked = _blocked_reason(exc)
+        if getattr(exc, 'code', None) == BLOCKED_CODE:
+            return self._hold_blocked(blocked)
+        if getattr(exc, 'code', None) == REVOKED_CODE:
+            return False
         try:
             me = self.client.call('GET', 'sentinel')
-        except (httpclient.ApiError, requests.RequestException) as exc:
-            if _retryable(exc):
-                logger.warning('the poll was refused (403) and the server could not say why (%s); backing off', exc)
+        except (httpclient.ApiError, requests.RequestException) as check:
+            if _retryable(check):
+                logger.warning('the poll was refused (403) and the server could not say why (%s); backing off', check)
                 self._sleep_backoff()
                 return True
+            if blocked is not None and not _token_refused(check):
+                return self._hold_blocked(blocked)
             return False
         status = me.get('status') if isinstance(me, dict) else None
         if status not in HELD_STATUSES:
+            if blocked is not None and status != 'revoked':
+                return self._hold_blocked(blocked)
             return False
         note = _clip(me.get('status_note') or '', 300)
         if self._held_logged != (status, note):
@@ -904,6 +1017,11 @@ class Daemon:
             what = 'waiting for an administrator to approve it' if status == 'pending' else 'suspended'
             logger.warning('cvENGINE has this Sentinel %s, so it is given no work%s. Its token is fine: do not re-enroll. It keeps heartbeating and '
                            'takes work again once an administrator approves or reinstates it in cvENGINE', what, f' ({note})' if note else '')
+        self.stop_event.wait(self.heartbeat_seconds)
+        return True
+
+    def _hold_blocked(self, reason):
+        self._note_blocked(reason)
         self.stop_event.wait(self.heartbeat_seconds)
         return True
 
@@ -1114,13 +1232,17 @@ class Daemon:
             if give_back:
                 self._release(task_id, 'the approved template bundle is not ready yet, retry later')
         except (tools.TargetError, bbot.RunError) as exc:
+            if isinstance(exc, bbot.RunError) and str(exc).startswith('bbot was killed'):
+                machine.note_oom(kind)  # bbot exits -9 when the kernel kills it for memory
             if isinstance(exc, tools.Refused) or str(exc).startswith('refused:'):
                 logger.warning('task %s refused locally: %s', task_id, _clip(str(exc), 200))
             self._report_unless_dropped(task_id, state, self._watchdog_result(state, exc) or {'outcome': 'error', 'error': str(exc)[:280]})
         except Exception as exc:  # noqa: BLE001 - one bad task must never take the daemon down
+            if isinstance(exc, tools.ToolOOMError):
+                machine.note_oom(kind)  # the kernel killed the tool for memory: reported in the heartbeat (info.machine.oom_kills_1h)
             if not state.get('dropped') and not state.get('wd'):
                 logger.exception('task %s failed', task_id)
-            self._report_unless_dropped(task_id, state, self._watchdog_result(state, exc) or {'outcome': 'error', 'error': str(exc)[:280]})
+            self._report_unless_dropped(task_id, state, self._watchdog_result(state, exc) or {'outcome': 'error', 'error': _error_text(exc)})
         finally:
             logger.info('task %s finished: %s, %s, %.1fs', task_id, _clip(kind), 'dropped' if state.get('dropped') else outcome,
                         time.monotonic() - state.get('started', time.monotonic()))
@@ -1185,9 +1307,16 @@ class Daemon:
         elif kind in ('nuclei_light', 'nuclei_targeted', 'nuclei_deep'):
             targets = target.get('targets') or []
 
+            seconds = tools.task_seconds(kind, len(targets) if isinstance(targets, list) else 1, target.get('timeout'))
+
             def nuclei(secret_file=None):
                 return runner(targets, tags=target.get('tags'), severities=target.get('severities'), register=register,
-                              templates=self._approved_templates(target), secret_file=secret_file)
+                              templates=self._approved_templates(target), secret_file=secret_file, timeout=seconds,
+                              services=target.get('services'), budget=target.get('budget'),
+                              **({'allow_credential_checks': True} if target.get('allow_credential_checks') is True else {}),  # off unless the task says so
+                              **({'external': True} if target.get('external') is True else {}),  # contract 11: judged as a Sentinel that is not internal
+                              # contract 10: the light pass as the network detection pass (network/detection templates on the non-web ports only)
+                              **({'network_detection': True} if kind == 'nuclei_light' and target.get('network_detection') is True else {}))
             if task.get('signed_in'):
                 # a signed-in pass names a stored sign-in: only the built-in scanner reads it (signed_in.py), and nothing ever runs it signed out
                 if not config.builtin():
@@ -1220,7 +1349,7 @@ class Daemon:
                 out = signed_in.run_sign_in(self.client, task['id'], lambda sign_in: runner(target, sign_in, register=register))
             except signed_in.SignedInError as exc:
                 raise tools.TargetError(str(exc)) from None
-        elif kind in ('http_probe', 'dns_resolve', 'alive_check', 'bucket_check', 'vhost_probe', 'subdir_probe', 'route_probe', 'supplier_check', 'hygiene_check', 'dangling_dns_check', 'identity_check', 'web_screenshot', 'page_read', 'ssh_probe'):  # in-process probes: the whole target, scope policy included
+        elif kind in ('http_probe', 'dns_resolve', 'alive_check', 'bucket_check', 'vhost_probe', 'subdir_probe', 'route_probe', 'supplier_check', 'hygiene_check', 'dangling_dns_check', 'identity_check', 'web_screenshot', 'page_read', 'ssh_probe', 'java_runtime', 'version_read', 'version_digest', 'version_rows'):  # in-process probes: the whole target, scope policy included
             out = runner(target, register=register)
         elif kind == 'nmap_full':
             out = runner(target.get('address') or '', register=register)
@@ -1237,13 +1366,50 @@ class Daemon:
         elif kind == 'path_probe':
             out = runner(target.get('targets'), register=register)
         elif kind == 'nuclei_validate':
-            out = runner(target.get('mode'), target.get('template'), target.get('targets'), register=register)
+            builtin = config.builtin()
+            sha256 = target.get('template_sha256')
+            approved = None
+            if not builtin and config.server_contract() < CHECKS_CONTRACT:
+                raise tools.Refused('refused: an AI-written check runs here only for a server that names its hash and approves it (contract 4 or newer)')
+            if not builtin or (sha256 is not None and config.server_contract() >= CHECKS_CONTRACT):
+                approved = self._approved_check(task['id'])  # asked of the server separately from the task: the hash it approves for this task
+            template = target.get('template')
+            if template is None and target.get('template_path') is not None:  # contract 11: an installed template of the pinned release, read from this image
+                if target.get('mode') != 'test':
+                    raise tools.TargetError('an installed template is named by path only for a test')
+                try:
+                    template = templates.installed_text(target.get('template_path'), sha256)
+                except templates.TemplateError as exc:
+                    raise tools.Refused(f'refused: {exc}'[:280]) from None
+            out = runner(target.get('mode'), template, target.get('targets'), register=register, template_sha256=sha256, approved=approved,
+                         builtin=builtin)
+            if target.get('template') is None and target.get('template_path') is not None:
+                out = {**out, 'template': template}  # contract 11: the text it read and ran, so the server can read a hit without a copy of its own
         elif kind == 'secrets_scan':
             out = runner(target, register=register, rules=self._secret_rules(target))
         else:  # openvas, the only other kind with a runner
             out = runner(target.get('hosts') or {}, target.get('excluded_families') or [], target.get('max_hours'), register=register,
                          preferences=target.get('preferences'))
         return {'outcome': 'done', **out}
+
+    def _approved_check(self, task_id):
+        """``(sha256, mode, sorted targets)`` of the check the server approves for the ``nuclei_validate`` task ``task_id`` this Sentinel holds, asked
+        separately from the task (``GET sentinel/tasks/<id>/check``). ``tools._verified_template`` holds the task to all three. Any refusal or a
+        malformed answer is ``Refused``: the check is not run. This catches a task changed in transit or edited after dispatch; it does not protect
+        against a compromised server, which answers for itself (this Sentinel's own allowlist and target limit are the defence there)."""
+        from cvengine_scanner import checks
+        try:
+            answer = self.client.call('GET', f'sentinel/tasks/{task_id}/check')
+        except httpclient.ApiError as exc:
+            raise tools.Refused(f'refused: the server did not approve this check (HTTP {exc.status})') from None
+        sha256 = answer.get('template_sha256') if isinstance(answer, dict) else None
+        mode = answer.get('mode') if isinstance(answer, dict) else None
+        targets = answer.get('targets') if isinstance(answer, dict) else None
+        if not isinstance(sha256, str) or not checks.SHA256.fullmatch(sha256) or mode not in ('validate', 'test'):
+            raise tools.Refused('refused: the server did not approve this check (no hash in its answer)')
+        if not isinstance(targets, list) or len(targets) > tools.MAX_TARGETS or not all(isinstance(t, str) for t in targets):
+            raise tools.Refused('refused: the server did not approve this check (its answer names no targets)')
+        return sha256, mode, sorted(targets)
 
     def _secret_rules(self, target):
         """The instance's custom secret rules a ``secrets_scan`` task names (``rules_bundle_sha256``), as YAML text, or ``None`` when it names none.
@@ -1257,10 +1423,17 @@ class Daemon:
             raise tools.TargetError(str(exc)) from None
 
     def _approved_templates(self, target):
-        """The directory of the server's approved nuclei templates a task must run on, or ``None`` when the task names no bundle and the server asks
-        for no policy (an older server: the templates baked into this image are used). A task under the read-only policy that names no bundle, or a
-        bundle that cannot be fetched or verified, is an error: nothing unapproved is ever run in its place."""
+        """The directory of the approved nuclei templates a task must run on. From contract 11 the task's ``template_policy`` says ``source: "index"``: the
+        set is built here from the baked templates and the library's template index under the policy the task names (``templates.ensure_index_set``;
+        read-only unless the policy says plainly it is not, credentials only when the task allows them). For an older server: its verified bundle, or
+        ``None`` when the task names no bundle and the server asks for no policy (the templates baked into this image are used). A task under the
+        read-only policy that names no bundle, or a set that cannot be built, fetched or verified, is an error: nothing unapproved is ever run in its place."""
         policy = target.get('template_policy') if isinstance(target.get('template_policy'), dict) else {}
+        if policy.get('source') == flags.TEMPLATE_INDEX_SOURCE:
+            try:
+                return templates.ensure_index_set(policy.get('read_only') is not False, target.get('allow_credential_checks') is True)
+            except templates.TemplateError as exc:
+                raise tools.TargetError(str(exc)) from None
         # the server's shape is ``template_policy.bundle_sha256`` (sentinel_dispatch._nuclei_target); the top level is read too
         sha256 = policy.get('bundle_sha256') or target.get('bundle_sha256')
         if sha256:

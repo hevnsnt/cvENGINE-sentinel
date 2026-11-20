@@ -14,9 +14,12 @@ Each run function returns the exact typed shape ``agentapi.sentinel_broker.clean
 (``{'hosts': [...]}`` for nmap, ``{'ports': {...}}`` for naabu, ``{'findings': [...]}`` for nuclei), ready to be sent
 back under ``{'outcome': 'done', **result}``.
 """
+import contextvars
+import functools
 import ipaddress
 import json
 import logging
+import math
 import os
 import platform
 import re
@@ -28,18 +31,21 @@ import threading
 import time
 import xml.etree.ElementTree as ET
 
+from cvengine_scanner import flags, nuclei_allowlist
 from cvengine_scanner.flags import (DISCOVER_FLAGS, KERNEL_MARKERS, MAX_DISCOVER_ADDRESSES, MAX_DISCOVER_HOSTS, MAX_OPEN_PER_IP,  # noqa: F401
                                     MAX_PATH_TARGETS, MAX_TARGETS, MAX_TEMPLATE_BYTES, MAX_VERIFY_PORTS, NAABU_FLAGS, NMAP_FULL_FLAGS, TASK_LIMITS,
                                     nmap_pass_flags, task_seconds,
                                     NMAP_VERIFY_FLAGS, NSE_SCRIPT_TIMEOUT, NSE_SCRIPTS, NUCLEI_FIXTURE_FLAGS, NUCLEI_FLAGS, NUCLEI_TEMPLATE_FLAGS,
                                     NUCLEI_VALIDATE_FLAGS, PATH_PROBE_ODD, PATH_PROBE_PLAIN, TESTSSL_FLAGS, UDP_NSE_SCRIPTS, UDP_PORTS, WAFW00F_TIMEOUT,
                                     WPSCAN_ARGS, WPSCAN_THOROUGH_ARGS, host_of, thorough_timeout, udp_nmap_flags, wafw00f_flags)
-from cvengine_scanner.parsers import (MAX_FINDINGS, MAX_FINDINGS_BYTES, MAX_LIST_ITEMS, ToolOutputError, parse_discover_xml,  # noqa: F401
-                                      parse_naabu_output, parse_nmap_xml, parse_nuclei_errors, parse_nuclei_jsonl, parse_port_reasons, parse_testssl_report,
+from cvengine_scanner.parsers import (MAX_FINDINGS, MAX_FINDINGS_BYTES, MAX_LIST_ITEMS, Cuts, ToolOutputError, parse_discover_xml,  # noqa: F401
+                                      nmap_scanned_total, parse_naabu_output, parse_nmap_xml, parse_nuclei_errors, parse_nuclei_jsonl, parse_port_reasons, parse_testssl_report,
                                       testssl_result, unreached_targets,
                                       parse_waf_output)
 
-from . import admission, bbot, config, dbprobe, egress, openvas, rdp, scope
+from cvengine_scanner.probes import service_probes
+
+from . import admission, bbot, config, credential_templates, dbprobe, egress, openvas, rdp, scope
 
 logger = logging.getLogger('sentinel.tools')
 
@@ -91,6 +97,10 @@ def _proxy_args(tool, hosts):
         raise TargetError(str(exc)) from None
 
 
+class _SkippedPass(Exception):
+    """The web pass was not run (its template list could not be made); the targets are already named not checked."""
+
+
 class ToolExitError(RuntimeError):
     """A tool exited with a non-zero status or was killed. Its output, if any, is incomplete, so the run is reported as an error, never as an
     empty result ("no open ports", "no findings")."""
@@ -130,6 +140,7 @@ def _resolver():
         if isinstance(answers[name], Exception):
             raise answers[name]
         return answers[name]
+    resolve.answers = answers
     return resolve
 
 
@@ -143,22 +154,23 @@ def _port_text(port, value):
     return str(int(port))
 
 
-def _endpoint(text, resolve):
-    """An http(s) URL, ``host``, ``host:port`` or ``[ipv6]:port``: what nuclei takes. The host part is judged by scope either way."""
+def _endpoint(text, resolve, internal=None):
+    """An http(s) URL, ``host``, ``host:port`` or ``[ipv6]:port``: what nuclei takes. The host part is judged by scope either way (``internal``: as
+    ``scope.check_target`` takes it, ``None`` for this Sentinel's own setting)."""
     if '://' in text:
         if not text.lower().startswith(('http://', 'https://')):
             raise _refused(text, 'only http and https URLs')
-        return scope.check_url(text, resolve=True, resolver=resolve)
+        return scope.check_url(text, internal=internal, resolve=True, resolver=resolve)
     bracketed = _BRACKETED.fullmatch(text)
     if bracketed:
-        return f'[{scope.check_ip(bracketed.group(1))}]:{_port_text(bracketed.group(2), text)}'
+        return f'[{scope.check_ip(bracketed.group(1), internal)}]:{_port_text(bracketed.group(2), text)}'
     if text.count(':') == 1:
         host, port = text.split(':')
-        return f'{scope.check_target(host, resolve=True, resolver=resolve)}:{_port_text(port, text)}'
-    return scope.check_target(text, resolve=True, resolver=resolve)
+        return f'{scope.check_target(host, internal=internal, resolve=True, resolver=resolve)}:{_port_text(port, text)}'
+    return scope.check_target(text, internal=internal, resolve=True, resolver=resolve)
 
 
-def _validate_one(value, endpoint, resolve):
+def _validate_one(value, endpoint, resolve, internal=None):
     if not isinstance(value, str) or not value or len(value) > 260:
         raise _refused(value, 'not a string of a usable length')
     text = value.strip()
@@ -166,10 +178,10 @@ def _validate_one(value, endpoint, resolve):
         raise _refused(value, 'empty, or it contains whitespace or shell characters')
     try:
         if endpoint:
-            return _endpoint(text, resolve)
+            return _endpoint(text, resolve, internal)
         if '://' in text:
             raise _refused(value, 'a bare address or host name, not a URL')
-        return scope.check_target(text, resolve=True, resolver=resolve)  # a name that does not resolve is allowed: there is nothing to reach
+        return scope.check_target(text, internal=internal, resolve=True, resolver=resolve)  # a name that does not resolve is allowed: there is nothing to reach
     except scope.ScopeError as exc:
         raise _refused(value, str(exc), exc) from None
 
@@ -326,7 +338,11 @@ def _run(argv, timeout, register=None, max_bytes=None, env=None, ok_codes=(0,), 
         return out.decode('utf-8', errors='replace')
     if proc.returncode not in (*ok_codes, None):
         # A crashed or killed tool leaves nothing, or something incomplete: returning that would read as "no open ports" or "no findings".
-        tail = ''.join(ch for ch in err.decode('utf-8', errors='replace')[:300] if ch.isprintable() or ch == ' ').strip()
+        err_text = err.decode('utf-8', errors='replace')
+        # nuclei opens every run with a warning about its JSON library on this CPU; left in, it took the whole 200 characters of every failure message and hid the
+        # error itself (on the VPS each "no templates" failure read "...fallback to encoding/json[FTL] Could not run nuclei: no templ")
+        said = '\n'.join(line for line in err_text.splitlines() if not _NOISE_LINE.search(line))
+        tail = ''.join(ch for ch in said[:300] if ch.isprintable() or ch == ' ').strip()
         logger.warning('%s exited %s: %s', os.path.basename(argv[0]), proc.returncode, tail)
         if proc.returncode in (-9, 137) and not getattr(proc, 'stopped_by_sentinel', False):  # not this daemon's own stop (a timeout and an oversized output are handled above)
             oom_after = _oom_events()
@@ -337,8 +353,12 @@ def _run(argv, timeout, register=None, max_bytes=None, env=None, ok_codes=(0,), 
                 raise ToolOOMError(f'{ToolOOMError.OOM_TEXT} ({os.path.basename(argv[0])} was killed by the system)')
         failure = ToolExitError(f'{os.path.basename(argv[0])} exited with status {proc.returncode}' + (f': {tail[:200]}' if tail else ''))
         failure.partial = out.decode('utf-8', errors='replace')  # what it printed before it was stopped: the watchdog delivers a stopped nuclei run's findings
+        failure.stderr = err_text  # what it said, whole (the message keeps 200 characters): a caller reads why it stopped
         raise failure
     return out.decode('utf-8', errors='replace')
+
+
+_NOISE_LINE = re.compile(r'WARNING: sonic/ast only supports')
 
 
 # --- nmap -----------------------------------------------------------------------------------------------------------
@@ -348,6 +368,37 @@ def _is_ipv6(address):
         return ipaddress.ip_address(str(address).strip().strip('[]')).version == 6
     except ValueError:
         return False
+
+
+class NoIpv6Route(ToolExitError):
+    """This machine has no route to an IPv6 address (many Sentinels run where there is no IPv6). A fact about the Sentinel, said in these words,
+    not a tool failure and never an empty result."""
+
+    TEXT = 'this Sentinel cannot reach IPv6 addresses'
+
+    def __init__(self, text=TEXT):
+        super().__init__(text)
+
+
+def ipv6_route(address):
+    """Whether this machine has a route to the IPv6 ``address``: asked of ``route_probe``, which tests replace (``client/tests/__init__.py``) so no
+    test depends on the routes of the machine it runs on. Only asked after the scope rule has allowed the address, and its answer is never a scope
+    decision: no route is reported as ``NoIpv6Route`` or ``unfinished``, not as a refused target."""
+    return bool(route_probe(address))
+
+
+def _kernel_route(address):
+    """A UDP socket's ``connect`` asks the kernel for the route and sends nothing, so this touches no host. An OS with IPv6 off, or no route, is
+    False."""
+    try:
+        with socket.socket(socket.AF_INET6, socket.SOCK_DGRAM) as sock:
+            sock.connect((str(address).strip().strip('[]'), 9))
+        return True
+    except OSError:
+        return False
+
+
+route_probe = _kernel_route
 
 
 def os_guess_reliable():
@@ -373,19 +424,70 @@ def run_nmap(addresses, timeout=None, register=None, ports=None):
         raise TargetError(str(exc)) from None
     resolve = _resolver()
     addresses = _pinned(validate_targets(addresses, resolver=resolve), resolve)
-    out = []
+    started, limit = time.monotonic(), timeout or nmap_timeout(len(addresses))
+    out, cuts, readings = [], Cuts(), []
     for group, flags in (([a for a in addresses if not _is_ipv6(a)], []), ([a for a in addresses if _is_ipv6(a)], ['-6'])):
         if not group:
             continue
         path = _targets_file(group)
         try:
             argv = [NMAP_BIN, *flags, *pass_flags, '-oX', '-', '-iL', path]
-            out.extend(parse_nmap_xml(_run(argv, timeout or nmap_timeout(len(group)), register), strict=True)['hosts'])
+            xml = _run(argv, timeout or nmap_timeout(len(group)), register)
+            parsed = parse_nmap_xml(xml, strict=True)
+            rows = parsed['hosts']
+            cuts.merge(parsed.get('cuts'))  # a host nmap gave up on, a port list or a text cut: said in the result, never silent (contract 5)
+            out.extend(rows + _scanned_without_open_ports(group, rows, nmap_scanned_total(xml)))
+            readings.extend(service_probes.nse_readings(xml))  # SSH (ssh2-enum-algos) and RDP (rdp-enum-encryption) features: no new traffic
         finally:
             os.unlink(path)
-    # nmap lists every host it scanned, with -Pn, whether or not any port is open. An address it does not list was not scanned, and gets no
-    # row: the server reads a missing row as "this Sentinel did not cover it" (review H3: a padded row read as a clean host).
-    return {'hosts': out, 'os_reliable': os_guess_reliable()}
+    # An address the report does not list and nmap did not count as scanned gets no row: the server reads a missing row as "this Sentinel did not cover it"
+    # (review H3: a padded row read as a clean host).
+    result = {'hosts': out, 'os_reliable': os_guess_reliable()}
+    features = _nmap_follow_up(out, addresses, readings, cuts, limit - (time.monotonic() - started))
+    if features:
+        result['service_features'] = features
+    if cuts:
+        result['cuts'] = cuts.as_list()
+    return result
+
+
+def _nmap_follow_up(hosts, addresses, readings, cuts, left):
+    """The service feature readings of a fingerprint pass (``cvengine_scanner.probes.service_probes``): the SSH and RDP ones read from nmap's own
+    report, plus one EHLO on each cleartext SMTP port and one SMB2 and one SMB1 NEGOTIATE on each port 445 the pass found open, on the task's own
+    addresses only, inside the task's time (never past ``left`` seconds less a margin, and never more than ``BUDGET_SECONDS``). What did not fit is
+    named in ``cuts``. Never fails the pass."""
+    try:
+        budget = min(service_probes.BUDGET_SECONDS, left - FOLLOW_UP_MARGIN)
+        vetted = {_normal_address(a) for a in addresses}
+        rows = [{**h, 'ip': _normal_address(h.get('ip'))} for h in hosts]
+        found, skipped = service_probes.follow_up(rows, vetted, budget=budget)
+        cuts.items('feature_probes', service_probes.MAX_ENDPOINTS, skipped)
+        kept, dropped = service_probes.bounded(readings + found)
+        cuts.items('service_features', service_probes.features.MAX_ITEMS, dropped)
+        return kept
+    except Exception:  # noqa: BLE001 - the fingerprint pass stands without its feature readings
+        logger.warning('service feature readings failed', exc_info=True)
+        return []
+
+
+FOLLOW_UP_MARGIN = 30  # seconds of the task's time the feature probes always leave unused
+
+
+def _scanned_without_open_ports(group, rows, total):
+    """Rows with no ports for the addresses of ``group`` that nmap scanned and did not list. The pass runs with ``--open``, so nmap writes a host only when it has
+    an open port; its own ``<hosts total=N>`` says how many addresses it scanned. When that is every address of the run, the unlisted ones were scanned and had
+    nothing open (a row with no ports: the host is covered). Fewer, or no count: no row is made up, as the server reads that as not covered and asks again."""
+    if total is None or total != len(group):
+        return []
+    listed = {_normal_address(h['ip']) for h in rows}
+    return [{'ip': address, 'os_guess': '', 'ports': []} for address in group if _normal_address(address) not in listed]
+
+
+def _normal_address(value):
+    try:
+        return str(ipaddress.ip_address(str(value).strip().strip('[]')))
+    except ValueError:
+        return str(value)
 
 
 # --- discover: which addresses of an internal network answer -------------------------------------------------------
@@ -432,15 +534,24 @@ def run_naabu(addresses, timeout=None, register=None):
     addresses = _pinned(validate_targets(addresses, resolver=resolve), resolve)
     if not addresses:
         return {'ports': {}}
+    # naabu handles an IPv6 literal by itself, but with no route it runs to its time limit and finds nothing: such an address is left unfinished
+    # (not scanned, so never read as "nothing open") without starting a run for it
+    unroutable = [a for a in addresses if _is_ipv6(a) and not ipv6_route(a)]
+    if unroutable:
+        logger.warning('naabu: %s; %d IPv6 address(es) left unscanned', NoIpv6Route.TEXT, len(unroutable))
+    addresses = [a for a in addresses if a not in unroutable]
+    extra = {'incomplete': True, 'unfinished': unroutable} if unroutable else {}
+    if not addresses:
+        return {'ports': {}, **extra}
     seconds = timeout or task_seconds('naabu', len(addresses))
     path = _targets_file(addresses)
     try:
         argv = [NAABU_BIN, '-list', path, *NAABU_FLAGS]
         try:
-            return {'ports': parse_naabu_output(_run(argv, seconds, register))}
+            return {'ports': parse_naabu_output(_run(argv, seconds, register)), **extra}
         except subprocess.TimeoutExpired as exc:
             logger.warning('naabu ran out of its %s s for %d address(es); they stay due', seconds, len(addresses))
-            return {'ports': parse_naabu_output(getattr(exc, 'partial', '')), 'incomplete': True, 'unfinished': addresses}
+            return {'ports': parse_naabu_output(getattr(exc, 'partial', '')), 'incomplete': True, 'unfinished': [*unroutable, *addresses]}
     finally:
         os.unlink(path)
 
@@ -472,45 +583,576 @@ def nuclei_env():
     return env
 
 
-def run_nuclei(targets, tags=None, severities=None, timeout=3600, register=None, templates=None, secret_file=None):
+_NO_TEMPLATES = re.compile(r'no templates? (?:were )?(?:provided|found|loaded)', re.I)
+
+
+def _target_port(target):
+    """The port a nuclei target names (``host:port`` or ``[ipv6]:port``), or ``None`` for a bare host, an address or a URL."""
+    if '://' in target:
+        return None
+    bracketed = _BRACKETED.fullmatch(target)
+    if bracketed:
+        return int(bracketed.group(2))
+    if target.count(':') == 1:
+        return int(target.rsplit(':', 1)[1])
+    return None
+
+
+def _service_labels(services):
+    """The server's labels of a task's ``host:port`` targets, keyed by ``flags.nuclei_label_key`` (the same spelling the validated targets get);
+    anything that is not a ``host:port`` and a text is no label."""
+    if not isinstance(services, dict):
+        return {}
+    out = {}
+    for key, value in services.items():
+        spelled = flags.nuclei_label_key(key) if isinstance(key, str) else None
+        if spelled and isinstance(value, str):
+            out[spelled] = value
+    return out
+
+
+def _split_by_service(targets, services):
+    """``(web, service_runs)``: the targets that are web (a bare host, an address, a URL, a port the server labelled web or one whose number is a
+    well-known web port) and each other ``host:port`` with its class. A ``host:port`` the task does not label is read by its number, and a number in
+    no table is the unknown class (the generic network templates): never web, so a lookup that misses can never send HTTP to a service. A label this
+    library does not know is the unknown class too (``flags.nuclei_service_class``)."""
+    labels = _service_labels(services)
+    web, runs = [], []
+    for target in targets:
+        key = flags.nuclei_label_key(target)
+        klass = flags.NUCLEI_WEB if key is None else flags.nuclei_service_class(key[1], labels.get(key))
+        if klass == flags.NUCLEI_WEB:
+            web.append(target)
+        else:
+            runs.append((target, klass))
+    return web, runs
+
+
+# The listing of the templates one service class runs (``nuclei -tl``: no network, about two seconds for the whole library), made once per template set,
+# class, tags and severities and kept: a bundle is a fixed directory named by its sha256 and the baked set changes only with the image.
+_TEMPLATE_LISTINGS = {}
+_LISTING_KEPT = 64
+_THREADS = re.compile(r'(?m)^[ \t]+(?:-[ \t]+)?threads:[ \t]*([0-9]+)')
+_MAX_REQUEST = re.compile(r'(?m)^[ \t]+(?:-[ \t]+)?max-request:[ \t]*([0-9]+)')
+_LISTED_FROM = re.compile(r'templates for (\S+)')
+_clock = time.monotonic  # the clocks of the service passes: a test replaces them
+_sleep = time.sleep
+
+
+# Default deny: a service run sends only a template on the pinned allowlist (``cvengine_scanner/nuclei_allowlist.py``, made by scripts/generate_service_allowlist.py)
+# whose file still has the sha256 the list records. The content rule below is the second line: it is applied to every allowlisted template that is not one a person
+# read and restored (``reviewed_exceptions``), and it is one of the checks the generator makes.
+# What a service run may never send: credentials. Nothing that sends one, guesses a password or can lock an account runs unless a project turns it on,
+# and no such switch exists for nuclei, so it never runs. The tags (``default-login``, ``bruteforce``) are the template authors' word and miss most of them
+# (``pgsql-default-db`` is tagged enum; ``mysql-empty-password`` vuln), so the template is read: a ``payloads`` block, a call that logs in, a command that
+# authenticates, or an authentication step in bytes (a PostgreSQL startup naming a user, a SCRAM message). Measured on nuclei-templates v10.5.1 in docs/SENTINELS.md.
+_PAYLOADS = re.compile(r'(?m)^[ \t]*(?:-[ \t]+)?(?:payloads|attack):')
+# the calls of nuclei's javascript clients that open a session with an account (mysql, postgres, mssql, oracle, ldap, smb ListShares, vnc password), not the
+# info-mode connects (``ConnectSSHInfoMode``, ``ConnectSMBInfoMode``) that read what a server offers and send no credential
+_LOGIN_CALL = re.compile(r'\.(?:Connect|ConnectWithDB|ExecuteQuery|ExecuteQueryWithOpts|ListShares|Authenticate|Login|Bind|BindWithDN|SimpleBind)\(')
+_CREDENTIAL_NAME = re.compile(r'(?im)^[ \t]*(?:-[ \t]+)?(?:user|username|pass|passwd|password)[ \t]*:|\{\{[ \t]*(?:user|username|pass|passwd|password)[ \t]*\}\}')
+_AUTH_COMMAND = re.compile(r'(?i)(?:data|input)s?:[ \t]*["\']?(?:[A-Za-z0-9]{1,8} )?(?:USER|PASS|AUTH|AUTHENTICATE|LOGIN)\b')
+_DATA_VALUE = re.compile(r'(?im)^[ \t]*(?:-[ \t]+)?data:[ \t]*["\']?([0-9a-f]{8,})["\']?[ \t]*(?:#.*)?$')
+_AUTH_BYTES = re.compile(rb'\x00user\x00|SCRAM-SHA|(?i:(?:^|\s)(?:USER|PASS|AUTH|LOGIN)\s)')
+_AUTH_ESCAPED = re.compile(r'\\u0000user\\u0000')
+
+
+def _login_step(text):
+    """Whether a template's text performs a login or an authentication step (see the note above)."""
+    if _LOGIN_CALL.search(text) or _CREDENTIAL_NAME.search(text) or _AUTH_COMMAND.search(text) or _AUTH_ESCAPED.search(text):
+        return True
+    for value in _DATA_VALUE.findall(text):
+        try:
+            if _AUTH_BYTES.search(bytes.fromhex(value if len(value) % 2 == 0 else value[:-1])):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def _paced_template(path):
+    """Whether a template is one a service run may send, else the reason it is not: it carries ``payloads`` (guessed values, mostly accounts), it logs in or
+    authenticates (``_login_step``), it sets no parallelism of its own (a template's ``threads`` overrides nuclei's ``-pc``, so ten attempts run at once)
+    and it does not declare more than ``flags.NUCLEI_SERVICE_MAX_REQUESTS`` requests (``max-request``)."""
+    try:
+        with open(path, encoding='utf-8', errors='replace') as handle:
+            text = handle.read(256 * 1024)
+    except OSError:
+        return 'the template file cannot be read'
+    if _PAYLOADS.search(text):
+        return 'the template carries payloads (guessed values, mostly accounts)'
+    if _login_step(text):
+        return 'the template performs a login or an authentication step (a service run never sends credentials)'
+    if any(int(n) > 1 for n in _THREADS.findall(text)):
+        return 'the template sets its own parallelism'
+    if any(int(n) > flags.NUCLEI_SERVICE_MAX_REQUESTS for n in _MAX_REQUEST.findall(text)):
+        return 'the template sends more requests than a service may receive'
+    return None
+
+
+def _service_templates(selection, templates, extra, register, timeout=120):
+    """The template files a service class runs, from nuclei's own listing of the set (``templates``: the approved bundle directory, else the baked
+    set) with the filters of ``selection`` and the task's severities in ``extra``: only a template on the service-port allowlist whose file has the recorded
+    sha256 (default deny: one the list does not know, or that the library changed, is not run), and that still passes the content rule unless a person read and
+    restored it. Cached per set. An empty list means nothing of this set may run for this class: nothing is started for it."""
+    severities = tuple(extra[extra.index('-severity') + 1].split(',')) if '-severity' in extra else ()
+    key = (templates or f'image:{IMAGE_TEMPLATES_VERSION}', tuple(selection['types']), tuple(selection['tags']), tuple(selection['etags']), severities)
+    if key in _TEMPLATE_LISTINGS:
+        return _TEMPLATE_LISTINGS[key]
+    argv = [NUCLEI_BIN, *flags.nuclei_service_listing_flags(selection)] + (['-t', templates] if templates else []) + (['-severity', ','.join(severities)] if severities else [])
+    output = _run(argv, max(1, math.ceil(timeout)), register, env=nuclei_env())
+    base = templates or None
+    paths = []
+    for line in output.splitlines():
+        line = line.strip()
+        header = _LISTED_FROM.search(line) if line.startswith('Listing') else None
+        if header and base is None:
+            base = header.group(1)
+        elif line.endswith('.yaml'):
+            paths.append(line)
+    base = base or os.path.join(os.path.expanduser('~'), 'nuclei-templates')
+    allowlist = nuclei_allowlist.load_allowlist()
+    files, skipped, unlisted = [], 0, 0
+    for rel in paths:
+        path = rel if os.path.isabs(rel) else os.path.join(base, rel)
+        allowed, _why, tid = nuclei_allowlist.check_file(path, allowlist)
+        if not allowed:
+            unlisted += 1
+        elif tid not in allowlist['reviewed_exceptions'] and _paced_template(path) is not None:
+            skipped += 1
+        else:
+            files.append(path)
+    if skipped or unlisted:
+        logger.info('nuclei: of %d templates listed for this service %d are not on the service-port allowlist (or their file changed) and %d fail the content rule; %d run', len(paths), unlisted, skipped, len(files))
+    if len(_TEMPLATE_LISTINGS) >= _LISTING_KEPT:
+        _TEMPLATE_LISTINGS.clear()
+    _TEMPLATE_LISTINGS[key] = files
+    return files
+
+
+def _allowed_on_port(path, port):
+    """Whether a listed template may be sent to a target on ``port``: it is on the allowlist with the recorded sha256 now, and when it names a port of its own
+    (``fixed_ports``: a literal port in its host or address) the target is on that port, so it never reaches a port the task did not name."""
+    allowlist = nuclei_allowlist.load_allowlist()
+    allowed, _why, tid = nuclei_allowlist.check_file(path, allowlist)
+    if not allowed:
+        return False
+    fixed = allowlist['templates'][tid].get('fixed_ports') or ()
+    return not fixed or port in fixed
+
+
+NO_CHECK_REASON = 'no check exists for this service'  # the server shows it as it is, and reads it as "nothing to check", not as a failure (it records it as covered for now)
+NO_LIST_REASON = 'the service-port allowlist is missing or empty'  # a fault of this Sentinel: nothing was checked, and the port stays unreachable and due
+DETECTION_WEB_REASON = 'the network detection pass runs on non-web ports only'  # a web target in a network detection task: not run, never an http template
+
+
+def _detection_only(files):
+    """The listed template files that are network detection templates (``flags.NUCLEI_DETECTION_DIR``), read from the service-port allowlist's own record of where
+    each reviewed template lives (``nuclei_allowlist.is_detection``), never from where the file sits now: a bundle cannot move a template into the pass."""
+    allowlist = nuclei_allowlist.load_allowlist()
+    out = []
+    for path in files:
+        _allowed, _why, tid = nuclei_allowlist.check_file(path, allowlist)
+        if nuclei_allowlist.is_detection(tid, allowlist):
+            out.append(path)
+    return out
+
+
+def _run_service_port(target, klass, tags, budget, deadline, extra, templates, register, secret_file, listing_failed=None, spent=0.0, detection=False):
+    """One non-web ``host:port`` of class ``klass``: its template files, each as its own nuclei process, one at a time, with ``budget['pause_ms']`` between
+    one run ending and the next starting, and ``budget['seconds']`` for the port (and never past ``deadline``). One connection is in flight at a time and a
+    new template starts no sooner than the pause, which is the bound on what the port receives (see ``flags.NUCLEI_SERVICE_BUDGET``). The third run in a row
+    that gets no answer at all ends the port: nothing is listening, and it is not asked again. A run that fails does not end the port, and a port whose every
+    run failed is reported as not checked, with the reason.
+    ``detection`` is the network detection pass (contract 10, ``flags.nuclei_detection_selection``): only the class's tcp templates whose reviewed path is under
+    ``network/detection/``, whatever ``tags`` says; a class with none has no check (``nuclei_allowlist.detection_classes``).
+    Returns ``{'findings', 'unreachable', 'incomplete', 'no_templates', 'reason'}``; ``reason`` is why the port was not fully checked, else ``None``."""
+    selection = flags.nuclei_detection_selection(klass) if detection else flags.nuclei_service_selection(klass, tags)
+    out = {'findings': [], 'unreachable': False, 'incomplete': False, 'no_templates': False, 'reason': None}
+    covered = klass in nuclei_allowlist.detection_classes() if detection else nuclei_allowlist.covers(klass)
+    if not covered:  # the list has no template for this service at all (or no list): nothing was checked, and the answer says so
+        out['no_templates'] = True
+        if nuclei_allowlist.load_allowlist()['templates']:  # a list that loaded and names nothing of this class: there is no check for this service (postgres, ldap...), an answer
+            out['reason'] = NO_CHECK_REASON
+        else:  # no list at all: a fault, not an answer: the port is unreachable and due
+            out['unreachable'], out['reason'] = True, NO_LIST_REASON
+        logger.warning('nuclei: the service-port allowlist has no template for the class %s: %s is not checked', klass, target)
+        return out
+    if selection is None:
+        out['no_templates'] = True  # the task asked for nothing that speaks this protocol
+        return out
+    failed_before = listing_failed.get(klass) if listing_failed is not None else None
+    if failed_before:
+        out['unreachable'], out['incomplete'], out['reason'] = True, True, failed_before
+        return out
+    try:
+        files = _service_templates(selection, templates, extra, register, max(1, min(120, deadline - _clock())))
+    except (ToolExitError, subprocess.TimeoutExpired, OSError) as exc:  # the listing is the one step before the runs: its failure never costs the task its other findings
+        out['unreachable'] = out['incomplete'] = True
+        out['reason'] = f'the template listing failed ({str(exc)[:120]})'
+        logger.warning('nuclei: the template listing for %s failed: %s', klass, str(exc)[:200])
+        if listing_failed is not None:
+            listing_failed[klass] = out['reason']
+        return out
+    port = (flags.nuclei_label_key(target) or (None, None))[1]
+    files = [path for path in files if _allowed_on_port(path, port)]
+    if detection:
+        files = _detection_only(files)
+    if not files:
+        out['no_templates'] = True  # nothing of this set may run for this class on this port: no process is started
+        return out
+    argv = nuclei_flags_for_budget(flags.nuclei_service_flags(selection, budget)) + extra
+    port_deadline = min(deadline, _clock() + budget['seconds'] - spent)  # what the banner probe took is part of the port's budget
+    pause = flags.nuclei_service_pause_ms(klass, budget) / 1000.0
+    reached = failed = quiet = silent = changed = 0
+    last_error = None
+    for index, path in enumerate(files):
+        left = port_deadline - _clock()
+        if left <= 0:
+            out['incomplete'], out['reason'] = True, f'its time ran out after {index} of {len(files)} templates'
+            break
+        with tempfile.TemporaryDirectory(prefix='nuclei-svc-') as private:  # mode 0700: only the Sentinel's user can write there
+            copy, _why, _tid = nuclei_allowlist.private_copy(path, private)  # read once, hashed, and written as it was hashed: nuclei opens this copy, never the library file
+            if copy is None:  # one that changed since the list was made never runs
+                changed += 1
+                logger.warning('nuclei: %s changed since it was listed and is no longer on the service-port allowlist; it is not run', path)
+                continue
+            try:
+                got = _nuclei_pass([target], argv + ['-t', copy], max(1, min(flags.NUCLEI_SERVICE_TEMPLATE_SECONDS, math.ceil(left))), register, secret_file, filtered=True)
+            except ToolExitError as exc:  # one template that fails does not fail the port, or the task
+                failed += 1
+                last_error = str(exc)[:200]
+                logger.warning('nuclei: a template run on %s failed: %s', target, last_error)
+            else:
+                out['findings'] += got['findings']
+                out['incomplete'] = out['incomplete'] or got['incomplete']
+                quiet += got['no_templates']
+                if got['unreachable']:
+                    silent += 1
+                    if not reached and silent >= flags.NUCLEI_SERVICE_SILENT_RUNS:
+                        out['unreachable'], out['reason'] = True, 'nothing answered on this port'
+                        return out
+                else:
+                    reached += 1
+        if index + 1 < len(files):
+            _sleep(max(0.0, min(pause, deadline - _clock())))  # never a pause that runs past the task's own time
+    if changed and not out['reason']:
+        out['reason'] = f'{changed} of {len(files)} template files changed while the port was being checked and were not run'
+    out['no_templates'] = quiet == len(files)  # every run said its filter matched no template: nothing to check
+    if not reached and silent and not failed and not out['findings']:
+        out['unreachable'], out['reason'] = True, 'nothing answered on this port'
+    elif not reached and failed and not out['findings']:
+        out['reason'] = f'every template run failed ({last_error})'
+        out['unreachable'] = True
+    elif out['reason'] or failed:
+        out['reason'] = out['reason'] or f'{failed} of {len(files)} template runs failed'
+        out['incomplete'] = True
+    return out
+
+
+BANNER_TIMEOUT = 3
+BANNER_BYTES = 64
+
+
+def _probe_banner(host, port, resolve=None):
+    """The first bytes a service on ``host:port`` sends by itself on connect, or ``None``: one short connection, nothing sent. sshd names itself this way
+    (``SSH-2.0-...``), and the one place it matters is a port the server could not name, which would otherwise get some 600 short connections that each count
+    toward OpenSSH's per-source penalties. ``resolve`` is the task's own resolver (``_resolver``, the answers scope judged): a host name is connected by the first
+    address it was judged by and is not resolved again."""
+    if resolve is not None and not _is_ip(host):
+        try:
+            host = next(i[4][0] for i in resolve(host, None) if _is_ip(i[4][0]))
+        except (OSError, UnicodeError, StopIteration):
+            return None
+    try:
+        with socket.create_connection((host, port), timeout=BANNER_TIMEOUT) as sock:
+            sock.settimeout(BANNER_TIMEOUT)
+            return sock.recv(BANNER_BYTES)
+    except OSError:
+        return None
+
+
+def _banner_is_ssh(target, resolve=None):
+    key = flags.nuclei_label_key(target)
+    banner = _probe_banner(key[0], key[1], resolve) if key else None
+    return bool(banner) and banner.startswith(b'SSH-')
+
+
+_NUCLEI_CUTS = contextvars.ContextVar('nuclei_cuts', default=None)  # the ``Cuts`` of the nuclei run of this thread: its parses and passes add to it
+
+
+def _nuclei_cuts():
+    cuts = _NUCLEI_CUTS.get()
+    return cuts if cuts is not None else Cuts()
+
+
+def _reports_cuts(run):
+    """The nuclei runner, with the cuts of every parse and pass inside it (findings over the cap, a text clipped, a pass stopped at its time limit) added to
+    its result as ``cuts``: nothing a run left out is silent (contract 5)."""
+    @functools.wraps(run)
+    def wrapper(*args, **kwargs):
+        cuts = Cuts()
+        token = _NUCLEI_CUTS.set(cuts)
+        try:
+            result = run(*args, **kwargs)
+        finally:
+            _NUCLEI_CUTS.reset(token)
+        if cuts:
+            result['cuts'] = cuts.as_list()
+        return result
+    return wrapper
+
+
+def _image_templates_dir():
+    return os.environ.get('CVENGINE_NUCLEI_TEMPLATES_DIR') or os.path.join(os.path.expanduser('~'), 'nuclei-templates')
+
+
+def _credential_exclusion(templates):
+    """``(exclusion file or None, with a credential, unreadable)`` for a web pass that may not send credentials: the templates under ``templates`` (the server's
+    bundle) or, with none, the ones baked into this image, that carry a fixed credential (``client.credential_templates``). An image with no template directory
+    has nothing to leave out (nuclei would find nothing to run). Raises ``CredentialListError`` when the list cannot be made."""
+    if templates is not None:
+        return credential_templates.exclusion_file(templates, os.path.basename(os.path.normpath(templates)))
+    directory = _image_templates_dir()
+    if not os.path.isdir(directory):
+        return None, 0, 0
+    return credential_templates.exclusion_file(directory, f'image:{IMAGE_TEMPLATES_VERSION}', beside=True)
+
+
+def warm_credential_templates():
+    """Make (or read) the list of image templates that send a credential, so the first nuclei task is not charged for it. Never raises."""
+    try:
+        exclusion, _credential, _unreadable = _credential_exclusion(None)
+        if exclusion:
+            os.unlink(exclusion)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning('nuclei: the list of image templates that send a credential could not be made at start: %s', str(exc)[:200])
+
+
+@_reports_cuts
+def run_nuclei(targets, tags=None, severities=None, timeout=3600, register=None, templates=None, secret_file=None, services=None, budget=None, allow_credential_checks=False,
+               network_detection=False, external=False):
     """Host names are passed to nuclei as names, because each finding reports the host it was given. They were judged by scope (and by
     every address they resolved to) just before; nuclei resolves them again, so a name whose DNS answer changes in between is the one gap.
     ``templates`` is a directory of approved templates (the server's verified bundle, ``client.templates``): nuclei then runs exactly that set and
     nothing else; without it nuclei uses the templates baked into this image. ``secret_file`` is a signed-in run's nuclei secrets file
-    (``client.signed_in``): passed with ``-sf`` and ``-dr`` (no redirects, so the sign-in is never carried to wherever one leads), as the server does."""
-    targets = validate_targets(targets, endpoint=True)
-    flags = nuclei_flags_for_budget(NUCLEI_FLAGS) + _proxy_args('nuclei', targets)
+    (``client.signed_in``): passed with ``-sf`` and ``-dr`` (no redirects, so the sign-in is never carried to wherever one leads), as the server does.
+
+    A port only receives the templates of the protocol that speaks there. ``services`` is the server's label of each ``host:port`` (``web``, ``unknown``,
+    or a class of ``cvengine_scanner.flags.NUCLEI_SERVICES``: ssh, smtp, imap...). The web targets run first, together, without the raw tcp and javascript
+    templates and with a per-host rate; the web pass is stopped when only ``flags.NUCLEI_SERVICE_TIME_SHARE`` of the task's time is left, which the non-web
+    ports then share. Each non-web host:port runs its own templates one at a time, paced (``_run_service_port``), under the bound ``budget`` puts on one
+    service (``flags.nuclei_service_budget``: a task can make it gentler, never harsher). A port or run that fails, or runs out of time, does not fail the
+    task or lose the findings already found: the result's ``not_checked`` names each port not fully checked and why.
+
+    ``allow_credential_checks`` is the task's own field, true only when a person turned credential checks on at the server: only then may the web pass
+    run default-login and brute-force templates (a credential tag of the task's filter is otherwise left out). It never reaches the service ports.
+
+    ``external`` (a task's field, contract 11): the targets are outside any private network, so each is judged as a Sentinel that is not internal judges
+    it (``_judged_targets``), whatever this machine's own setting.
+
+    ``network_detection`` (a ``nuclei_light`` task's field, contract 10) makes the task the network detection pass: only its non-web host:port targets are run,
+    each with the ``network/detection/`` templates of its class (``_run_service_port``'s ``detection``), and the task's tags are not used for them. A web target
+    is not run (named in ``not_checked``): the pass never sends an http template."""
+    allow_credentials = allow_credential_checks is True  # anything but a real true is off
+    detection = network_detection is True
+    resolve = _resolver()  # one resolver for the task: the names are resolved once, for the scope judgment, and the banner probe connects to what was judged
+    targets, refused = _judged_targets(targets, resolve, external=external is True)
+    web, service_runs = _split_by_service(targets, services)
+    skipped_web = []
+    if detection:  # the detection pass sends no http template: a web target the server should not have sent is named, never run
+        web, skipped_web = [], web
+    extra = _proxy_args('nuclei', targets)
+    proxied = bool(extra)  # a run through the egress proxy never connects directly, so it reads no banner either
     if secret_file is not None:
         if not isinstance(secret_file, str) or not os.path.isabs(secret_file) or not os.path.isfile(secret_file):
             raise TargetError('the signed-in run has no usable secrets file')
-        flags += ['-sf', secret_file, '-dr']
-    if templates is not None:
-        if not isinstance(templates, str) or not os.path.isabs(templates) or not os.path.isdir(templates):
-            raise TargetError('the approved template directory is not usable')
-        flags += ['-t', templates]
+        extra += ['-sf', secret_file, '-dr']
+    if templates is not None and (not isinstance(templates, str) or not os.path.isabs(templates) or not os.path.isdir(templates)):
+        raise TargetError('the approved template directory is not usable')
     clean_tags = _clean_words(tags, _TAG)
+    if not allow_credentials:
+        clean_tags = [t for t in clean_tags if t not in flags.NUCLEI_CREDENTIAL_TAGS]  # a tag of a check that sends credentials is not asked for
     if tags and not clean_tags:  # a filter was asked for and none of it is usable: never fall back to every template
         raise TargetError('none of the nuclei tags this task names is usable')
-    if clean_tags:
-        flags += ['-tags', ','.join(clean_tags)]
     clean_severities = _clean_words(severities, _SEVERITY)
     if clean_severities:
-        flags += ['-severity', ','.join(clean_severities)]
+        extra += ['-severity', ','.join(clean_severities)]
     # the release a run used: the approved bundle is stored under its sha256 (client.templates.bundle_path), the baked set is the image's
-    release = f'approved:{os.path.basename(os.path.normpath(templates))}' if templates is not None else f'image:{IMAGE_TEMPLATES_VERSION}'
+    release = _release_of(templates)
+    spend = flags.nuclei_service_budget(budget)
+    started = _clock()
+    deadline = started + timeout
+    findings, unreachable, not_checked, incomplete = [], [], [], False
+    no_check = False  # a port of a service no allowlisted template speaks to: named in ``not_checked`` (never in ``unreachable``: it was not tried and failed)
+    quiet = []  # per pass: whether its filter matched no template (nothing to check)
+    attempts = failures = 0
+    last_error = None
+    listing_failed = {}  # class -> why its template listing failed: tried once per class in a task
+    not_checked.extend({'target': t, 'reason': DETECTION_WEB_REASON} for t in skipped_web)
+    # contract 11: a target scope refuses is not run and is named, never the whole task failed for it (the server resolves no target name itself)
+    not_checked.extend({'target': t, 'reason': (flags.NUCLEI_REFUSED_PREFIX + why)[:200]} for t, why in refused.items())
+
+    def stop_for(pass_targets, reason):
+        nonlocal incomplete
+        unreachable.extend(pass_targets)
+        not_checked.extend({'target': t, 'reason': reason} for t in pass_targets)
+        incomplete = True
+
+    if web:  # the main scan goes first, and may use all of the task's time except the share kept for the non-web ports
+        reserve = timeout * flags.NUCLEI_SERVICE_TIME_SHARE if service_runs else 0
+        left = deadline - reserve - _clock()
+        if left <= 0:
+            stop_for(web, 'the task ran out of time before the web pass')
+        else:
+            web_flags = nuclei_flags_for_budget(flags.nuclei_web_flags(len({host_of({'host': t}) for t in web}), spend, allow_credentials)) + extra
+            web_flags += (['-t', templates] if templates is not None else []) + (['-tags', ','.join(clean_tags)] if clean_tags else [])
+            exclusion = None
+            if not allow_credentials:  # no check that sends credentials runs unless a person turned it on: the installed set is filtered, never run whole
+                try:
+                    exclusion, with_credentials, unreadable = _credential_exclusion(templates)
+                except Exception as exc:  # noqa: BLE001 - the list could not be made: the unfiltered set must not run in its place
+                    logger.warning('nuclei: the list of templates that send a credential could not be made: %s', str(exc)[:200])
+                    stop_for(web, 'the list of templates that send a credential could not be made, so the web pass did not run')
+                    web = []
+                else:
+                    if exclusion:
+                        web_flags += ['-et', exclusion]
+                        _nuclei_cuts().items('templates_with_credentials', 0, with_credentials)
+                        _nuclei_cuts().items('templates_unreadable', 0, unreadable)
+            attempts += 1 if web else 0
+            try:
+                if not web:
+                    raise _SkippedPass()
+                got = _nuclei_pass(web, web_flags, max(1, math.ceil(left)), register, secret_file, filtered=bool(clean_tags or clean_severities))
+            except _SkippedPass:
+                pass
+            except ToolExitError as exc:
+                failures += 1
+                last_error = exc
+                logger.warning('nuclei: the web pass failed: %s', str(exc)[:200])
+                stop_for(web, f'the web run failed ({str(exc)[:120]})')
+            else:
+                findings += got['findings']
+                unreachable += got['unreachable']
+                incomplete = incomplete or got['incomplete']
+                if got['incomplete']:
+                    not_checked.extend({'target': t, 'reason': 'the run ran out of time'} for t in got['unreachable'])
+                quiet.append(got['no_templates'])
+            finally:
+                if exclusion:
+                    try:
+                        os.unlink(exclusion)
+                    except OSError:
+                        pass
+    for number, (target, klass) in enumerate(service_runs):
+        if number >= flags.NUCLEI_SERVICE_MAX_PORTS:
+            stop_for([target], f'a task checks at most {flags.NUCLEI_SERVICE_MAX_PORTS} non-web ports; this one is for another task')
+            continue
+        if deadline - _clock() <= 0:
+            stop_for([target], 'the task ran out of time before this port')
+            continue
+        attempts += 1
+        spent = 0.0
+        if klass == flags.NUCLEI_UNKNOWN and not proxied:
+            began = _clock()
+            if _banner_is_ssh(target, resolve):
+                klass = 'ssh'  # sshd on a port nothing named: it gets the ssh templates at the ssh pace
+            spent = max(0.0, _clock() - began)  # the probe is charged to this port's budget
+        got = _run_service_port(target, klass, () if detection else clean_tags, spend, deadline, extra, templates, register, secret_file, listing_failed, spent,
+                                detection=detection)
+        findings += got['findings']
+        incomplete = incomplete or got['incomplete']
+        quiet.append(got['no_templates'])
+        if got['reason'] == NO_CHECK_REASON:
+            no_check = True
+            not_checked.append({'target': target, 'reason': NO_CHECK_REASON})
+        elif got['unreachable'] or got['reason']:
+            unreachable.append(target)  # a port not fully checked (nothing answered, out of time, runs failed) is reported so the server keeps it due
+            not_checked.append({'target': target, 'reason': got['reason'] or 'not fully checked'})
+        if got['reason'] and got['reason'].startswith('every template run failed'):
+            failures += 1
+    if attempts and failures == attempts and not findings:
+        raise last_error or ToolExitError('every nuclei run of this task failed')  # nothing ran: that is an error, not an answer
+    if quiet and all(quiet) and not findings and not incomplete and not unreachable and not no_check and not skipped_web and not refused:
+        # the filter this task asked for matches no template in this set: there is nothing to check on these targets, which is an answer, not a failure
+        return {'findings': [], 'templates_release': release, 'unreachable': [], 'no_templates': True}
+    out = {'findings': findings, 'templates_release': release, 'unreachable': [t for t in targets if t in set(unreachable)] + list(refused)}
+    if incomplete:
+        out['incomplete'] = True
+    if not_checked:
+        out['not_checked'] = not_checked[:MAX_TARGETS]
+    return out
+
+
+def _judged_targets(values, resolve, external=False):
+    """``(allowed, refused)`` of a nuclei task's targets: ``validate_targets``'s rules for the list (one to ``MAX_TARGETS`` entries), then each entry judged
+    by itself (``_validate_one``: scope, and every address a name resolves to). An entry scope refuses (a name that now resolves somewhere no Sentinel may
+    scan, a malformed one) is left out with its reason, ``{value: reason}``, instead of failing the whole task (contract 11): the server no longer looks the
+    names up before it sends them, so this Sentinel's own judgement is the only one, and the other targets still run. ``external`` (the task's own field,
+    contract 11) judges every target as a Sentinel that is not internal does, whatever this machine's setting: a name of an outside target that now
+    points into a private network is refused here, as the server used to refuse it before it sent the task."""
+    if not isinstance(values, list) or not values:
+        raise TargetError('target has no usable addresses')
+    if len(values) > MAX_TARGETS:
+        raise TargetError(f'target names {len(values)} entries; the most one task may name is {MAX_TARGETS}')
+    allowed, refused = [], {}
+    internal = False if external is True else None
+    for value in values:
+        try:
+            clean = _validate_one(value, True, resolve, internal)
+        except TargetError as exc:
+            refused[str(value)[:260]] = str(exc)[:200]
+            continue
+        if clean not in allowed:
+            allowed.append(clean)
+    return allowed, refused
+
+
+def _release_of(templates):
+    """The template release a run used, for its result's ``templates_release``: ``index:<release>:<policy>`` for a set built from the template index
+    (``client.templates.ensure_index_set``), ``approved:<sha256>`` for an older server's bundle, ``image:<release>`` for the baked set used whole."""
+    if templates is None:
+        return f'image:{IMAGE_TEMPLATES_VERSION}'
+    from cvengine_scanner import template_index
+
+    from . import templates as template_sets
+    name = os.path.basename(os.path.normpath(templates))
+    if name.startswith(template_sets.INDEX_PREFIX):
+        return f'index:{template_index.release() or "unknown"}:{name.split("-", 2)[2] if name.count("-") >= 2 else ""}'
+    return f'approved:{name}'
+
+
+def _nuclei_pass(targets, argv_flags, timeout, register, secret_file, filtered):
+    """One nuclei process over ``targets``: its findings, the targets it never reached, whether it ran out of time and whether its filter matched no
+    template. A non-zero exit is an error (``ToolExitError``), except the no-template answer of a filter."""
     path = _targets_file(targets)
     with tempfile.TemporaryDirectory(prefix='nuclei-run-') as work:
         errlog = os.path.join(work, 'errors.jsonl')
         try:
             # -elog: nuclei logs every request that failed, with its input. A run that exits 0 with no findings says nothing about a target
             # nothing answered, so the error log is what tells the two apart (review H4).
-            output = _run([NUCLEI_BIN, '-l', path, *flags, '-elog', errlog], timeout, register, env=nuclei_env())
+            output = _run([NUCLEI_BIN, '-l', path, *argv_flags, '-elog', errlog], timeout, register, env=nuclei_env())
+        except subprocess.TimeoutExpired as exc:
+            # out of time: what it found so far is kept, and every target is named unfinished, so none of them is recorded as scanned clean (the server
+            # keeps findings and puts each unreachable target back as due). Before, the whole run was lost: two deep passes of one host each ran their full hour
+            # on the VPS and returned nothing.
+            found = parse_nuclei_jsonl(getattr(exc, 'partial', '') or '', evidence=secret_file is None, cuts=_nuclei_cuts())
+            _nuclei_cuts().time('time_limit', timeout)
+            logger.warning('nuclei ran out of its %s s for %d target(s); %d finding(s) kept, every target stays due', timeout, len(targets), len(found))
+            return {'findings': found, 'unreachable': list(targets), 'incomplete': True, 'no_templates': False}
+        except ToolExitError as exc:
+            if filtered and _NO_TEMPLATES.search(getattr(exc, 'stderr', '') or str(exc)):
+                # the filter this task asked for matches no template in this set (``haproxy`` at ``info``): it failed 29 tasks in two days on the VPS, the same tag
+                # sets every time, and they stayed due for ever.
+                logger.info('nuclei: no template matches this pass\'s tags and severities; nothing to check')
+                return {'findings': [], 'unreachable': [], 'incomplete': False, 'no_templates': True}
+            raise
         finally:
             os.unlink(path)
-        findings = parse_nuclei_jsonl(output, evidence=secret_file is None)  # a signed-in run keeps no request or response (its sign-in is in them)
+        found = parse_nuclei_jsonl(output, evidence=secret_file is None, cuts=_nuclei_cuts())  # a signed-in run keeps no request or response (its sign-in is in them)
         errors = parse_nuclei_errors(_read_error_log(errlog))
-    return {'findings': findings, 'templates_release': release,
-            'unreachable': unreached_targets(targets, errors, {f['host'] for f in findings})}
+    return {'findings': found, 'unreachable': unreached_targets(targets, errors, {f['host'] for f in found}), 'incomplete': False, 'no_templates': False}
 
 
 def _read_error_log(path):
@@ -548,9 +1190,12 @@ def run_testssl(host, ip, port, starttls=None, timeout=900, register=None):
         raise _scope_failure(f'not a usable testssl target: {str(host)[:100]!r} at {str(ip)[:50]!r} ({exc})', exc) from None
     port = _validate_port(port)
     destination = f'[{host}]:{port}' if ':' in host else f'{host}:{port}'
+    v6 = _is_ipv6(ip)  # testssl.sh stops with "Only IPv6 address(es) available" unless it is given -6
+    if v6 and not ipv6_route(ip):
+        raise NoIpv6Route()
     with tempfile.TemporaryDirectory(prefix='testssl-') as work:
         out = os.path.join(work, 'out.json')
-        argv = [TESTSSL_BIN, *TESTSSL_FLAGS, *_proxy_args('testssl', [host]), '--ip', ip, '--jsonfile', out]
+        argv = [TESTSSL_BIN, *TESTSSL_FLAGS, *_proxy_args('testssl', [host]), *(['-6'] if v6 else []), '--ip', ip, '--jsonfile', out]
         if starttls:
             if not isinstance(starttls, str) or not _STARTTLS.fullmatch(starttls):
                 raise TargetError(f'not a usable starttls: {str(starttls)[:30]!r}')
@@ -585,15 +1230,19 @@ def run_testssl(host, ip, port, starttls=None, timeout=900, register=None):
 # --- nmap -sU: raw XML returned as-is; the server reads it with cvengine_scanner.nmap.parse_xml -------------------------
 
 
+MAX_NMAP_UDP_REPORT = 512 * 1024  # the contract's bound on nmap_udp's report (agentapi.sentinel_broker.MAX_NMAP_UDP_XML): a larger one stops the run
+
+
 def run_nmap_udp(address, timeout=1500, register=None):
     """Run ``nmap -sU`` against one address with the curated port list and low-rate options of ``cvengine_scanner.flags.udp_nmap_flags`` (the
     server's local sweep builds its flags with the same function), and return its raw XML report text. The contract carries the raw report for
     this kind: the server reads UDP's ``open|filtered`` vocabulary and the NSE script output with ``cvengine_scanner.nmap.parse_xml``. A host
     name stays a name, because the raw report carries it; it was judged by scope with every address it resolved to just before nmap resolves it
-    again, so a DNS answer that changes in between is the one gap."""
+    again, so a DNS answer that changes in between is the one gap. A report larger than ``MAX_NMAP_UDP_REPORT`` stops the run (``ToolOutputError``):
+    the server would refuse it, and 18 ports of one address are a few KiB, so only a runaway gets there."""
     address = validate_targets([address], limit=1)[0]
     argv = [NMAP_BIN, *(['-6'] if _is_ipv6(address) else []), *udp_nmap_flags(), '-oX', '-', address]
-    return {'xml': _run(argv, timeout, register)}
+    return {'xml': _run(argv, timeout, register, max_bytes=MAX_NMAP_UDP_REPORT)}
 
 
 # --- wpscan: raw report, exit code and a trailing line of stderr; cveFeed.wpscan_scan._classify reads them server-side -
@@ -614,13 +1263,78 @@ def _failure_line(stderr, stdout, token=''):
     return ''
 
 
+def wpscan_args_for(args, token):
+    """``args`` as a run without an API token can use: WPScan refuses ``vp`` and ``vt`` (vulnerable plugins and themes) without one and aborts the whole
+    scan, so a site of a project with no token was never scanned at all (14 of the last 90 runs on the VPS). Without a token the scan lists the plugins
+    and themes it detects and their versions instead (``p``, ``t``), which the server's own CVE feed reads."""
+    if token:
+        return list(args)
+    out = list(args)
+    if '--enumerate' in out and out.index('--enumerate') + 1 < len(out):
+        i = out.index('--enumerate') + 1
+        out[i] = ','.join({'vp': 'p', 'vt': 't'}.get(part, part) for part in out[i].split(','))
+    return out
+
+
+_REDIRECTS_TO = re.compile(r'The URL supplied redirects to (https?://\S+?)\.?(?:\s|$)')
+
+
+def _site(host):
+    host = (host or '').lower().rstrip('.')
+    return host[4:] if host.startswith('www.') else host
+
+
+def same_site_redirect(url, outcome):
+    """The URL an aborted scan says ``url`` redirects to, when it is the same site (the same host, or its ``www.`` twin, http or https), else None. WPScan stops
+    at the redirect rather than follow it, so a site that answers on its other name (www to apex, a path) was never scanned: 32 of the last 90 runs on the
+    VPS. Anything that leaves the site is left alone: the scan is never carried to a host it was not given."""
+    report = outcome.get('report') if isinstance(outcome, dict) else None
+    if outcome.get('returncode') != 4 or not isinstance(report, dict):
+        return None
+    found = _REDIRECTS_TO.search(str(report.get('scan_aborted') or ''))
+    if not found:
+        return None
+    target = found.group(1)
+    if not _URL.match(target) or target.rstrip('/') == url.rstrip('/'):
+        return None
+    from urllib.parse import urlsplit
+    if _site(urlsplit(target).hostname) != _site(urlsplit(url).hostname):
+        return None
+    return target
+
+
+MIN_HOP_SECONDS = 60  # a redirected scan with less time than this left is not started (WPScan stops itself 30 s before its limit)
+MAX_REDIRECT_HOPS = 3  # http to https, apex to www, a path: more than that is a loop or a site that is not worth chasing
+
+
+def _wpscan_following(url, token, timeout, register, args):
+    """The scan of ``url``, carried through up to ``MAX_REDIRECT_HOPS`` redirects on the same site (``same_site_redirect``), never to a URL already
+    scanned. The outcome of the last scan is returned: a redirect that leaves the site, or one past the limit, is that outcome's own text."""
+    seen = {url.strip().rstrip('/')}
+    deadline = time.monotonic() + timeout  # one limit for the whole chain: the server waits, and the watchdog allows, for one scan's time
+    outcome = _wpscan(url, token, timeout, register, wpscan_args_for(args, token))
+    for _hop in range(MAX_REDIRECT_HOPS):
+        target = same_site_redirect(url, outcome)
+        if target is None or target.rstrip('/') in seen:
+            break
+        left = int(deadline - time.monotonic())
+        if left < MIN_HOP_SECONDS:  # not time for a scan: the redirect text is the outcome, as for a hop past the limit
+            logger.info('wpscan: %s redirects to %s but only %d s of the time limit is left; not scanning it', url, target, max(left, 0))
+            break
+        logger.info('wpscan: %s redirects to %s on the same site; scanning that (%d s left)', url, target, left)
+        seen.add(target.rstrip('/'))
+        url = target
+        outcome = _wpscan(url, token, left, register, wpscan_args_for(args, token))  # judged by scope again inside, as any URL
+    return outcome
+
+
 def run_wpscan(url, token='', timeout=900, register=None):
     """Run the quick pass of WPScan on one site and return its raw outcome: ``{'report', 'returncode', 'stderr_tail'}``, exactly what
     ``cveFeed.wpscan_scan._classify`` already reads from a local run: the one function, local or dispatched, that
     turns a wpscan process's outcome into a report or a classified failure. The API token travels in the environment,
     never a command line argument, and never logged. The URL's host is judged by scope (with every address it resolves
     to); WPScan resolves it again, so a DNS answer that changes in between is the one gap."""
-    return _wpscan(url, token, timeout, register, WPSCAN_ARGS)
+    return _wpscan_following(url, token, timeout, register, WPSCAN_ARGS)
 
 
 def run_wpscan_thorough(url, token='', timeout_seconds=None, register=None):
@@ -629,7 +1343,7 @@ def run_wpscan_thorough(url, token='', timeout_seconds=None, register=None):
     ``flags.thorough_timeout``). Same URL, scope, token and result handling as the quick pass: ``{'report', 'returncode', 'stderr_tail'}``, where a
     run cut at its limit still reports what it read (WPScan ends its scan 30 seconds before the process would be killed, exit code 4 with a partial
     report)."""
-    return _wpscan(url, token, thorough_timeout(timeout_seconds), register, WPSCAN_THOROUGH_ARGS)
+    return _wpscan_following(url, token, thorough_timeout(timeout_seconds), register, WPSCAN_THOROUGH_ARGS)
 
 
 def _wpscan(url, token, timeout, register, args):
@@ -827,7 +1541,7 @@ def run_dns_resolve(target, register=None):
 
 # --- nmap_full and nmap_verify: one address, the raw report read by the server's own parser -----------------------------------------------
 
-MAX_NMAP_REPORT = 4 * 1024 * 1024  # agentapi.sentinel_broker.MAX_NMAP_UDP_XML: the server refuses a larger report
+MAX_NMAP_REPORT = 4 * 1024 * 1024  # an nmap_verify report (agentapi.sentinel_broker.MAX_NMAP_REPORT_XML): the server refuses a larger report
 
 
 def _one_address(value):
@@ -1039,16 +1753,171 @@ def _template_text(text):
     return text
 
 
-def _run_status(argv, timeout, register):
-    """``(returncode, stdout, stderr)`` of a run whose non-zero exit is an answer (nuclei -validate), each stream bounded."""
-    proc = _start(argv, register, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL)
+# The environment of an AI-written check's nuclei run (review D6): nothing of the Sentinel's own (its enrollment blob, token file, server address or any
+# other secret), only what nuclei needs to start, find its own files and go through a configured proxy.
+_CHECK_ENV_KEYS = ('PATH', 'HOME', 'LANG', 'LC_ALL', 'TZ', 'SSL_CERT_FILE', 'SSL_CERT_DIR', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY',
+                   'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy')
+CHECK_MEMORY_BYTES = 2 * 1024 * 1024 * 1024  # a hard cap on the data a check's nuclei may map (RLIMIT_DATA); GOMEMLIMIT keeps it near 500 MB first
+CHECK_OUTPUT_BYTES = 16 * 1024 * 1024  # stdout of a check's nuclei run: at most 64 targets of one template, far below this
+
+
+def _check_env(work):
+    """The minimal environment of a check's nuclei run: ``_CHECK_ENV_KEYS`` from this one, the Go memory limit, and the run's own scratch
+    directory as ``TMPDIR``."""
+    env = {k: os.environ[k] for k in _CHECK_ENV_KEYS if k in os.environ}
+    env.setdefault('PATH', '/usr/local/bin:/usr/bin:/bin')
+    env['GOMEMLIMIT'] = f'{admission.NUCLEI_GOMEMLIMIT_MB}MiB'
+    if work:
+        env['TMPDIR'] = work
+    return env
+
+
+# The oldest nuclei that may run an AI-written check outside the built-in scanner. Before v3.9.0 nuclei's expression lexer (Knetic's govaluate) ended
+# a string at either kind of quote, which is not how the allowlist (``cvengine_scanner.check_allowlist``) reads a string; the image pins 3.11.1, and
+# a ``CVENGINE_NUCLEI_BIN`` of another build is held to the same floor.
+NUCLEI_MIN_VERSION = (3, 9, 0)
+_NUCLEI_VERSION = re.compile(r'(?i)engine version:\s*v?(\d+)\.(\d+)\.(\d+)')
+_NUCLEI_VERSION_CACHE = {}
+
+
+def nuclei_version():
+    """The ``(major, minor, patch)`` this Sentinel's nuclei reports (``nuclei -version``, asked in the check environment, once per binary), or ``None``
+    when it does not answer or the answer is not a version."""
+    if NUCLEI_BIN not in _NUCLEI_VERSION_CACHE:
+        try:
+            ran = subprocess.run([NUCLEI_BIN, '-version'], capture_output=True, timeout=20, check=False, env=_check_env(None))
+            found = _NUCLEI_VERSION.search((ran.stdout + ran.stderr).decode('utf-8', 'replace'))
+        except (OSError, subprocess.SubprocessError):
+            found = None
+        _NUCLEI_VERSION_CACHE[NUCLEI_BIN] = tuple(int(g) for g in found.groups()) if found else None
+    return _NUCLEI_VERSION_CACHE[NUCLEI_BIN]
+
+
+def nuclei_floor_problem():
+    """Why this Sentinel's nuclei may not run an AI-written check (older than ``NUCLEI_MIN_VERSION``, or no version to read), or ``''``."""
+    found, floor = nuclei_version(), '.'.join(map(str, NUCLEI_MIN_VERSION))
+    if found is None:
+        return f'refused: this Sentinel could not read its nuclei version, and an AI-written check needs nuclei {floor} or newer'
+    if found < NUCLEI_MIN_VERSION:
+        return f'refused: this Sentinel has nuclei {".".join(map(str, found))}, and an AI-written check needs nuclei {floor} or newer'
+    return ''
+
+
+def _limit_memory():
+    """In the child, before nuclei starts: a hard limit on its data segment (``CHECK_MEMORY_BYTES``), so a template that makes nuclei grow is stopped
+    by the kernel, not by this container's out-of-memory killer."""
+    import resource
+    resource.setrlimit(resource.RLIMIT_DATA, (CHECK_MEMORY_BYTES, CHECK_MEMORY_BYTES))
+
+
+def _run_status(argv, timeout, register, work=None):
+    """``(returncode, stdout, stderr)`` of a check's nuclei run, whose non-zero exit is an answer (nuclei -validate). It runs with the minimal
+    environment of ``_check_env`` (no secret of this Sentinel), under the memory cap of ``_limit_memory``, killed with its whole group at ``timeout``,
+    and stdout is read through a cap (``CHECK_OUTPUT_BYTES``: more stops the run and raises ``ToolOutputError``), stderr through ``_STDERR_KEPT``."""
+    proc = _start(argv, register, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, env=_check_env(work),
+                  preexec_fn=_limit_memory)
+    out, err, too_big = bytearray(), bytearray(), threading.Event()
+
+    def overflow():
+        too_big.set()
+        _kill_group(proc)
+    readers = [threading.Thread(target=_drain, args=(proc.stdout, out, CHECK_OUTPUT_BYTES, overflow), daemon=True),
+               threading.Thread(target=_drain, args=(proc.stderr, err, _STDERR_KEPT), daemon=True)]
+    for reader in readers:
+        reader.start()
     try:
-        out, err = proc.communicate(timeout=timeout)
+        proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
         _kill_group(proc)
-        proc.communicate()
+        proc.wait()
+        _join(proc, readers)
         raise
-    return proc.returncode, out[-MAX_TOOL_OUTPUT:].decode('utf-8', 'replace'), err[-_STDERR_KEPT:].decode('utf-8', 'replace')
+    _join(proc, readers)
+    if too_big.is_set():
+        raise ToolOutputError(f'{os.path.basename(argv[0])} wrote more than {CHECK_OUTPUT_BYTES} bytes of output; the run was stopped')
+    return proc.returncode, out.decode('utf-8', 'replace'), err.decode('utf-8', 'replace')
+
+
+class PinnedResolver:
+    """A DNS server on a loopback port of this Sentinel that nuclei is pointed at with ``-r`` for a check's run (review D5): it answers each name
+    the task named with exactly the addresses that name resolved to when scope judged it (``pins``: ``{name: [address, ...]}``), and every other
+    question with \"no such name\". A target name whose DNS answer changes after it was judged (DNS rebinding) still reaches only the judged
+    address, and a template's own name lookups reach no outside resolver. Two limits: an install proxy (``HTTP_PROXY`` and the like) resolves the
+    name at the proxy, outside this resolver, and a name with non-ASCII letters is pinned in its Unicode form while nuclei asks in punycode, so it
+    gets no answer (it fails closed). A context manager; ``path`` is the resolvers file for ``-r``."""
+
+    def __init__(self, pins, work):
+        self.pins = {str(k).rstrip('.').lower(): list(v) for k, v in (pins or {}).items()}
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.bind(('127.0.0.1', 0))
+        self.sock.settimeout(0.5)
+        self.path = os.path.join(work, 'resolvers.txt')
+        with open(self.path, 'w', encoding='ascii') as handle:
+            handle.write(f'127.0.0.1:{self.sock.getsockname()[1]}\n')
+        self.stopped = threading.Event()
+        self.thread = threading.Thread(target=self._serve, daemon=True)
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self.stopped.set()
+        self.thread.join(2)
+        self.sock.close()
+
+    def answer(self, query):
+        """The reply to one DNS query (bytes), or ``None`` for something that is not one."""
+        if len(query) < 17:
+            return None
+        pos, labels = 12, []
+        while pos < len(query) and query[pos]:
+            size = query[pos]
+            if size > 63 or pos + 1 + size > len(query):
+                return None
+            labels.append(query[pos + 1:pos + 1 + size].decode('ascii', 'replace'))
+            pos += 1 + size
+        end = pos + 5
+        if end > len(query):
+            return None
+        qtype = int.from_bytes(query[pos + 1:pos + 3], 'big')
+        name = '.'.join(labels).lower()
+        question = query[12:end]
+        if name not in self.pins:
+            return query[:2] + b'\x81\x83' + b'\x00\x01\x00\x00\x00\x00\x00\x00' + question  # NXDOMAIN
+        records = b''
+        count = 0
+        for address in self.pins[name]:
+            ip = ipaddress.ip_address(address)
+            if (qtype, ip.version) in ((1, 4), (28, 6)):
+                records += b'\xc0\x0c' + qtype.to_bytes(2, 'big') + b'\x00\x01\x00\x00\x00\x3c' + len(ip.packed).to_bytes(2, 'big') + ip.packed
+                count += 1
+        return query[:2] + b'\x81\x80' + b'\x00\x01' + count.to_bytes(2, 'big') + b'\x00\x00\x00\x00' + question + records
+
+    def _serve(self):
+        while not self.stopped.is_set():
+            try:
+                query, peer = self.sock.recvfrom(4096)
+            except socket.timeout:
+                continue
+            except OSError:
+                return
+            reply = self.answer(query)
+            if reply is not None:
+                try:
+                    self.sock.sendto(reply, peer)
+                except OSError:
+                    pass
+
+
+def _pins(answers):
+    """``{name: [address, ...]}`` from a ``_resolver``'s remembered answers: every address each name resolved to when it was judged."""
+    pins = {}
+    for name, infos in answers.items():
+        if isinstance(infos, Exception) or _is_ip(name):
+            continue
+        pins[name] = list(dict.fromkeys(info[4][0].split('%')[0] for info in infos if _is_ip(info[4][0].split('%')[0])))
+    return pins
 
 
 def is_hit(row):
@@ -1078,8 +1947,11 @@ def _benign_fixture(path, register):
     server.daemon_threads = True
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
+    work = os.path.dirname(path)
     try:
-        code, out, _err = _run_status([NUCLEI_BIN, '-t', path, '-u', f'http://127.0.0.1:{server.server_port}', *NUCLEI_FIXTURE_FLAGS], 30, register)
+        with PinnedResolver({}, work) as stub:  # the loopback page is an address: no name needs an answer, and a template's own lookups get none
+            code, out, _err = _run_status([NUCLEI_BIN, '-t', path, '-u', f'http://127.0.0.1:{server.server_port}', *NUCLEI_FIXTURE_FLAGS,
+                                           '-r', stub.path], 30, register, work=work)
         if code != 0:
             return False, 'local fixture execution failed'
         for line in out.splitlines():
@@ -1108,12 +1980,43 @@ def _host_key(value):
     return value.rsplit(':', 1)[0] if value.count(':') == 1 else value
 
 
+def _host_port(value):
+    """The port a host or URL names (``host:port``, ``[v6]:port``, ``https://host:port/``), the scheme's default for a URL that names none, else 0."""
+    value = str(value or '').strip().lower()
+    scheme, _, rest = value.rpartition('://') if '://' in value else ('', '', value)
+    rest = rest.split('/', 1)[0]
+    if rest.startswith('['):
+        port = rest.split(']', 1)[1].lstrip(':')
+    else:
+        port = rest.rsplit(':', 1)[1] if rest.count(':') == 1 else ''
+    return int(port) if port.isdigit() else {'https': 443, 'http': 80}.get(scheme, 0)
+
+
+def _hit_port(row):
+    """The port a result line's ``matched-at`` (else its ``host``) names, 0 when it names none (a DNS match, or a bare host)."""
+    return next((p for p in (_host_port(row.get(k)) for k in ('matched-at', 'host')) if p), 0)
+
+
+def _hit_host(row):
+    """The host a result line is a hit for, or ``None`` when its ``host`` and ``matched-at`` name different hosts (a template that reached somewhere
+    else than the target it was run against) or it names none. Only a host the task named is ever given an outcome (``_template_test``)."""
+    named = {_host_key(row.get(k)) for k in ('host', 'matched-at') if isinstance(row.get(k), str) and row.get(k).strip()}
+    if not named and isinstance(row.get('ip'), str):
+        named = {_host_key(row['ip'])}
+    return named.pop() if len(named) == 1 else None
+
+
 def _trim_hit(row):
     return {k: (v[:8000] if isinstance(v, str) and k in ('request', 'response', 'curl-command') else v) for k, v in row.items()} if row else None
 
 
 def _template_test(path, hosts, register):
-    """One outcome per host, in order (cveFeed.templategen._run_template's shape). A host scope refuses is not tested, never run."""
+    """One outcome per host, in order (cveFeed.templategen._run_template's shape). A host scope refuses is not tested, never run.
+
+    Each name is resolved once, here, and every address it resolved to is judged by scope (``_validate_one``); nuclei is then pointed at a resolver
+    of this Sentinel's own that answers each name with exactly those addresses (``PinnedResolver``, ``-r``), so a DNS answer that changes after the
+    check (rebinding to an internal or metadata address) is never reached. ``_pinned`` (names replaced by their first IPv4 address) is not used:
+    nuclei would then send the address as the Host header and SNI and file each hit under the address, not the host the task named."""
     allowed, refused = [], {}
     resolve = _resolver()
     for host in hosts:
@@ -1122,15 +2025,16 @@ def _template_test(path, hosts, register):
             allowed.append(host)
         except TargetError as exc:
             refused[host] = str(exc)[:300]
-    rows, hits, error, unreached = {}, {}, '', set()
+    hits, error, unreached = {}, '', set()
     if allowed:
         proxy = _proxy_args('nuclei', allowed)  # cvENGINE's egress proxy, as the server's own template test (cveFeed.templategen._run_template) takes it
         host_path = _targets_file(allowed)
         with tempfile.TemporaryDirectory(prefix='nuclei-test-') as work:
             errlog = os.path.join(work, 'errors.jsonl')
             try:
-                code, out, err = _run_status([NUCLEI_BIN, '-t', path, '-l', host_path, *NUCLEI_TEMPLATE_FLAGS, '-elog', errlog, *proxy],
-                                             NUCLEI_TEMPLATE_TIMEOUT, register)
+                with PinnedResolver(_pins(resolve.answers), work) as stub:
+                    code, out, err = _run_status([NUCLEI_BIN, '-t', path, '-l', host_path, *NUCLEI_TEMPLATE_FLAGS, '-elog', errlog, '-r', stub.path,
+                                                  *proxy], NUCLEI_TEMPLATE_TIMEOUT, register, work=work)
             finally:
                 os.unlink(host_path)
             errors = parse_nuclei_errors(_read_error_log(errlog))
@@ -1148,9 +2052,10 @@ def _template_test(path, hosts, register):
                 error = 'nuclei returned malformed JSON output'
                 break
             if is_hit(row):
-                key = _host_key(row.get('host') or row.get('matched-at') or row.get('ip'))
-                hits.setdefault(key, []).append(line)
-                rows.setdefault(key, row)
+                key = _hit_host(row)
+                if key is None:
+                    continue  # a line whose host and matched-at disagree, or name no host: never a hit for anyone
+                hits.setdefault(key, []).append((_hit_port(row), line, row))
         if not error:  # a host nothing answered is an error, never a negative test (review H4)
             unreached = set(unreached_targets(allowed, errors, set(hits)))
     outcomes = []
@@ -1162,35 +2067,105 @@ def _template_test(path, hosts, register):
         elif host in unreached:
             outcomes.append({'host': host, 'vulnerable': False, 'output': '', 'error': 'nuclei never reached this host (no answer to any request)'})
         else:
-            key = _host_key(host)
-            outcomes.append({'host': host, 'vulnerable': bool(hits.get(key)), 'output': '\n'.join(hits.get(key, []))[-2000:],
-                             'hit': _trim_hit(rows.get(key))})
+            key, port = _host_key(host), _host_port(host)  # a host asked with a port is answered only by a hit on that port (one that names no port is kept)
+            mine = [(line, row) for hit_port, line, row in hits.get(key, []) if not port or not hit_port or hit_port == port]
+            outcomes.append({'host': host, 'vulnerable': bool(mine), 'output': '\n'.join(line for line, _ in mine)[-2000:],
+                             'hit': _trim_hit(mine[0][1] if mine else None)})
     return outcomes
 
 
-def run_nuclei_validate(mode, template, targets=None, register=None):
+def _write_template(path, text):
+    """Write the check's text to its scratch file (its own function, so a test can show what happens when the file is not what was verified)."""
+    with open(path, 'w', encoding='utf-8') as handle:
+        handle.write(text)
+
+
+def _approval(approved):
+    """``(sha256, mode, sorted targets)`` of the server's answer for the task (``daemon._approved_check``), or ``(None, None, None)``. An answer of
+    two (no targets) names none: it can approve only a ``validate`` check, which has none."""
+    if isinstance(approved, tuple) and len(approved) == 3 and isinstance(approved[2], list):
+        return approved[0], approved[1], sorted(approved[2])
+    if isinstance(approved, tuple) and len(approved) == 2:
+        return approved[0], approved[1], []
+    return None, None, None
+
+
+def _same_hash(a, b):
+    """Whether two sha256 hex strings are equal, compared in constant time (``hmac.compare_digest``)."""
+    import hmac
+    return isinstance(a, str) and isinstance(b, str) and a.isascii() and b.isascii() and hmac.compare_digest(a, b)
+
+
+def _verified_template(path, text, template_sha256, approved, mode, builtin, targets=None):
+    """Write ``text`` to ``path`` and return only once the file is exactly what the server approved, else raise ``Refused`` with nothing run.
+
+    Outside the built-in scanner every rule applies: the task names a well-formed ``template_sha256``; the server, asked separately for this task
+    (``sentinel/tasks/<id>/check``, the daemon's ``_approved_check``), named the same hash, the same mode and the same sorted targets (``approved``);
+    the bytes on disk, read back, hash to it; and the text passes this Sentinel's own rules (``cvengine_scanner.checks.check_problem``: read-only,
+    only the task's own target and port, and the whole-document allowlist). The built-in scanner runs with the server's own trust, as before (an
+    older server sends no hash, the all-templates setting may send an installed template that is not read-only), but a hash or an answer it is
+    given is still checked. The file is left read-only for the run.
+
+    What the hash does and does not protect (review D4): it catches a check changed in transit, a task edited after the server made it (the server
+    hashes its stored text again before it answers), and a file changed on disk between this write and the run. It does NOT protect against a
+    compromised or malicious server: the task and the answer come from the same server, which can name any hash it likes. Against that, this
+    Sentinel's own allowlist (``check_problem``) and its target limit (scope, one task's own hosts and ports, ``_template_test``) are the defence."""
+    from cvengine_scanner import checks
+    if not builtin or template_sha256 is not None:
+        if not isinstance(template_sha256, str) or not checks.SHA256.fullmatch(template_sha256):
+            raise Refused('refused: the check names no valid template hash, so this Sentinel cannot tell it is the one the server approved')
+    if not builtin or approved is not None:
+        server_sha, server_mode, server_targets = _approval(approved)
+        asked = sorted(targets or []) if mode == 'test' else []
+        if not _same_hash(server_sha, template_sha256) or server_mode != mode:
+            raise Refused('refused: the server did not approve this check for this task (its hash or mode is not the one the server named)')
+        if server_targets != asked:
+            raise Refused('refused: the server did not approve this check for these targets (its answer names other targets than the task)')
+    _write_template(path, text)
+    os.chmod(path, 0o400)
+    with open(path, 'rb') as handle:
+        written = handle.read(MAX_TEMPLATE_BYTES + 2)
+    try:
+        on_disk = written.decode('utf-8')
+    except UnicodeDecodeError:
+        on_disk = None
+    if template_sha256 is not None and (on_disk is None or not _same_hash(checks.digest(on_disk), template_sha256)):
+        raise Refused('refused: the check does not match its template hash (changed in transit, edited after the server approved it, or changed on '
+                      'disk before the run)')
+    if not builtin:
+        problem = checks.check_problem(on_disk)
+        if problem:
+            raise Refused(f'refused: {problem}'[:280])
+        problem = nuclei_floor_problem()
+        if problem:
+            raise Refused(problem[:280])
+
+
+def run_nuclei_validate(mode, template, targets=None, register=None, template_sha256=None, approved=None, builtin=False):
     """Mode ``validate``: ``nuclei -validate`` on a new template and, when it passes, the benign loopback fixture. Mode ``test``: the approved template
     against ``targets`` (each judged by scope, as every nuclei target is), one outcome per target. The template is written to a private scratch
-    directory and nothing else is loaded with it."""
+    directory, verified there (``_verified_template``: hash, the server's approval, read-only, own target and port, the allowlist) and nothing else
+    is loaded with it. ``approved`` is ``(sha256, mode, sorted targets)`` as the server named it for this task; ``builtin`` is whether this is the install's own scanner.
+    The result names the hash it ran (``template_sha256``) when the task named one."""
     text = _template_text(template)
+    if mode not in ('validate', 'test'):
+        raise TargetError(f'not a nuclei_validate mode: {str(mode)[:20]!r}')
+    if mode == 'test' and (not isinstance(targets, list) or not targets or len(targets) > MAX_TARGETS or not all(isinstance(t, str) for t in targets)):
+        raise TargetError(f'a template test names 1 to {MAX_TARGETS} targets')
+    echo = {'template_sha256': template_sha256} if template_sha256 is not None else {}
     with tempfile.TemporaryDirectory(prefix='nuclei-validate-') as work:
         path = os.path.join(work, 'template.yaml')
-        with open(path, 'w', encoding='utf-8') as handle:
-            handle.write(text)
+        _verified_template(path, text, template_sha256, approved, mode, builtin, targets)
         if mode == 'validate':
             code, out, err = _run_status([NUCLEI_BIN, *NUCLEI_VALIDATE_FLAGS[:1], '-t', path, *NUCLEI_VALIDATE_FLAGS[1:]], NUCLEI_VALIDATE_TIMEOUT,
-                                         register)
+                                         register, work=work)
             output = (out + err).strip()
             valid = code == 0 and 'error' not in output.lower()
-            result = {'valid': valid, 'output': output[-2000:], 'fixture_ok': None, 'fixture_note': ''}
+            result = {'valid': valid, 'output': output[-2000:], 'fixture_ok': None, 'fixture_note': '', **echo}
             if valid:
                 result['fixture_ok'], result['fixture_note'] = _benign_fixture(path, register)
             return result
-        if mode == 'test':
-            if not isinstance(targets, list) or not targets or len(targets) > MAX_TARGETS or not all(isinstance(t, str) for t in targets):
-                raise TargetError(f'a template test names 1 to {MAX_TARGETS} targets')
-            return {'outcomes': _template_test(path, targets, register)}
-    raise TargetError(f'not a nuclei_validate mode: {str(mode)[:20]!r}')
+        return {'outcomes': _template_test(path, targets, register), **echo}
 
 
 def run_alive_check(target, register=None):
@@ -1263,7 +2238,7 @@ def _badkeys_age(badkeys_dir):
     return None if stamp is None else max(0, int((time.time() - stamp) // 3600))
 
 
-def _ssh_probe_one(address, port, register, badkeys_dir):
+def _ssh_probe_one(address, port, register, badkeys_dir, features=None):
     from cvengine_scanner.probes import ssh_probe
     with tempfile.TemporaryDirectory(prefix='sshamble-') as work:
         out = os.path.join(work, 'out.jsonl')
@@ -1289,7 +2264,7 @@ def _ssh_probe_one(address, port, register, badkeys_dir):
             return ssh_probe.unverified(address, port, 'the tool output was larger than is read', 'ssh_oversized', badkeys_checked=checked)
         with open(out, 'rb') as handle:
             text = handle.read(ssh_probe.MAX_OUTPUT_BYTES + 1).decode('utf-8', errors='replace')
-        return ssh_probe.parse_host(address, port, text, checked, age)
+        return ssh_probe.parse_host(address, port, text, checked, age, features=features)
 
 
 def run_ssh_probe(target, register=None, badkeys_dir=None):
@@ -1310,7 +2285,7 @@ def run_ssh_probe(target, register=None, badkeys_dir=None):
     if badkeys_dir is None:
         from . import badkeys
         badkeys_dir = badkeys.data_dir(BADKEYS_DIR) or BADKEYS_DIR  # the refreshed data (BADKEYS_DIR/current) or data placed there by hand
-    hosts = []
+    hosts, readings = [], []
     for address, port in clean:
         try:
             policy.check_host(address)
@@ -1320,14 +2295,82 @@ def run_ssh_probe(target, register=None, badkeys_dir=None):
             hosts.append(ssh_probe.unverified(address, port, f'not run: {exc}', 'ssh_refused'))
             continue
         policy.touch(address)
-        hosts.append(_ssh_probe_one(address, port, register, badkeys_dir))
-    return {'hosts': hosts, 'touched': policy.touched, 'refused': policy.refused}
+        hosts.append(_ssh_probe_one(address, port, register, badkeys_dir, features=readings))
+    result = {'hosts': hosts, 'touched': policy.touched, 'refused': policy.refused}
+    kept, _dropped = service_probes.bounded(readings)  # at most 25 endpoints of at most 4 readings: never cut
+    if kept:  # the KEXINIT and authentication method readings of the servers that answered (cvengine_scanner.features)
+        result['service_features'] = kept
+    return result
 
 
 RUNNERS['ssh_probe'] = run_ssh_probe
 
 
+def run_java_runtime(target, register=None):
+    """The ``java_runtime`` kind (contract 6, ``cvengine_scanner.probes.java_runtime``): the fixed read-only GETs that make a host's own status pages
+    state its Java runtime, and the JDWP handshake plus the one VirtualMachine.Version command on a debug port, all under the task's scope policy."""
+    from cvengine_scanner.probes import java_runtime
+    try:
+        return java_runtime.run_batch(target)
+    except ValueError as exc:
+        raise TargetError(f'not a usable java_runtime task ({exc})') from None
+
+
+RUNNERS['java_runtime'] = run_java_runtime
+
+
+def run_version_read(target, register=None):
+    """The ``version_read`` kind (contract 7, ``cvengine_scanner.probes.version_read``): the anonymous GETs the server's version source catalogue
+    names for each host, under the task's scope policy, each answer handed back only in the part the request names (JSON fields, an excerpt, the
+    ``*_info`` metric samples, named headers)."""
+    from cvengine_scanner.probes import version_read
+    try:
+        return version_read.run_batch(target)
+    except ValueError as exc:
+        raise TargetError(f'not a usable version_read task ({exc})') from None
+
+
+RUNNERS['version_read'] = run_version_read
+
+
+def run_version_digest(target, register=None):
+    """The ``version_digest`` kind (contract 8): ``version_read`` whose requests may also ask for a digest of a static asset (its SHA-256 and
+    first bytes, never the asset), for the build of an edge appliance (cvENGINE's ``cveFeed.edge_builds``)."""
+    from cvengine_scanner.probes import version_read
+    try:
+        return version_read.run_batch(target, kind=version_read.DIGEST_KIND)
+    except ValueError as exc:
+        raise TargetError(f'not a usable version_digest task ({exc})') from None
+
+
+RUNNERS['version_digest'] = run_version_digest
+
+
+def run_version_rows(target, register=None):
+    """The ``version_rows`` kind (contract 9): ``version_read`` whose requests may also ask for only the named version rows of a status page
+    (Apache's ``/server-status?auto``, a phpinfo page cvENGINE already found), never the page (cvENGINE's ``cveFeed.version_catalogue``)."""
+    from cvengine_scanner.probes import version_read
+    try:
+        return version_read.run_batch(target, kind=version_read.ROWS_KIND)
+    except ValueError as exc:
+        raise TargetError(f'not a usable version_rows task ({exc})') from None
+
+
+RUNNERS['version_rows'] = run_version_rows
+
+
 # --- version probing, for the capabilities a bootstrapping Sentinel declares ------------------------------------------
+
+def _probe_timeout():
+    try:
+        return max(5.0, float(os.environ.get('CVENGINE_SENTINEL_PROBE_TIMEOUT', '60')))
+    except ValueError:
+        return 60.0
+
+
+# A host under load (a build, a GVM feed sync) can take half a minute to start a Python or Ruby tool: a probe that gave up at 10 s dropped bbot, testssl and
+# wpscan from a Sentinel's tools until its next restart.
+PROBE_TIMEOUT = _probe_timeout()
 
 VERSION_ARGS = {'nmap': [NMAP_BIN, '--version'], 'naabu': [NAABU_BIN, '-version'], 'nuclei': [NUCLEI_BIN, '-version'],
                 'testssl': [TESTSSL_BIN, '--version'], 'wpscan': [WPSCAN_BIN, '--version'], 'wafw00f': [WAFW00F_BIN, '--version'],
@@ -1383,18 +2426,61 @@ def gvm_ready():
     return gvm_status()[0]
 
 
+_VERSION = re.compile(r'v?(\d+(?:\.\d+){1,5}(?:[-+.~]?[0-9A-Za-z]{1,12})?)')
+# The line that names the tool's own version, for the tools that print other version-shaped text first. nuclei and naabu built with a Go newer than
+# their JSON library (bytedance/sonic) supports print "WARNING: sonic/ast only supports (go1.17~1.26 and amd64 CPU) ..." before it, and the first
+# version-shaped text in that is "1.17~1": every Sentinel reported nuclei 1.17~1 and showed "tools behind". Without the line, the first version is used.
+_VERSION_LINE = {
+    'nuclei': re.compile(r'(?i)engine version:\s*v?(\d+(?:\.\d+){1,5})'),
+    'naabu': re.compile(r'(?i)current version:\s*v?(\d+(?:\.\d+){1,5})'),
+}
+_PROBED = {'versions': None}  # {tool: version} of the last ``detect_tools`` probe: the same runs, so reporting the versions costs no second probe
+
+
+def _version_in(ran, name=None):
+    """The version a probe printed (nuclei and naabu print it on stderr): from the tool's own version line when it has one (``_VERSION_LINE``),
+    else the first version number, clipped and printable: tool output is text, never trusted."""
+    texts = [stream.decode('utf-8', 'replace') if isinstance(stream, bytes) else stream if isinstance(stream, str) else ''
+             for stream in (getattr(ran, 'stdout', None), getattr(ran, 'stderr', None))]
+    patterns = ([_VERSION_LINE[name]] if name in _VERSION_LINE else []) + [_VERSION]
+    for pattern in patterns:
+        for text in texts:
+            found = pattern.search(text)
+            if found:
+                return ''.join(c for c in found.group(1) if c.isprintable())[:40]
+    return ''
+
+
 def detect_tools():
     """The tool names whose binary actually ran when probed with its own version flag, plus ``gvm`` once this
     Sentinel's own GVM stack is reachable: what a Sentinel declares in ``tools`` at bootstrap. Never raises; a
-    missing or broken tool (or a GVM stack still syncing its feeds) is simply left out."""
-    found = []
+    missing or broken tool (or a GVM stack still syncing its feeds) is simply left out. The versions those probes printed are kept for ``tool_versions``."""
+    found, versions = [], {}
     for name, argv in VERSION_ARGS.items():
         try:
-            ran = subprocess.run(argv, capture_output=True, timeout=10, check=False)
+            ran = subprocess.run(argv, capture_output=True, timeout=PROBE_TIMEOUT, check=False)
         except (OSError, subprocess.TimeoutExpired):
             continue
         if ran.returncode == 0:  # a binary that starts and then fails its own version probe is broken: declaring it would take tasks it cannot run (review L1)
             found.append(name)
+            version = _version_in(ran, name)
+            if version:
+                versions[name] = version
+    _PROBED['versions'] = versions
     if gvm_available():
         found.append('gvm')
     return found
+
+
+def unprobed_tools(found):
+    """The tools installed here (their binary resolves) that are not in ``found``: a probe that timed out or failed on a loaded host, to be tried again."""
+    import shutil
+    return [name for name, argv in VERSION_ARGS.items() if name not in found and shutil.which(argv[0]) is not None]
+
+
+def tool_versions():
+    """``{tool: version}`` of the tools whose version probe ran and printed a version (``detect_tools``'s probes, run once if none ran yet): what the Sentinel
+    reports in its registration and heartbeat info, so the server can tell a Sentinel on stale tools. Never raises."""
+    if _PROBED['versions'] is None:
+        detect_tools()
+    return dict(_PROBED['versions'] or {})

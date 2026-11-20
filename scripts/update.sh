@@ -1,11 +1,20 @@
 #!/bin/sh
-# Update this Sentinel from its git checkout: fast-forward to origin/main, pull and build the new images while the old Sentinel keeps working, then
-# drain running tasks, swap the stack and report how it went.
+# Update this Sentinel from its git checkout: fast-forward to the commit cvENGINE named, pull and build the new images while the old Sentinel keeps
+# working, then drain running tasks, swap the stack and report how it went.
 #
 #   scripts/update.sh            update when this Sentinel's self-update setting says so: Automatic always, Manual only when an administrator
-#                                pressed Update now, Off never (the setting is chosen in cvENGINE, or CVENGINE_SENTINEL_UPDATE here, which is a ceiling: a local off or manual caps what cvENGINE can ask for)
-#   scripts/update.sh --now      update whatever the setting says (a person typing it here; still drains running tasks first)
+#                                pressed Update now, Off never (the setting is chosen in cvENGINE, or CVENGINE_SENTINEL_UPDATE here, which is a ceiling: a local off or manual caps what cvENGINE can ask for).
+#                                It moves to the commit cvENGINE named in the heartbeat (the target) and to no other: with no target it waits (reported once a day, not as a failure)
+#   scripts/update.sh --now      update whatever the setting says (a person typing it here; still drains running tasks first). With no target from
+#                                cvENGINE it moves to the head of origin/<branch> and prints that this is trusted only as far as the repository is
+#   scripts/update.sh --to SHA   a person naming the commit (implies --now). It must be on origin/<branch>
+#   scripts/update.sh --allow-non-descendant   with --now or --to: a person may move to a commit that is not a descendant of the running one (a rollback)
 #   scripts/update.sh --check    only say whether an update is available and whether the setting wants it
+#
+# The target rules (scripts/update-target.sh): the commit must be in the history fetched from origin, reachable from origin/<branch> (a commit pushed
+# to another branch is not an update) and a descendant of the commit running now (no downgrade, no sideways move; only --allow-non-descendant by hand
+# lifts that one). After the checkout HEAD must equal the target before anything is built or restarted. Any refusal is reported to cvENGINE as a
+# failed update, exits non-zero and leaves the running Sentinel unchanged. Commits are not signature-checked in 1.4.0 (README.md, "What Automatic trusts").
 #
 # Run it by hand, from cron, or from the systemd timer scripts/install-updater.sh sets up, always as the user who owns this checkout (a root run
 # re-runs itself as that user). It runs on the Docker host and needs no access to the Docker socket from any container: it talks to the daemon
@@ -22,21 +31,35 @@ cd "$(dirname "$0")/.."
 
 NOW=0
 CHECK=0
-for arg in "$@"; do
-  case "$arg" in
+TO=""
+ALLOW_MOVE=0
+USAGE="usage: scripts/update.sh [--now|--check|--to COMMIT] [--allow-non-descendant]"
+while [ $# -gt 0 ]; do
+  case "$1" in
     --now) NOW=1 ;;
     --check) CHECK=1 ;;
-    *) echo "usage: scripts/update.sh [--now|--check]" >&2; exit 2 ;;
+    --to) [ $# -ge 2 ] || { echo "$USAGE" >&2; exit 2; }; TO=$2; NOW=1; shift ;;
+    --allow-non-descendant) ALLOW_MOVE=1 ;;
+    *) echo "$USAGE" >&2; exit 2 ;;
   esac
+  shift
 done
+if [ "$ALLOW_MOVE" = 1 ] && [ "$NOW" = 0 ]; then
+  echo "--allow-non-descendant is only for a person typing --now or --to by hand" >&2
+  exit 2
+fi
 
-DRAIN_TIMEOUT="${CVENGINE_SENTINEL_DRAIN_TIMEOUT:-1800}"
+# 70 minutes: longer than the longest task budget the contract allows (an hour, nuclei_deep), so an update waits out a deep scan instead of giving up
+# half way through it and trying again an hour later; still inside the drain flag's two-hour expiry (client/control.py DRAIN_TTL) and the unit's 3h limit.
+DRAIN_TIMEOUT="${CVENGINE_SENTINEL_DRAIN_TIMEOUT:-4200}"
 case "$DRAIN_TIMEOUT" in
   ''|*[!0-9]*|0) echo "CVENGINE_SENTINEL_DRAIN_TIMEOUT must be a positive whole number of seconds (got '$DRAIN_TIMEOUT')" >&2; exit 2 ;;
 esac
 BRANCH="${CVENGINE_SENTINEL_BRANCH:-main}"
 MARKER=.deployed-commit
 say() { echo "$(date -u +%FT%TZ) update: $*"; }
+# shellcheck source=scripts/update-target.sh
+. ./scripts/update-target.sh
 ctl() { docker compose exec -T sentinel python3 -m client.control "$@"; }
 
 [ -e .git ] || { say "this is not a git checkout, so there is nothing to update from"; exit 1; }
@@ -46,6 +69,11 @@ ctl() { docker compose exec -T sentinel python3 -m client.control "$@"; }
 OWNER=$(stat -c %U . 2>/dev/null) || { say "cannot tell who owns $(pwd); refusing to run"; exit 1; }
 if [ "$(id -un)" != "$OWNER" ]; then
   if [ "$(id -u)" = 0 ] && command -v sudo >/dev/null 2>&1; then
+    # The option loop above shifted "$@" empty: the options are handed over as parsed, or a root `--now` would reach the owner's run as no option.
+    set --
+    [ "$CHECK" = 1 ] && set -- "$@" --check
+    if [ -n "$TO" ]; then set -- "$@" --to "$TO"; elif [ "$NOW" = 1 ]; then set -- "$@" --now; fi
+    [ "$ALLOW_MOVE" = 1 ] && set -- "$@" --allow-non-descendant
     exec sudo -u "$OWNER" -- env CVENGINE_SENTINEL_DRAIN_TIMEOUT="$DRAIN_TIMEOUT" CVENGINE_SENTINEL_BRANCH="$BRANCH" sh "$SELF" "$@"
   fi
   say "this checkout belongs to $OWNER; run the updater as $OWNER (or as root, which hands over to $OWNER), not as $(id -un)"
@@ -82,6 +110,30 @@ fi
 
 CURRENT=$(git rev-parse --short=12 HEAD)
 TARGET=""
+# Nothing is wrong on this machine, and nothing is done: the result is "waiting", told to cvENGINE once a day (a marker file), not by every hourly run.
+wait_for_cvengine() {
+  RESULT=waiting
+  DETAIL="$1"
+  say "$DETAIL"
+  if [ -z "$(find .update-no-target -mmin -1440 2>/dev/null)" ]; then
+    ctl report waiting --phase available --detail "$DETAIL" --from "$CURRENT" --to "$TARGET" 2>/dev/null || true
+    : > .update-no-target 2>/dev/null || true
+  fi
+  exit 0
+}
+# The images the stack needs that are neither on this machine nor built from this checkout (cvengine-sentinel-local is the image docker-compose.yml
+# builds), space separated; "unknown" when compose cannot list them.
+# The services built from this checkout: the Sentinel and the one-shot that hands its state volume to its user. Nothing else needs to run for an update.
+SENTINEL_SERVICES="sentinel-init sentinel"
+
+missing_images() {
+  IMAGES=$(docker compose config --images 2>/dev/null) || { printf 'unknown'; return; }
+  printf '%s\n' "$IMAGES" | while read -r image; do
+    case "$image" in ''|cvengine-sentinel-local|cvengine-sentinel-local:*) continue ;; esac
+    docker image inspect "$image" >/dev/null 2>&1 || printf '%s ' "$image"
+  done
+}
+
 cannot() {
   DETAIL="cannot update: $1"
   say "$DETAIL"
@@ -92,16 +144,22 @@ cannot() {
 git fetch --quiet origin "$BRANCH" || cannot "git fetch from origin failed"
 ON=$(git symbolic-ref --short -q HEAD || true)
 [ "$ON" = "$BRANCH" ] || cannot "the checkout is on '${ON:-a detached HEAD}', not $BRANCH (git checkout $BRANCH)"
+# What is on the branch now. This is only what is AVAILABLE: the commit this run may move to is decided below (the server's named target).
 TARGET_FULL=$(git rev-parse "origin/$BRANCH")
 TARGET=$(git rev-parse --short=12 "origin/$BRANCH")
+AVAILABLE_FULL=$TARGET_FULL
+# The commit cvENGINE named in its last heartbeat answer (the daemon writes it to the status file; an older image has no such field, which reads as none).
+SERVER_TARGET=$(ctl status 2>/dev/null | sed -n 's/.*"target": "\([0-9a-f]\{7,40\}\)".*/\1/p' | head -n 1)
 
-# An install from before the marker existed counts as deployed at HEAD once the running Sentinel reports HEAD as its version.
-if [ ! -f "$MARKER" ] && ctl status 2>/dev/null | grep -q "\"version\": \"$CURRENT\""; then
+# The running Sentinel reports HEAD as its version: HEAD is what is deployed, whatever the marker says. That covers an install from before the marker
+# existed, and a marker left behind when a person brought the stack up by hand on a newer checkout (vmi2645654, Nov 20: the marker said 359f4dc while
+# 663ed8d ran, so a target older than 663ed8d but newer than 359f4dc was not seen as older and the hourly run failed "no downgrade" instead of waiting).
+if ctl status 2>/dev/null | grep -q "\"version\": \"$CURRENT\"" && [ "$(cat "$MARKER" 2>/dev/null || true)" != "$(git rev-parse HEAD)" ]; then
   git rev-parse HEAD > "$MARKER"
 fi
 DEPLOYED=$(cat "$MARKER" 2>/dev/null || true)
 DEPLOYED_SHORT=$(printf '%s' "$DEPLOYED" | cut -c1-12)
-if [ "$DEPLOYED" = "$TARGET_FULL" ]; then
+if [ -z "$TO" ] && [ "$DEPLOYED" = "$TARGET_FULL" ]; then
   RESULT=ok
   DETAIL="up to date at $TARGET"
   say "up to date at $TARGET"
@@ -129,6 +187,50 @@ if [ "$WANTED" != yes ]; then
   exit 0
 fi
 
+# A person's --now with a server that names an older commit than the one running here (a server pinned to an older build): that commit is no update,
+# so --now moves to the head of origin/<branch> as it does with no target, instead of refusing the downgrade and doing nothing.
+server_target_is_older() {
+  _named=$(git rev-parse --verify --quiet "$SERVER_TARGET^{commit}" 2>/dev/null || true)
+  _running=$(git rev-parse --verify --quiet "${DEPLOYED:-HEAD}^{commit}" 2>/dev/null || git rev-parse HEAD)
+  [ -n "$_named" ] && [ "$_named" != "$_running" ] && git merge-base --is-ancestor "$_named" "$_running" 2>/dev/null
+}
+
+# Which commit this run moves to, and why that is allowed. Nothing has been changed yet: a refusal leaves the running Sentinel as it is.
+if [ -n "$TO" ]; then
+  REQUESTED=$TO
+  WHY="you named it with --to"
+elif [ -n "$SERVER_TARGET" ] && ! { [ "$NOW" = 1 ] && server_target_is_older; }; then
+  REQUESTED=$SERVER_TARGET
+  WHY="cvENGINE named it as this Sentinel's target"
+elif [ "$NOW" = 1 ]; then
+  REQUESTED=$AVAILABLE_FULL
+  WHY="cvENGINE named no newer target, so this is the head of origin/$BRANCH, which you asked for with --now; it is trusted only as far as the repository is (commits are not signature-checked)"
+else
+  # Nothing is wrong on this machine: an Automatic or requested update moves only to the commit cvENGINE names, and cvENGINE has named none (for now). That is waiting,
+  # not a failure, and it is told to cvENGINE once a day (a marker file), not by every hourly run.
+  wait_for_cvengine "waiting: the server named no target for this Sentinel, so it stays on $CURRENT (an update moves only to the commit cvENGINE names, never to whatever is on origin/$BRANCH; a person can run scripts/update.sh --now)"
+  exit 0
+fi
+TARGET=$(printf '%s' "$REQUESTED" | cut -c1-12)
+RUNNING_FULL=$(git rev-parse --verify --quiet "${DEPLOYED:-HEAD}^{commit}" 2>/dev/null || git rev-parse HEAD)
+# A commit cvENGINE named that is older than what runs here (a server that pins an older build than this Sentinel, or a Sentinel that went ahead of its server) is no update
+# and no failure: nothing moves, and it is said once a day like a missing target. A named commit that is not an ancestor of what runs is still refused below.
+if [ -z "$TO" ] && [ "$NOW" != 1 ]; then
+  OLDER=$(git rev-parse --verify --quiet "$REQUESTED^{commit}" 2>/dev/null || true)
+  if [ -n "$OLDER" ] && [ "$OLDER" != "$RUNNING_FULL" ] && git merge-base --is-ancestor "$OLDER" "$RUNNING_FULL" 2>/dev/null; then
+    wait_for_cvengine "waiting: the commit cvENGINE named ($TARGET) is older than the one this Sentinel runs ($CURRENT), so there is nothing to update to"
+  fi
+fi
+check_update_target "$REQUESTED" "$BRANCH" "$ALLOW_MOVE" "$RUNNING_FULL" "$(git rev-parse HEAD)" || cannot "$REFUSAL"
+TARGET=$(git rev-parse --short=12 "$TARGET_FULL")
+if [ "$DEPLOYED" = "$TARGET_FULL" ] && [ "$(git rev-parse HEAD)" = "$TARGET_FULL" ]; then
+  RESULT=ok
+  DETAIL="up to date at $TARGET (the commit cvENGINE named)"
+  say "$DETAIL"
+  exit 0
+fi
+say "moving to $TARGET: $WHY"
+
 fail() {
   DETAIL="$1"
   say "FAILED: $1"
@@ -145,10 +247,37 @@ rollback() {
 
 if [ "$PREV" != "$TARGET_FULL" ]; then
   ctl report updating --phase code --detail "fast-forwarding to $TARGET" --from "$CURRENT" --to "$TARGET" 2>/dev/null || true
-  git merge --ff-only --quiet "origin/$BRANCH" || fail "this checkout cannot fast-forward to origin/$BRANCH" code
+  if git merge-base --is-ancestor "$PREV" "$TARGET_FULL"; then
+    git merge --ff-only --quiet "$TARGET_FULL" || fail "this checkout cannot fast-forward to $TARGET" code
+  else
+    git reset --hard --quiet "$TARGET_FULL" || rollback "this checkout cannot move to $TARGET" code  # only --allow-non-descendant gets here
+  fi
 fi
+# The checkout must be exactly the commit that was approved before anything is built or restarted from it.
+[ "$(git rev-parse HEAD)" = "$TARGET_FULL" ] || rollback "after the checkout HEAD is not the target $TARGET, so nothing was built or restarted" code
 ctl report updating --phase images --detail "pulling images" --from "$CURRENT" --to "$TARGET" 2>/dev/null || true
-docker compose pull --quiet --ignore-buildable || rollback "docker compose pull failed" images
+# Only the images this machine does not have yet are pulled: an update needs the images its compose file names, not newer copies of the ones it
+# has. The Greenbone images are pinned by digest, so a changed pin is a new reference and is pulled; the OpenVAS feed data images follow moving tags
+# and are large (tens of minutes from their registry), so an update never re-pulls them: scripts/refresh-feeds.sh refreshes them daily. The image
+# this checkout builds is never pulled. When compose cannot list its images, everything it does not build is pulled, as before.
+PULL_NOTE=
+MISSING=$(missing_images)
+if [ "$MISSING" = unknown ]; then
+  PULL_ERR=$(docker compose pull --quiet --ignore-buildable 2>&1 >/dev/null) || {
+    WHY=$(printf '%s\n' "$PULL_ERR" | grep -v '^[[:space:]]*$' | tail -n 1 | cut -c1-160)
+    rollback "docker compose pull failed: ${WHY:-no reason given}; not on this machine: unknown (compose could not list its images)" images
+  }
+elif [ -n "$MISSING" ]; then
+  for image in $MISSING; do
+    PULL_ERR=$(docker pull --quiet "$image" 2>&1 >/dev/null) || {
+      WHY=$(printf '%s\n' "$PULL_ERR" | grep -v '^[[:space:]]*$' | tail -n 1 | cut -c1-160)
+      rollback "docker pull failed: ${WHY:-no reason given}; not on this machine: $image" images
+    }
+  done
+  PULL_NOTE=" (pulled $(printf '%s' "$MISSING" | wc -w | tr -d ' ') image(s) this machine did not have)"
+else
+  say "every image the stack needs is already on this machine: nothing to pull (the OpenVAS feed data is refreshed daily by scripts/refresh-feeds.sh)"
+fi
 ctl report updating --phase build --detail "building the new Sentinel image" --from "$CURRENT" --to "$TARGET" 2>/dev/null || true
 docker compose build || rollback "docker compose build failed" build
 
@@ -186,8 +315,14 @@ elif [ "$rc" != 0 ]; then
   exit 0
 fi
 
-ctl report updating --phase restart --detail "restarting the stack on $TARGET" --from "$CURRENT" --to "$TARGET" 2>/dev/null || true
-docker compose up -d || fail "docker compose up failed" restart
+# Only the Sentinel is restarted before the update counts: it depends on nothing but sentinel-init. The rest of the stack (OpenVAS) is brought up
+# after the update is recorded, because its services wait on the feed data containers turning healthy, which can take a long time after a feed
+# refresh (scap-data at the 08:07Z update of Nov 20): a slow one there failed the whole update although the new Sentinel was already running.
+ctl report updating --phase restart --detail "restarting the Sentinel on $TARGET" --from "$CURRENT" --to "$TARGET" 2>/dev/null || true
+UP_ERR=$(docker compose up -d $SENTINEL_SERVICES 2>&1 >/dev/null) || {
+  WHY=$(printf '%s\n' "$UP_ERR" | grep -v '^[[:space:]]*$' | tail -n 1 | cut -c1-160)
+  fail "docker compose up failed for the Sentinel: ${WHY:-no reason given}" restart
+}
 
 # The recreated Sentinel starts undrained and writes its status within a minute; its version is the commit stamped into the new image.
 i=0
@@ -198,7 +333,15 @@ until docker compose exec -T sentinel python3 -m client.control status 2>/dev/nu
 done
 DRAINED=0
 printf '%s\n' "$TARGET_FULL" > "$MARKER.tmp" && mv "$MARKER.tmp" "$MARKER"
-ctl report 'done' --phase finished --detail "running $TARGET" --from "$CURRENT" --to "$TARGET" 2>/dev/null || true
+# The Sentinel runs the new code: now the rest of the stack. A service still waiting on a feed container is no failure of the update (the daemon
+# offers no OpenVAS work until gvmd is ready, client/tools.gvm_ready); it is said, and the next `docker compose up -d` or restart finishes it.
+STACK_NOTE=
+UP_ERR=$(docker compose up -d 2>&1 >/dev/null) || {
+  WHY=$(printf '%s\n' "$UP_ERR" | grep -v '^[[:space:]]*$' | tail -n 1 | cut -c1-160)
+  STACK_NOTE="; the rest of the stack (OpenVAS) is still starting: ${WHY:-no reason given}"
+  say "the Sentinel is updated; the rest of the stack did not come up yet (${WHY:-no reason given}): OpenVAS work waits until gvmd is ready"
+}
+ctl report 'done' --phase finished --detail "running $TARGET$STACK_NOTE" --from "$CURRENT" --to "$TARGET" 2>/dev/null || true
 RESULT=updated
-DETAIL="updated $CURRENT -> $TARGET"
-say "updated $CURRENT -> $TARGET"
+DETAIL="updated $CURRENT -> $TARGET$PULL_NOTE$STACK_NOTE"
+say "updated $CURRENT -> $TARGET$PULL_NOTE$STACK_NOTE"

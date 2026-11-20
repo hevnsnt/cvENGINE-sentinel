@@ -393,3 +393,172 @@ class HeartbeatRunningTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+def _index(templates_):
+    """A template index of ``{path: (bytes, verdicts)}``: what ``cvengine_scanner.template_index.load`` returns."""
+    reasons = ['template not validated: it uses \'payloads\'', 'template not validated: it sends a credential of its own', 'template not validated: it is tagged default-login, a check that sends credentials']
+    entries = {path: {'sha256': hashlib.sha256(raw).hexdigest(), 'id': os.path.basename(path).rsplit('.', 1)[0], **verdicts}
+               for path, (raw, verdicts) in templates_.items()}
+    return {'nuclei_templates': 'v10.5.2', 'rules': 1, 'reasons': reasons, 'templates': entries, 'sha256': 'e' * 64}
+
+
+class IndexSetTests(BundleTestCase):
+    """Contract 11: the approved set is built from the baked templates and the library's template index, never fetched."""
+    FILES = {'http/ok.yaml': (b'id: ok\n', {}), 'http/write.yaml': (b'id: write\n', {'ro': 0}), 'http/cred.yaml': (b'id: cred\n', {'cred': 1}),
+             'http/login.yaml': (b'id: login\n', {'ctag': 2, 'cred': 1}), 'http/missing.yaml': (b'id: missing\n', {})}
+
+    def baked(self, files=None, changed=()):
+        source = os.path.join(self.tmp, 'baked')
+        for path, (raw, _v) in (files or self.FILES).items():
+            if path == 'http/missing.yaml':
+                continue
+            full = os.path.join(source, *path.split('/'))
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            with open(full, 'wb') as handle:
+                handle.write(raw + (b'# changed\n' if path in changed else b''))
+        return source
+
+    def listed(self, path):
+        return sorted(os.path.relpath(os.path.join(base, f), path) for base, _d, files in os.walk(path) for f in files if f != templates.VERIFIED)
+
+    def test_each_policy_gets_exactly_the_templates_its_verdicts_allow(self):
+        index, source = _index(self.FILES), self.baked()
+        want = {(True, False): ['http/ok.yaml'], (True, True): ['http/cred.yaml', 'http/login.yaml', 'http/ok.yaml'],
+                (False, False): ['http/ok.yaml', 'http/write.yaml'], (False, True): ['http/cred.yaml', 'http/login.yaml', 'http/ok.yaml', 'http/write.yaml']}
+        for (read_only, credentials), files in want.items():
+            with self.subTest(read_only=read_only, credentials=credentials):
+                path = templates.ensure_index_set(read_only, credentials, source=source, index=index)
+                self.assertEqual(self.listed(path), files)
+                self.assertTrue(os.path.basename(path).startswith(templates.INDEX_PREFIX))
+
+    def test_a_file_that_differs_from_the_index_or_is_a_link_is_left_out(self):
+        index = _index(self.FILES)
+        source = self.baked(changed={'http/ok.yaml'})
+        os.symlink(os.path.join(source, 'http', 'ok.yaml'), os.path.join(source, 'http', 'cred-link.yaml'))
+        index['templates']['http/cred-link.yaml'] = index['templates']['http/ok.yaml']
+        path = templates.ensure_index_set(False, True, source=source, index=index)
+        self.assertEqual(self.listed(path), ['http/cred.yaml', 'http/login.yaml', 'http/write.yaml'])
+
+    def test_nothing_approved_in_this_image_or_no_index_is_an_error(self):
+        index = _index({'http/ok.yaml': (b'id: ok\n', {})})
+        with self.assertRaises(templates.TemplateError):
+            templates.ensure_index_set(True, False, source=self.baked(changed={'http/ok.yaml'}), index=index)
+        with self.assertRaises(templates.TemplateError):
+            templates.ensure_index_set(True, False, source=self.baked(), index={'nuclei_templates': '', 'rules': 0, 'reasons': [], 'templates': {}, 'sha256': ''})
+        with self.assertRaises(templates.TemplateError):
+            templates.ensure_index_set(True, False, source=os.path.join(self.tmp, 'nowhere'), index=index)
+        self.assertFalse([name for name in self.leftovers() if name.startswith(templates.INDEX_PREFIX)])
+
+    def test_a_set_already_built_is_reused(self):
+        index, source = _index(self.FILES), self.baked()
+        first = templates.ensure_index_set(True, False, source=source, index=index)
+        with mock.patch('cvengine_scanner.template_index.approved', side_effect=AssertionError('built again')):
+            self.assertEqual(templates.ensure_index_set(True, False, source=source, index=index), first)
+
+    def test_an_installed_template_is_read_only_when_index_and_file_agree(self):
+        index, source = _index(self.FILES), self.baked(changed={'http/write.yaml'})
+        sha = index['templates']['http/ok.yaml']['sha256']
+        self.assertEqual(templates.installed_text('http/ok.yaml', sha, source=source, index=index), 'id: ok\n')
+        for path, digest in (('http/ok.yaml', 'f' * 64), ('http/write.yaml', index['templates']['http/write.yaml']['sha256']),
+                             ('http/missing.yaml', index['templates']['http/missing.yaml']['sha256']), ('http/none.yaml', sha), ('../http/ok.yaml', sha)):
+            with self.subTest(path=path), self.assertRaises(templates.TemplateError):
+                templates.installed_text(path, digest, source=source, index=index)
+
+
+class DaemonIndexPolicyTests(unittest.TestCase):
+    def make(self):
+        return daemon.Daemon('https://x.example', 'tok', client=FakeClient())
+
+    def test_an_index_policy_builds_the_set_and_never_fetches_a_bundle(self):
+        d = self.make()
+        target = {**_fixture_target('nuclei_light'), 'template_policy': {'rev': 'readonly-5', 'read_only': True, 'source': 'index'}}
+        runner = mock.Mock(return_value={'findings': []})
+        with mock.patch('client.templates.ensure_index_set', return_value='/state/templates/index-x-readonly') as build, \
+                mock.patch('client.templates.ensure_bundle') as bundle, mock.patch.dict(tools.RUNNERS, {'nuclei_light': runner}):
+            out = d._execute({'kind': 'nuclei_light', 'target': target}, None)
+            d._execute({'kind': 'nuclei_light', 'target': {**target, 'allow_credential_checks': True,
+                                                           'template_policy': {**target['template_policy'], 'read_only': False}}}, None)
+            d._execute({'kind': 'nuclei_light', 'target': {**target, 'template_policy': {'rev': 'x', 'read_only': 'no', 'source': 'index'}}}, None)
+        self.assertEqual(out['outcome'], 'done')
+        self.assertEqual([c.args for c in build.call_args_list], [(True, False), (False, True), (True, False)])  # read-only unless plainly not
+        self.assertNotIn('external', runner.call_args.kwargs)
+        self.assertEqual(runner.call_args.kwargs['templates'], '/state/templates/index-x-readonly')
+        with mock.patch('client.templates.ensure_index_set', return_value='/x'), mock.patch.dict(tools.RUNNERS, {'nuclei_light': runner}):
+            d._execute({'kind': 'nuclei_light', 'target': {**target, 'external': True}}, None)
+        self.assertIs(runner.call_args.kwargs['external'], True)
+        bundle.assert_not_called()
+
+    def test_a_set_that_cannot_be_built_is_an_error_and_nothing_runs(self):
+        d = self.make()
+        runner = mock.Mock()
+        target = {**_fixture_target('nuclei_light'), 'template_policy': {'rev': 'readonly-5', 'read_only': True, 'source': 'index'}}
+        with mock.patch('client.templates.ensure_index_set', side_effect=templates.TemplateError('no index')), \
+                mock.patch.dict(tools.RUNNERS, {'nuclei_light': runner}), self.assertRaises(tools.TargetError):
+            d._execute({'kind': 'nuclei_light', 'target': target}, None)
+        runner.assert_not_called()
+
+    def test_a_test_by_template_path_runs_the_baked_text(self):
+        d = self.make()
+        runner = mock.Mock(return_value={'outcomes': []})
+        target = {'mode': 'test', 'template_path': 'http/cves/2021/CVE-2021-44228.yaml', 'template_sha256': 'a' * 64, 'targets': ['www.example.test']}
+        with mock.patch('client.config.builtin', return_value=True), mock.patch('client.templates.installed_text', return_value='id: x\n') as read, \
+                mock.patch.dict(tools.RUNNERS, {'nuclei_validate': runner}):
+            d._execute({'id': 3, 'kind': 'nuclei_validate', 'target': target}, None)
+        read.assert_called_once_with('http/cves/2021/CVE-2021-44228.yaml', 'a' * 64)
+        self.assertEqual(runner.call_args.args[1], 'id: x\n')
+        with mock.patch('client.config.builtin', return_value=True), mock.patch('client.templates.installed_text', return_value='id: x\n'), \
+                mock.patch.dict(tools.RUNNERS, {'nuclei_validate': runner}):
+            out = d._execute({'id': 3, 'kind': 'nuclei_validate', 'target': target}, None)
+        self.assertEqual(out['template'], 'id: x\n')  # the text it ran goes back, for the server to read a hit
+        with mock.patch('client.config.builtin', return_value=True), mock.patch.dict(tools.RUNNERS, {'nuclei_validate': runner}):
+            out = d._execute({'id': 3, 'kind': 'nuclei_validate', 'target': {k: v for k, v in target.items() if k != 'template_path'} | {'template': 'id: y\n'}}, None)
+        self.assertNotIn('template', out)  # a text the server sent is never sent back
+        with mock.patch('client.config.builtin', return_value=True), \
+                mock.patch('client.templates.installed_text', side_effect=templates.TemplateError('differs')), \
+                mock.patch.dict(tools.RUNNERS, {'nuclei_validate': runner}), self.assertRaises(tools.Refused):
+            d._execute({'id': 3, 'kind': 'nuclei_validate', 'target': target}, None)
+        with mock.patch('client.config.builtin', return_value=True), mock.patch.dict(tools.RUNNERS, {'nuclei_validate': runner}), \
+                self.assertRaises(tools.TargetError):
+            d._execute({'id': 3, 'kind': 'nuclei_validate', 'target': {**target, 'mode': 'validate'}}, None)
+
+
+def _nuclei_runs(run):
+    """The calls of a patched ``tools._run`` that ran nuclei (the targets go in a list file, so they are not in the call)."""
+    return [c for c in run.call_args_list if c.args and c.args[0] and c.args[0][0] == 'nuclei']
+
+
+class RefusedTargetTests(unittest.TestCase):
+    """Contract 11: a nuclei target scope refuses is named and left out; the other targets still run."""
+
+    def test_a_refused_name_is_named_and_the_rest_runs(self):
+        def resolve(host, *_a, **_k):
+            return [(2, 1, 6, '', ('10.0.0.5' if host == 'inside.example.test' else '93.184.216.34', 0))]
+        with mock.patch.object(tools, '_run', return_value='') as run, mock.patch('client.tools._resolver', return_value=resolve):
+            out = tools.run_nuclei(['www.example.test', 'inside.example.test'], tags=['tech'])
+        # in an image that carries a template directory the credential-template scan also calls _run with its own arguments: only nuclei runs count
+        self.assertEqual(len(_nuclei_runs(run)), 1)
+        self.assertIn('inside.example.test', out['unreachable'])
+        refused = [n for n in out['not_checked'] if n['target'] == 'inside.example.test']
+        self.assertTrue(refused and refused[0]['reason'].startswith(tools.flags.NUCLEI_REFUSED_PREFIX))
+        self.assertNotIn('www.example.test', out['unreachable'])
+
+    def test_every_target_refused_is_an_answer_with_nothing_run(self):
+        with mock.patch.object(tools, '_run', return_value='') as run, \
+                mock.patch('client.tools._resolver', return_value=lambda *a, **k: [(2, 1, 6, '', ('169.254.169.254', 0))]):
+            out = tools.run_nuclei(['inside.example.test'])
+        self.assertEqual(_nuclei_runs(run), [])  # the credential-template scan may still call _run with its own arguments
+        self.assertEqual(out['unreachable'], ['inside.example.test'])
+        self.assertEqual(out['findings'], [])
+        self.assertNotIn('no_templates', out)
+
+    def test_a_malformed_list_still_fails_the_task(self):
+        for bad in ([], 'x', ['a.example.test'] * (tools.MAX_TARGETS + 1)):
+            with self.subTest(bad=bad), self.assertRaises(tools.TargetError):
+                tools.run_nuclei(bad)
+
+    def test_the_release_names_an_index_set(self):
+        self.assertEqual(tools._release_of('/state/templates/index-0123456789abcdef-readonly-cred').split(':')[2], 'readonly-cred')
+        self.assertTrue(tools._release_of('/state/templates/index-0123456789abcdef-all').startswith('index:'))
+        self.assertEqual(tools._release_of('/state/templates/' + 'a' * 64), 'approved:' + 'a' * 64)
+        self.assertTrue(tools._release_of(None).startswith('image:'))

@@ -1,9 +1,11 @@
 """The one HTTP GET every probe makes, copied from cvENGINE's ``route_auth`` (``probe_url``, ``page_title`` and the limits they use).
 
-Every request is bounded (bytes, per-read timeouts and a total time budget), read-only (GET or HEAD), anonymous (no cookie, no credential, only a
+Every request is bounded (bytes, per-read timeouts and a total time budget), read-only (GET or HEAD, or the OPTIONS the WebDAV read sends:
+``service_reads``), anonymous (no cookie, no credential, only a
 Host override or a cached script's ETag may be added) and goes to a numeric address the task's scope policy accepted (``transport``). The one exception is
 the signed-in route check (``routes_signed``): it passes ``signed`` (the stored sign-in's header pairs, already checked) and then the server certificate is
 verified unless that sign-in's owner switched verification off for it."""
+import hashlib
 import http.client
 import re
 import socket
@@ -56,7 +58,7 @@ def page_title(text):
 
 def probe_url(url, policy, timeout=(CONNECT_TIMEOUT, READ_TIMEOUT), max_bytes=ROUTE_SAMPLE_BYTES, headers=None, method='GET', browser=False,
               connect_ip=None, signed=None, verify=True):
-    """Bounded anonymous GET/HEAD using a pinned numeric destination and original Host/SNI, copied from cvENGINE's ``route_auth.probe_url``.
+    """Bounded anonymous GET/HEAD (or OPTIONS, which asks what the server allows and changes nothing) using a pinned numeric destination and original Host/SNI, copied from cvENGINE's ``route_auth.probe_url``.
     The URL's host must pass ``policy`` (a ``policy.ScopePolicy``) and so must every address it resolves to; a redirect is never followed here
     (``version_probes.fetch`` follows one, asking the policy again). ``connect_ip`` connects to that vetted address instead of resolving the URL's
     name: the name is still sent as the Host header and the TLS server name. No credential is sent and the server certificate is never verified,
@@ -67,8 +69,8 @@ def probe_url(url, policy, timeout=(CONNECT_TIMEOUT, READ_TIMEOUT), max_bytes=RO
     from http.cookies import SimpleCookie, CookieError
     from urllib.parse import quote, urlsplit
 
-    if method not in ('GET', 'HEAD'):
-        raise ValueError('route probes are read-only: GET or HEAD')
+    if method not in ('GET', 'HEAD', 'OPTIONS'):
+        raise ValueError('route probes are read-only: GET, HEAD or OPTIONS')
     max_bytes = min(int(max_bytes), MAX_READ_BYTES)
     if max_bytes < 0:
         raise ValueError('invalid probe byte limit')
@@ -134,7 +136,8 @@ def probe_url(url, policy, timeout=(CONNECT_TIMEOUT, READ_TIMEOUT), max_bytes=RO
         connection.sock.settimeout(timeout[1])
         connection.request(method, path, headers=request_headers)
         response = connection.getresponse()
-        raw = transport.read_body(response, max_bytes)  # gzip and deflate from a device that ignores identity are decoded, capped after decoding
+        wire = {}
+        raw = transport.read_body(response, max_bytes, wire=wire)  # gzip and deflate from a device that ignores identity are decoded, capped after decoding
         if expired.is_set():
             raise TimeoutError('probe exceeded its total time budget')
         encoding = response.headers.get_content_charset() or 'utf-8'
@@ -153,6 +156,9 @@ def probe_url(url, policy, timeout=(CONNECT_TIMEOUT, READ_TIMEOUT), max_bytes=RO
                 'www_authenticate': response.getheader('WWW-Authenticate', ''), 'cookies': list(cookies.keys()),
                 'content_type': (response.getheader('Content-Type') or '').split(';')[0].strip().lower(),
                 'body': text, 'title': title, 'bytes': len(raw), 'read_limit': max_bytes, 'truncated': len(raw) >= max_bytes,
+                # the exact bytes of the body as digests (``version_read``'s digest read: a static asset's hash, never the asset): the SHA-256 of
+                # the decoded body, and the first bytes as they came over the wire (a gzip file's own header and timestamp)
+                'sha256': hashlib.sha256(raw).hexdigest(), 'wire_head': (wire.get('head') or b'').hex(),
                 'server': response.getheader('Server', ''),
                 'powered_by': response.getheader('X-Powered-By', ''), 'headers': versions.keep_headers(response.headers.items()),
                 'raw_headers': {k.lower(): ' '.join(v.split())[:200] for k, v in list(response.headers.items())[:60]

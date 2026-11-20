@@ -19,6 +19,13 @@ x-logging: &logging
     max-size: "10m"
     max-file: "3"
 
+# The OpenVAS feed data images carry their own health check (a state file that appears once the image's data is copied into its volume) with a
+# five-minute start period. Copying a new scap-data or vulnerability-tests feed takes longer than that on a small VPS (more than six minutes at the
+# 15:51Z start of Nov 20), so the container was marked unhealthy before it finished and every service that waits on it gave up. Only the start
+# period is set here: the image's own test, interval and retries stay as they are (an unset field is inherited from the image).
+x-feed-health: &feed-health
+  start_period: 30m
+
 services:
   # The Sentinel runs as an unprivileged user (uid 10001). A state volume made by an older image holds files owned by root (the token, the GVM login),
   # which that user could not read: this one-shot service hands them over before the Sentinel starts. It runs as root for that one command, with no
@@ -57,7 +64,7 @@ services:
     mem_limit: 2g
     # Chromium's sandbox for the web_screenshot kind (client/shot.py) needs user namespaces, which Docker's default seccomp profile refuses. This is
     # Playwright's own profile for running Chromium with its sandbox in Docker (Docker's default plus clone, setns and unshare), vendored unchanged from
-    # microsoft/playwright v1.64.1 (SHA-256 cc3e61cabda6bbc1e53e54d27ba4d55a9d3be829b6dd1a596f4a7b31b1cc7849). Without it the sandbox cannot start and this
+    # microsoft/playwright v1.65.0, the driver that Playwright for Python v1.65.1 bundles (the node repository has no v1.65.1 tag; the file is identical on its release-1.65 branch and unchanged since v1.64.1; SHA-256 cc3e61cabda6bbc1e53e54d27ba4d55a9d3be829b6dd1a596f4a7b31b1cc7849). Without it the sandbox cannot start and this
     # Sentinel takes no screenshot (its log and the result say why); every other kind is unaffected. A host that refuses unprivileged user namespaces
     # (a kernel setting or an AppArmor rule) needs that allowed as well. `docker compose up -d` recreates the container, so an update applies it.
     security_opt:
@@ -114,10 +121,26 @@ services:
       # Optional: 0 turns off the daily refresh of the badkeys blocklist data the ssh_probe host key check reads (an air-gapped Sentinel). The check then
       # reports "not checked" unless you put the data in the badkeys volume yourself (README.md). The download's address is fixed and not configurable.
       CVENGINE_BADKEYS_REFRESH: "${CVENGINE_BADKEYS_REFRESH:-}"
-    # nmap's OS detection, naabu's SYN scanning and the UDP sweep need raw sockets; NET_RAW/NET_ADMIN are enough, no --privileged.
+    # Every capability dropped, then the two the work needs. NET_RAW: nmap's SYN scan, OS detection and UDP sweep and naabu's SYN scan (raw and packet
+    # sockets), which reach an unprivileged user through the file capability the Dockerfile puts on those two binaries and nothing else. SYS_CHROOT:
+    # Chromium's sandbox chroots the renderer into an empty directory inside its own user namespace (CI: image.yml, "Chromium's sandbox with every
+    # capability dropped": the sandbox engages with SYS_CHROOT added and not without it, and no other capability tried changes that). NET_ADMIN is NOT
+    # kept: no scan needs it (CI runs nmap -sS, -O, -sU and its path-probe flags and naabu -scan-type s under exactly this set, scripts/ci_scan_smoke.sh),
+    # and with host networking (docker-compose.override.yml.example) it would be a hold on the host's own routes, firewall and interfaces. no --privileged.
+    # no-new-privileges is not set on purpose: under it the kernel ignores file capabilities, so nmap and naabu keep raw sockets only if the container engine
+    # hands the added NET_RAW to an unprivileged user's process itself (an ambient capability). CI shows the engine of its runner does; an older engine on an
+    # operator's host may not, and an automatic update would then silently end every raw-socket scan. The caps are dropped, the user is not root and the
+    # image has no sudo; the flag can be added in docker-compose.override.yml by an operator whose engine is known to pass it.
+    cap_drop:
+      - ALL
     cap_add:
       - NET_RAW
-      - NET_ADMIN
+      - SYS_CHROOT
+    # The root filesystem stays writable in 1.4.0 (read_only: true was tried and does not work yet): bbot's discovery (kitchen-sink, the deep discovery the
+    # server can ask for) creates a working directory inside ~/.bbot/tools, which holds the 907 MB of tools (gowitness, trufflehog, Chromium, jadx) installed
+    # at build, and dies at once when the directory is read-only (CI: image.yml, "Why the root filesystem is not read-only"). A memory-backed directory over
+    # it would hide those tools, and a volume would keep a stale copy across updates. Everything else the scans write (~/.config, ~/.cache, ~/.bbot/cache,
+    # ~/.bbot/logs, ~/.bbot/temp, /tmp) works read-only; moving the baked tools out of the home directory is the work that remains.
     # To scan your LAN directly instead of only the Docker bridge network: docker-compose.override.yml.example (./setup.sh --host-network).
     volumes:
       - sentinel-state:/var/lib/cvengine-sentinel
@@ -140,6 +163,7 @@ services:
   openvas-vulnerability-tests:
     profiles: ["openvas"]
     logging: *logging
+    healthcheck: *feed-health
     image: "registry.community.greenbone.net/community/vulnerability-tests:community"
     environment:
       FEED_RELEASE: "24.10"
@@ -152,6 +176,7 @@ services:
   openvas-notus-data:
     profiles: ["openvas"]
     logging: *logging
+    healthcheck: *feed-health
     image: "registry.community.greenbone.net/community/notus-data:community"
     environment:
       KEEP_ALIVE: 1
@@ -163,6 +188,7 @@ services:
   openvas-scap-data:
     profiles: ["openvas"]
     logging: *logging
+    healthcheck: *feed-health
     image: "registry.community.greenbone.net/community/scap-data:community"
     environment:
       KEEP_ALIVE: 1
@@ -174,6 +200,7 @@ services:
   openvas-cert-bund-data:
     profiles: ["openvas"]
     logging: *logging
+    healthcheck: *feed-health
     image: "registry.community.greenbone.net/community/cert-bund-data:community"
     environment:
       KEEP_ALIVE: 1
@@ -185,6 +212,7 @@ services:
   openvas-dfn-cert-data:
     profiles: ["openvas"]
     logging: *logging
+    healthcheck: *feed-health
     image: "registry.community.greenbone.net/community/dfn-cert-data:community"
     environment:
       KEEP_ALIVE: 1
@@ -199,6 +227,7 @@ services:
   openvas-data-objects:
     profiles: ["openvas"]
     logging: *logging
+    healthcheck: *feed-health
     image: "registry.community.greenbone.net/community/data-objects:community"
     environment:
       FEED_RELEASE: "24.10"
@@ -211,6 +240,7 @@ services:
   openvas-report-formats:
     profiles: ["openvas"]
     logging: *logging
+    healthcheck: *feed-health
     image: "registry.community.greenbone.net/community/report-formats:community"
     environment:
       FEED_RELEASE: "24.10"
@@ -305,7 +335,7 @@ services:
   openvas-configure:
     profiles: ["openvas"]
     logging: *logging
-    image: "registry.community.greenbone.net/community/openvas-scanner:stable@sha256:d6d8288c22bc525e78e221a36c9db44328d3d9e0141f810c4216750ff0641ddc"
+    image: "registry.community.greenbone.net/community/openvas-scanner:stable@sha256:a580aab7de6794dc79dd37ba12ca0a799b23dd9276808ce5856c8accf6183822"
     volumes:
       - openvas_data_vol:/mnt
       - openvas_log_data_vol:/var/log/openvas
@@ -328,7 +358,7 @@ services:
     profiles: ["openvas"]
     logging: *logging
     restart: always
-    image: "registry.community.greenbone.net/community/openvas-scanner:stable@sha256:d6d8288c22bc525e78e221a36c9db44328d3d9e0141f810c4216750ff0641ddc"
+    image: "registry.community.greenbone.net/community/openvas-scanner:stable@sha256:a580aab7de6794dc79dd37ba12ca0a799b23dd9276808ce5856c8accf6183822"
     environment:
       OPENVASD_MODE: service_notus
       GNUPGHOME: /etc/openvas/gnupg

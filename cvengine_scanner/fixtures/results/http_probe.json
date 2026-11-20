@@ -21,5 +21,10 @@
     {"id": "shop.example.com|robots-txt|https://shop.example.com", "observations": [], "error": "TimeoutError: probe exceeded its total time budget"}
   ],
   "touched": ["www.example.com", "shop.example.com"],
-  "refused": ["tracker.example.net"]
+  "refused": ["tracker.example.net"],
+  "service_features": [
+    {"host": "www.example.com", "port": 443, "transport": "tcp", "feature": "http3", "value": "yes", "detail": "Alt-Svc advertises h3 on udp 443 (answered through Cloudflare)"},
+    {"host": "www.example.com", "port": 443, "transport": "tcp", "feature": "webdav", "value": "no", "detail": "no DAV header in the OPTIONS / answer (Allow: GET, HEAD, POST, OPTIONS); WebDAV on a path below / is not read"},
+    {"host": "www.example.com", "port": 443, "transport": "tcp", "feature": "http_methods", "value": "none", "detail": "Allow: GET, HEAD, POST, OPTIONS"}
+  ]
 }

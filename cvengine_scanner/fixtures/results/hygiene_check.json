@@ -19,7 +19,8 @@
         "protocol": "TLSv1.3",
         "cipher": "TLS_AES_256_GCM_SHA384",
         "chain_error": "",
-        "legacy_tls": false
+        "legacy_tls": false,
+        "alpn": "h2"
       }
     },
     {
@@ -67,5 +68,23 @@
     "www.example.com",
     "mail.example.com"
   ],
-  "refused": []
+  "refused": [],
+  "service_features": [
+    {
+      "host": "www.example.com",
+      "port": 443,
+      "transport": "tcp",
+      "feature": "http2",
+      "value": "yes",
+      "detail": "ALPN h2"
+    },
+    {
+      "host": "192.0.2.20",
+      "port": 427,
+      "transport": "tcp",
+      "feature": "slp",
+      "value": "yes",
+      "detail": "SLPv2 SrvRply on 427/tcp (error 0, 1 service URL)"
+    }
+  ]
 }

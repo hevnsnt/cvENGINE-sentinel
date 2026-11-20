@@ -10,11 +10,12 @@ A probe only ever sends a GET, never a cookie or a credential, caps its requests
 import itertools
 import logging
 import re
+import threading
 import time
 from urllib.parse import urljoin, urlsplit
 
 from .. import cms, versions
-from . import fingerprint, http, js_libraries
+from . import fingerprint, http, js_libraries, service_reads
 
 logger = logging.getLogger(__name__)
 
@@ -36,8 +37,8 @@ BODY_SCAN = 64 * 1024  # a response is read for markers in its first 64 KB only:
 PROBES = (
     {'id': 'headers-root', 'label': 'Response headers and page markers of the front page', 'family': 'http', 'leads': WEB,
      'requests': (('GET', '/'),), 'handler': 'headers', 'safety': 'one GET of the front page'},
-    {'id': 'error-page', 'label': 'Server error page signature (nginx, Apache, Tomcat, Jetty, IIS footers)', 'family': 'http',
-     'leads': r'nginx|openresty|apache|httpd|tomcat|jetty|iis|internetinformation|express|nextjs|springboot|ingress', 'requests': (('GET', PROBE_PATH),),
+    {'id': 'error-page', 'label': 'Server error page signature (nginx, Apache, Tomcat, JBoss Web, Jetty, IIS footers)', 'family': 'http',
+     'leads': r'nginx|openresty|apache|httpd|tomcat|jboss|jetty|iis|internetinformation|express|nextjs|springboot|ingress', 'requests': (('GET', PROBE_PATH),),
      'safety': 'one GET of a path no site serves', 'rules': (
          {'request': 0, 'where': 'body', 'regex': r'<center>nginx/(\d+\.\d+\.\d+)</center>', 'product': 'nginx', 'version': 1,
           'kind': 'version', 'confidence': 0.95, 'source': 'body:nginx-error-page'},
@@ -47,12 +48,25 @@ PROBES = (
           'confidence': 0.8, 'source': 'body:nginx-error-page'},
          {'request': 0, 'where': 'body', 'regex': r'<hr><center>nginx</center>', 'product': 'nginx', 'variant': 'nginx', 'kind': 'identity',
           'confidence': 0.7, 'source': 'body:nginx-error-page'},
-         {'request': 0, 'where': 'body', 'regex': r'(?i)Apache/(\d+\.\d+\.\d+) (?:\([^)]{1,30}\) )?Server at', 'product': 'Apache HTTP Server',
+         # Apache's footer (ServerSignature On) is the whole server banner, modules included when ServerTokens allows them:
+         # "<address>Apache/2.4.6 (CentOS) OpenSSL/1.0.2k-fips PHP/7.4.33 Server at example.com Port 80</address>" (server/core.c
+         # ap_psignature): the web server, and the OpenSSL, PHP and Python releases it lists
+         {'request': 0, 'where': 'body', 'regex': r'(?i)Apache/(\d+\.\d+\.\d+) (?:[^<>]{1,300}? )?Server at ', 'product': 'Apache HTTP Server',
           'version': 1, 'kind': 'version', 'confidence': 0.9, 'source': 'body:apache-error-page'},
+         {'request': 0, 'where': 'body', 'regex': r'(?i)<address>Apache/\d+\.\d+\.\d+ [^<>]{0,300}?\bOpenSSL/(\d+\.\d+\.\d+[a-z]{0,2})(?:-[A-Za-z0-9]{1,12})? [^<>]{0,300}?Server at ',
+          'product': 'OpenSSL', 'version': 1, 'kind': 'version', 'confidence': 0.85, 'source': 'body:apache-error-page'},
+         {'request': 0, 'where': 'body', 'regex': r'(?i)<address>Apache/\d+\.\d+\.\d+ [^<>]{0,300}?\bPHP/(\d+\.\d+\.\d+)[^ <>]{0,40} [^<>]{0,300}?Server at ',
+          'product': 'PHP', 'version': 1, 'kind': 'version', 'confidence': 0.85, 'source': 'body:apache-error-page'},
+         {'request': 0, 'where': 'body', 'regex': r'(?i)<address>Apache/\d+\.\d+\.\d+ [^<>]{0,300}?\bPython/(\d+\.\d+\.\d+)[^ <>]{0,40} [^<>]{0,300}?Server at ',
+          'product': 'Python', 'version': 1, 'kind': 'version', 'confidence': 0.85, 'source': 'body:apache-error-page'},
          {'request': 0, 'where': 'body', 'regex': r'Apache Tomcat/(\d+\.\d+\.\d+[\w.-]*)', 'product': 'Apache Tomcat', 'version': 1,
           'kind': 'version', 'confidence': 0.9, 'source': 'body:tomcat-error-page'},
          {'request': 0, 'where': 'body', 'regex': r'Powered by Jetty:// (\d+\.\d+\.\d+[\w.-]*)', 'product': 'Jetty', 'version': 1,
           'kind': 'version', 'confidence': 0.9, 'source': 'body:jetty-error-page'},
+         # JBoss AS 4 to 7 and EAP 5 and 6 serve Tomcat's error template with their own servlet container's name: "<h3>JBoss Web/7.0.13.Final</h3>"
+         # (AS 7.1), "<h3>JBossWeb/2.0.1.GA</h3>" (AS 4.2); WildFly's Undertow page states no version and is not read
+         {'request': 0, 'where': 'body', 'regex': r'<h3>JBoss ?Web/(\d+\.\d+\.\d+)(?:\.(?:GA|Final|CR\d{1,2}|Beta\d{1,2}|SP\d{1,2}))?</h3>',
+          'product': 'JBoss Web', 'version': 1, 'kind': 'version', 'confidence': 0.9, 'source': 'body:jbossweb-error-page'},
          {'request': 0, 'where': 'title', 'regex': r'IIS (\d+\.\d+) Detailed Error', 'product': 'Microsoft IIS', 'version': 1,
           'kind': 'version', 'confidence': 0.85, 'source': 'title:iis-detailed-error'},
          {'request': 0, 'where': 'body', 'regex': r'^[ \t]{0,8}default backend - 404[ \t]{0,8}$', 'product': 'nginx', 'variant': 'kubernetes-ingress',
@@ -360,6 +374,8 @@ def technology_names(observations):
         library = (o.get('evidence') or {}).get('library') if isinstance(o.get('evidence'), dict) else None
         if o['kind'] == 'version' and isinstance(library, dict) and library.get('tech_names'):
             names += [str(n)[:500] for n in library['tech_names'] if ':' in str(n)]  # the effective copy, or each copy of an unresolved set
+        elif o['kind'] == 'version' and o['product'] == JAVA_RUNTIME:
+            continue  # the JVM is a Java runtime reading of its own (cveFeed.java_runtime), not a technology
         elif o['kind'] == 'version' and o['outcome'] == 'found' and o['version']:
             names.append(f"{o['product']}:{o['version']}")
         elif o['kind'] == 'wordpress' and o['outcome'] == 'found':
@@ -374,9 +390,10 @@ def technology_names(observations):
 
 # ----------------------------------------------------------------------------- running one probe
 
-def run_http_probe(probe_id, base, allowed, policy=None, get=None, sleep=time.sleep, reader=None):
+def run_http_probe(probe_id, base, allowed, policy=None, get=None, sleep=time.sleep, reader=None, seen=None):
     """Run one http probe against ``base`` and return its observations. Without ``get`` every request is a ``fetch`` under ``policy`` (the task's
-    ``ScopePolicy``, required then); ``get(url)`` replaces that fetch (``run_batch`` and tests). Without a policy no script of another host is read."""
+    ``ScopePolicy``, required then); ``get(url)`` replaces that fetch (``run_batch`` and tests). Without a policy no script of another host is read.
+    ``seen``, a dict when given, receives ``first``: the host's own answer to the probe's first request (the service feature reads use it)."""
     if get is None and policy is None:
         raise ValueError('a probe needs the task\'s scope policy')
     probe = BY_ID[probe_id]
@@ -402,6 +419,8 @@ def run_http_probe(probe_id, base, allowed, policy=None, get=None, sleep=time.sl
     responses = [own_answer(r, base) for r in responses]
     out = []
     first = responses[0] if responses else None
+    if seen is not None:
+        seen['first'] = first
     if handler == 'headers' and first:
         out += observations_from_page(first)
     elif handler == 'nextjs' and first:
@@ -409,9 +428,32 @@ def run_http_probe(probe_id, base, allowed, policy=None, get=None, sleep=time.sl
     elif handler == 'libraries' and first:
         out += _library_observations(first, script_get or get, sleep, policy, reader=reader)
     out += apply_rules(probe, responses)
+    if probe_id in JAVA_PAGE_PROBES and first and not first.get('challenge'):
+        out += java_observations(first, 'header' if probe_id == 'headers-root' else 'error_page', probe['requests'][0][1])
     if first and first.get('challenge') and not any(o['kind'] == 'edge' for o in out):
         out.append(_observation('edge', first['challenge'], outcome='challenged', confidence=0.8, source='edge-challenge', url=probe['requests'][0][1]))
     return out
+
+
+JAVA_RUNTIME = 'Java runtime'  # the product of an observation that states the JVM (cvENGINE stores it as a Java runtime reading, not a technology)
+JAVA_PAGE_PROBES = ('headers-root', 'error-page')  # the pages already fetched whose headers and body are read for the JVM: nothing is asked for it
+
+
+def java_observations(response, source, path):
+    """The Java runtime a page this probe already fetched states (``cvengine_scanner.java``: X-Powered-By and Server, and a JVM banner or
+    ``java.version`` in the body), as ``version`` observations of the product ``Java runtime``: the vendor in ``variant``, the reading in
+    ``evidence['java']``. Nothing is asked to make a page fail: these are the answers the probe had anyway."""
+    from .. import java
+    headers = response.get('raw_headers') or response.get('headers') or {}
+    readings = java.from_headers(headers, url=path) + java.from_body(response.get('body') or '', source='error_page', url=path)
+    out, seen = [], set()
+    for r in readings:
+        if r['version'] in seen:
+            continue
+        seen.add(r['version'])
+        out.append(_observation('version', JAVA_RUNTIME, r['version'], r['vendor'][:60], 'found', 0.9,
+                                f"{'header' if r['source'] == 'header' else 'body'}:java", url=path, evidence={'java': r}))
+    return out[:3]
 
 
 def own_answer(response, base):
@@ -596,14 +638,22 @@ def _entry(raw):
         return None  # a base is the host's own: what is asked is what the server planned for that host
     allowed = {str(n).lower().rstrip('.') for n in (raw.get('allowed') or []) if isinstance(n, str)}
     allowed.add(parts.hostname.lower().rstrip('.'))
-    return {'id': ident[:200], 'host': host.lower().rstrip('.'), 'probe': probe_id, 'base': base.rstrip('/'), 'allowed': allowed}
+    # the optional service feature reads the server asks for on this base (service_reads.READS); a name this Sentinel does not know is ignored
+    asked = raw.get('features') if isinstance(raw.get('features'), list) else []
+    reads = [r for r in dict.fromkeys(a for a in asked[:16] if isinstance(a, str)) if r in service_reads.READS]
+    return {'id': ident[:200], 'host': host.lower().rstrip('.'), 'probe': probe_id, 'base': base.rstrip('/'), 'allowed': allowed, 'features': reads}
 
 
 def run_batch(target, probe=None, sleep=time.sleep, clock=time.monotonic, workers=HOST_WORKERS, max_seconds=BATCH_SECONDS):
     """Run an ``http_probe`` task: ``target['probes']`` (planned probes, see ``_entry``) under ``target['scope']`` (``policy.ScopePolicy``).
-    Returns ``{'probes': [{'id', 'observations', 'error'?}], 'touched': [hosts asked], 'refused': [hosts a hop was refused for]}``. A probe whose host the policy refuses is not run (its
+    Returns ``{'probes': [{'id', 'observations', 'error'?}], 'touched': [hosts asked], 'refused': [hosts a hop was refused for],
+    'service_features': [...]}``. A probe whose host the policy refuses is not run (its
     error says so); a probe that fails is reported with its error and no observations, never as clean. ``probe`` replaces ``http.probe_url``,
-    the network (tests): every request still goes through ``fetch``, so the policy is asked at every hop, redirects included."""
+    the network (tests): every request still goes through ``fetch``, so the policy is asked at every hop, redirects included.
+
+    ``service_features`` (``cvengine_scanner.features``, ``service_reads``): what the ``headers-root`` front page answer says with no request of
+    its own (HTTP/3 advertised in Alt-Svc, PHP on Windows), and the reads an entry's optional ``features`` names (one OPTIONS for ``webdav``, the
+    portal pages for ``vpn_*``), once per web base, after that entry's probe and under the same policy."""
     import concurrent.futures
 
     from .policy import ScopePolicy
@@ -620,6 +670,7 @@ def run_batch(target, probe=None, sleep=time.sleep, clock=time.monotonic, worker
     for entry in entries:
         by_host.setdefault(entry['host'], []).append(entry)
     results = {}
+    feature_items, lock = [], threading.Lock()
 
     def getter(entry):
         if probe is None:
@@ -627,6 +678,7 @@ def run_batch(target, probe=None, sleep=time.sleep, clock=time.monotonic, worker
         return lambda url, headers=None: fetch(url, policy, probe=probe, allowed=entry['allowed'], sleep=sleep, headers=headers)
 
     def run_host(host, mine):
+        read_bases = set()  # (base, read) pairs this host was already read for: each read runs once per web base
         for entry in mine:
             if clock() > deadline:
                 results[entry['id']] = {'id': entry['id'], 'observations': [], 'error': 'not run: the task ran out of time'}
@@ -635,14 +687,56 @@ def run_batch(target, probe=None, sleep=time.sleep, clock=time.monotonic, worker
             if why:
                 results[entry['id']] = {'id': entry['id'], 'observations': [], 'error': f'not run: the host is {why}'}
                 continue
+            seen = {}
             try:
-                found = run_http_probe(entry['probe'], entry['base'], entry['allowed'], policy, get=getter(entry), sleep=sleep, reader=reader)
+                found = run_http_probe(entry['probe'], entry['base'], entry['allowed'], policy, get=getter(entry), sleep=sleep, reader=reader,
+                                       seen=seen)
                 results[entry['id']] = {'id': entry['id'], 'observations': found[:MAX_OBSERVATIONS]}
             except Exception as exc:  # noqa: BLE001 - one probe failing never stops the rest; the server retries it, never records it clean
                 logger.info('probe %s on %s failed: %s', entry['probe'], host, type(exc).__name__)
                 results[entry['id']] = {'id': entry['id'], 'observations': [], 'error': f'{type(exc).__name__}: {exc}'[:200]}
+            items = _feature_items(entry, seen.get('first'), read_bases, policy, probe, sleep)
+            if items:
+                with lock:
+                    feature_items.extend(items)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
         for future in [pool.submit(run_host, host, mine) for host, mine in by_host.items()]:
             future.result()
-    return {'probes': [results[e['id']] for e in entries if e['id'] in results], 'touched': policy.touched, 'refused': policy.refused}
+    from .. import features
+    return {'probes': [results[e['id']] for e in entries if e['id'] in results], 'touched': policy.touched, 'refused': policy.refused,
+            'service_features': features.clean_features(feature_items[:features.MAX_ITEMS])}
+
+
+def _feature_items(entry, first, done, policy, probe=None, sleep=time.sleep):
+    """The service feature readings of one planned probe (``service_reads``): the free ones of a ``headers-root`` front page answer, then the
+    extra-request reads its ``features`` names that this host's base has not had yet (``done``, updated). Never raises: a read that fails is no
+    item (unknown)."""
+    base, host = entry['base'], entry['host']
+    scheme = urlsplit(base).scheme
+    out = []
+    if entry['probe'] == 'headers-root' and (base, 'page') not in done:
+        done.add((base, 'page'))
+        out += service_reads.page_readings(host, service_reads.base_port(base), scheme, first)
+    reads = [r for r in entry.get('features') or () if (base, r) not in done]
+    if not reads:
+        return out
+    done.update((base, r) for r in reads)
+    send = probe or http.probe_url
+
+    def get(url):
+        return fetch(url, policy, probe=probe, allowed=entry['allowed'], sleep=sleep, max_bytes=service_reads.PORTAL_BYTES)
+
+    def options(url):
+        name = urlsplit(url).hostname or ''
+        if policy.host_refusal(name):
+            policy.refuse(name)
+            raise ValueError('probe destination is not allowed')
+        answer = send(url, policy, method='OPTIONS', max_bytes=service_reads.OPTIONS_BYTES, browser=True)
+        return {**answer, 'challenge': challenge_of(answer)}
+    try:
+        out += service_reads.run_reads(host, base, reads, get, options, page=first if entry['probe'] == 'headers-root' else None,
+                                       sleep=sleep, gap=REQUEST_GAP)
+    except Exception as exc:  # noqa: BLE001 - a feature read never fails the probe it rides on
+        logger.info('feature reads on %s failed: %s', host, type(exc).__name__)
+    return out

@@ -16,11 +16,13 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-def compose_config(profiles):
+def compose_config(profiles, host_network=False):
     # Run against a copy, so a developer's own .env or docker-compose.override.yml cannot change the answer.
     with tempfile.TemporaryDirectory(prefix='sentinel-compose-') as tmp:
         shutil.copy(os.path.join(ROOT, 'docker-compose.yml'), tmp)
         shutil.copytree(os.path.join(ROOT, 'config'), os.path.join(tmp, 'config'))  # compose reads the seccomp profile the sentinel service names
+        if host_network:  # what ./setup.sh --host-network writes
+            shutil.copy(os.path.join(ROOT, 'docker-compose.override.yml.example'), os.path.join(tmp, 'docker-compose.override.yml'))
         env = {k: v for k, v in os.environ.items() if not k.startswith(('COMPOSE_', 'CVENGINE_', 'OPENVAS_'))}
         env['COMPOSE_PROFILES'] = profiles
         out = subprocess.run(['docker', 'compose', 'config', '--format', 'json'], cwd=tmp, env=env, capture_output=True, text=True, timeout=60)
@@ -41,6 +43,7 @@ class ComposeTests(unittest.TestCase):
     def setUpClass(cls):
         cls.light = compose_config('')
         cls.full = compose_config('openvas')
+        cls.host = compose_config('', host_network=True)
 
     def test_light_runs_only_the_sentinel(self):
         self.assertEqual(sorted(self.light['services']), ['sentinel', 'sentinel-init'])  # the Sentinel and the one-shot that hands it its state volume
@@ -82,13 +85,65 @@ class ComposeTests(unittest.TestCase):
         self.assertRegex(text, r'(?m)^USER sentinel$')
         self.assertIn('--uid 10001', text)
         for binary in ('nmap', 'naabu'):  # one setcap per file: libcap's setcap takes a single file for each capability spec
-            self.assertRegex(text, rf'setcap cap_net_raw,cap_net_admin\+eip /usr/local/bin/{binary}\b')
+            self.assertRegex(text, rf'setcap cap_net_raw\+eip /usr/local/bin/{binary}\b')  # NET_RAW alone: a file capability the container's set lacks stops the program starting
+        self.assertNotIn('cap_net_admin', text.replace('NET_ADMIN', ''))  # (the comment may name it)
         self.assertEqual(text.count('setcap'), 2)  # exactly these two: nothing else is given a capability
         self.assertIn('NMAP_PRIVILEGED=1', text)
         self.assertIn('GOBIN=/usr/local/bin', text)  # the tools are installed where the unprivileged user can run them
         self.assertLess(text.index('RUN useradd'), text.index('USER sentinel'))
         self.assertNotIn('nuclei -update-templates', text)  # templates are pinned, not downloaded at build or start
         self.assertIn('NUCLEI_TEMPLATES_SHA256=', text)
+
+    # The capability set (SN-8), for the default stack and with host networking. Every entry is proven by CI:
+    # scripts/ci_scan_smoke.sh runs the scans in the built image under exactly these settings (.github/workflows/image.yml).
+
+    def test_the_sentinel_keeps_net_raw_and_sys_chroot_and_nothing_else(self):
+        for name, config in (('light', self.light), ('full', self.full), ('host network', self.host)):
+            sentinel = config['services']['sentinel']
+            self.assertEqual(sentinel.get('cap_drop'), ['ALL'], name)
+            self.assertEqual(sorted(sentinel.get('cap_add')), ['NET_RAW', 'SYS_CHROOT'], name)  # NET_ADMIN is gone: no scan needs it (the nmap and naabu smoke runs in CI); SYS_CHROOT is Chromium's sandbox
+            self.assertFalse(sentinel.get('privileged'), name)
+            self.assertNotIn('NET_ADMIN', json.dumps(sentinel), name)
+            self.assertNotIn('SYS_ADMIN', json.dumps(sentinel), name)
+
+    def test_host_networking_changes_the_network_and_nothing_about_the_privileges(self):
+        light, host = self.light['services']['sentinel'], self.host['services']['sentinel']
+        self.assertEqual(host.get('network_mode'), 'host')
+        self.assertNotIn('network_mode', light)
+        for key in ('cap_add', 'cap_drop', 'read_only', 'security_opt', 'privileged', 'pids_limit', 'mem_limit'):
+            self.assertEqual(host.get(key), light.get(key), key)
+
+    def test_the_root_filesystem_stays_writable_and_the_file_says_what_blocks_read_only(self):
+        # read_only: true was tried in CI with memory-backed ~/.config, ~/.cache, ~/.bbot/{cache,logs,temp} and /tmp: every scan tool worked except bbot's
+        # discovery, which makes a working directory inside ~/.bbot/tools (907 MB of tools baked into the image) and dies when it is read-only. A tmpfs there
+        # would hide the tools, so for 1.4.0 the root is writable; this test fails when someone sets it without the work that remains (the tools moved out).
+        for name, config in (('light', self.light), ('full', self.full), ('host network', self.host)):
+            sentinel = config['services']['sentinel']
+            self.assertFalse(sentinel.get('read_only'), name)
+            self.assertFalse(sentinel.get('tmpfs'), name)  # a tmpfs over a baked directory would hide what the image keeps there
+        compose = text('docker-compose.yml')
+        self.assertIn('~/.bbot/tools', compose)
+        self.assertIn('Why the root filesystem is not read-only', text('.github', 'workflows', 'image.yml'))
+
+    def test_no_new_privileges_is_not_set_because_it_depends_on_the_engine_version(self):
+        # Under no-new-privileges the kernel ignores file capabilities: nmap and naabu keep raw sockets only on an engine that passes the capability on as an ambient one, which an operator's older engine may not (CI records what its own engine does).
+        for config in (self.light, self.full, self.host):
+            self.assertFalse([o for o in config['services']['sentinel'].get('security_opt', []) if 'no-new-privileges' in o])
+        self.assertIn('no-new-privileges', text('docker-compose.yml'))  # and the file says why
+
+    def test_the_other_services_are_not_given_more_than_before(self):
+        init = self.full['services']['sentinel-init']
+        self.assertEqual((init['cap_drop'], sorted(init['cap_add'])), (['ALL'], ['CHOWN', 'DAC_OVERRIDE', 'FOWNER']))
+        ospd = self.full['services']['openvas-ospd']  # Greenbone's own scanner image, on its own network: its capabilities are its own (README.md)
+        self.assertEqual(sorted(ospd['cap_add']), ['NET_ADMIN', 'NET_RAW'])
+
+    def test_ci_runs_the_scans_in_the_built_image_under_the_compose_settings(self):
+        workflow = text('.github', 'workflows', 'image.yml')
+        self.assertIn('docker compose run --rm --no-deps -T', workflow)  # the real service definition, not a copy of its flags
+        self.assertIn('scripts/ci_scan_smoke.sh', workflow)
+        smoke = text('scripts', 'ci_scan_smoke.sh')
+        for needle in ('nmap -sS -O', 'nmap -sU', 'naabu -host', '-scan-type s', 'nuclei -u', 'wpscan --url', 'testssl.sh', 'kingfisher scan', 'ci_bbot_start.py'):
+            self.assertIn(needle, smoke)
 
     def test_the_sentinel_container_carries_the_seccomp_profile_chromiums_sandbox_needs(self):
         # Playwright's profile, vendored unchanged (its hash is the one THIRD-PARTY-style note in docker-compose.yml names), on the sentinel service

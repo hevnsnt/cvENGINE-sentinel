@@ -6,6 +6,7 @@ local runs, its targets and reads results with the same values, so a flag change
 Nothing in here runs a tool or reads the environment: it is data and pure functions. A setting the server reads from its environment (the UDP
 port list, the packet rate) is passed in by the caller.
 """
+import ipaddress
 import re
 from urllib.parse import urlparse
 
@@ -16,7 +17,11 @@ NAABU_FLAGS = ['-p', '-', '-rate', '1000', '-retries', '2', '-c', '25', '-warm-u
 NUCLEI_SEVERITIES = 'info,low,medium,high,critical'  # what a run reports when the task names no severities ('unknown' is left out)
 # The exclusion floor for every nuclei run, local or on a Sentinel: denial-of-service templates never run, whatever tags were asked for.
 NUCLEI_EXCLUDED_TAGS = ('dos',)
-NUCLEI_EXCLUDE_FLAGS = ['-etags', ','.join(NUCLEI_EXCLUDED_TAGS)]
+# Templates that send credentials (vendor default logins, brute force) never run unless a person turned them on: the task says so with
+# ``allow_credential_checks`` (the server's "Allow checks that send credentials" setting, off unless set). Without it they are in the exclusion of
+# every web and local run, and a targeted tag filter never names them. The service-port runs never send credentials, whatever the task says.
+NUCLEI_CREDENTIAL_TAGS = ('default-login', 'bruteforce')
+NUCLEI_EXCLUDE_FLAGS = ['-etags', ','.join((*NUCLEI_EXCLUDED_TAGS, *NUCLEI_CREDENTIAL_TAGS))]
 _NUCLEI_RUN = ['-jsonl', '-silent', '-duc', '-ni', '-nc', '-rl', '150', '-c', '40', '-timeout', '10', '-retries', '1']
 # A Sentinel's run. The raw request and response are kept (no -omit-raw): parse_nuclei_jsonl keeps them, clipped and with credentials redacted,
 # as the evidence of a finding (review M2). The severity filter is the task's own (client.tools adds -severity only when the task names one).
@@ -28,15 +33,266 @@ NUCLEI_LIGHT_FLAGS = {'-rl': '50', '-c': '10'}
 NUCLEI_TECH_FLAGS = ['-tags', 'tech']
 NUCLEI_DEFAULT_PORTS = (80, 443)  # the ports a bare host or address is probed on by the web templates
 
+# --- nuclei: what speaks on a port, and how hard one service may be hit --------------------------------------------------
+# A port only receives the templates of the protocol that speaks there. Before, the whole template set (11,000+ http templates and the network,
+# javascript and ssl ones) was sent to every ``host:port`` of a task, so scanning a host sent tens of thousands of connections to its SSH and mail
+# daemons (sshd answered "banner exchange: invalid format" and throttled new logins for the whole scan). The server labels each ``host:port`` of a task
+# with one of these classes from what it observed (nmap, the http probe, the port inventory); a Sentinel that is sent no label reads the port
+# number in ``NUCLEI_SERVICE_PORTS`` itself.
+NUCLEI_WEB = 'web'  # an http or https service: the http and ssl templates, and every other template type that is not a raw tcp one
+NUCLEI_UNKNOWN = 'unknown'  # an open port whose service has no class of its own, or that nothing says what speaks on: the generic network templates
+NUCLEI_TCP_TYPES = ('tcp', 'javascript')  # nuclei's raw-socket template types (nuclei calls "network" templates "tcp"): they connect to the template's own ports
+NUCLEI_NETWORK_TYPES = (*NUCLEI_TCP_TYPES, 'ssl')  # what a port that is not web may receive: never an http template
+# class -> (the nuclei tags of its templates, the template types that may run on it). An empty tag list means every tag: the class is picked by type
+# alone (a TLS endpoint gets the ssl templates: a handshake and what the certificate says, nothing that speaks a protocol on top).
+NUCLEI_SERVICES = {
+    'ssh': (('ssh', 'openssh'), NUCLEI_TCP_TYPES), 'ftp': (('ftp',), NUCLEI_TCP_TYPES), 'telnet': (('telnet',), NUCLEI_TCP_TYPES),
+    'smtp': (('smtp',), NUCLEI_TCP_TYPES), 'imap': (('imap',), NUCLEI_TCP_TYPES), 'pop3': (('pop3',), NUCLEI_TCP_TYPES),
+    'mysql': (('mysql',), NUCLEI_TCP_TYPES), 'postgres': (('postgres', 'postgresql'), NUCLEI_TCP_TYPES), 'mssql': (('mssql',), NUCLEI_TCP_TYPES),
+    'redis': (('redis',), NUCLEI_TCP_TYPES), 'mongodb': (('mongodb',), NUCLEI_TCP_TYPES), 'memcached': (('memcached',), NUCLEI_TCP_TYPES),
+    'ldap': (('ldap',), NUCLEI_TCP_TYPES), 'smb': (('smb',), NUCLEI_TCP_TYPES), 'rdp': (('rdp',), NUCLEI_TCP_TYPES), 'vnc': (('vnc',), NUCLEI_TCP_TYPES),
+    'tls': ((), ('ssl',)),  # a TLS-wrapped service that is not http (smtps, imaps, pop3s, ldaps, ftps)
+}
+# what nmap calls them (``Port.service_name``, with a leading ``ssl/`` removed by the caller) -> class
+NUCLEI_SERVICE_NAMES = {
+    'ssh': 'ssh', 'ftp': 'ftp', 'telnet': 'telnet', 'smtp': 'smtp', 'submission': 'smtp', 'imap': 'imap', 'pop3': 'pop3',
+    'mysql': 'mysql', 'postgresql': 'postgres', 'ms-sql-s': 'mssql', 'redis': 'redis', 'mongod': 'mongodb', 'mongodb': 'mongodb',
+    'memcached': 'memcached', 'ldap': 'ldap', 'microsoft-ds': 'smb', 'netbios-ssn': 'smb', 'ms-wbt-server': 'rdp', 'vnc': 'vnc',
+    'smtps': 'tls', 'imaps': 'tls', 'pop3s': 'tls', 'ldapssl': 'tls', 'ldaps': 'tls', 'ftps': 'tls',
+}
+# The default ports of AI model servers and agent dashboards that nmap's top thousand leaves out (the others are in it: LM Studio 1234, Open WebUI
+# 3000 and 8080, AnythingLLM 3001, LiteLLM 4000, KoboldCpp 5001, vLLM 8000, llama.cpp 8080). An open one answers prompts, pulls models or runs an
+# agent's tools for whoever reaches it; cvENGINE reads what answers there with its version source reads (only fixed status GETs). The fingerprint
+# pass scans them (EXTRA_PORTS), and a port nmap could not name is sent the web templates (NUCLEI_SERVICE_PORTS).
+AI_PORTS = (
+    7860,   # Gradio apps (text-generation-webui, Stable Diffusion web UI) and Langflow
+    8188,   # ComfyUI
+    8265,   # Ray dashboard and Jobs API
+    9119,   # Hermes Agent dashboard (Nous Research)
+    11434,  # Ollama
+    18789,  # OpenClaw gateway and Control UI (formerly Clawdbot, Moltbot)
+)
+# the IANA port of each class, read only when the port has no service name and no web evidence (an older server, a port the port scan found but
+# nmap could not name); the well-known web ports are here too, so a task with no labels still sends HTTP to a web port and to nothing else
+NUCLEI_SERVICE_PORTS = {
+    22: 'ssh', 21: 'ftp', 23: 'telnet', 25: 'smtp', 587: 'smtp', 2525: 'smtp', 143: 'imap', 110: 'pop3', 465: 'tls', 993: 'tls', 995: 'tls',
+    636: 'tls', 990: 'tls', 3306: 'mysql', 5432: 'postgres', 1433: 'mssql', 6379: 'redis', 27017: 'mongodb', 11211: 'memcached', 389: 'ldap',
+    445: 'smb', 139: 'smb', 3389: 'rdp', 5900: 'vnc',
+    **{p: 'web' for p in (80, 443, 3000, 8000, 8008, 8080, 8081, 8443, 8888, 9443)},
+    **{p: 'web' for p in AI_PORTS},
+}
+# What one host:port of a non-web service receives from one task. nuclei paces only its http and dns requests (its rate limiter, ``-rl``, is called by
+# the http and dns protocols and by nothing else: measured on nuclei 3.11.1, an ``-rl 2`` run opened 47 to 141 connections to one port within a tenth
+# of a second), and a template that sets its own ``threads`` ignores the concurrency flags. So a Sentinel paces the connections itself: each
+# template of a service runs as its own nuclei process, one at a time (-c 1, one host, one payload, one javascript runtime), and a new one starts no
+# sooner than ``pause_ms`` after the previous one ended. A template that sets its own parallelism is not run. The bound on one host:port is therefore:
+# one connection in flight per template run, one template run per ``pause_ms``, and ``seconds`` in all. Measured numbers are in docs/SENTINELS.md.
+# ``pause_ms`` is the one value a task can raise but never lower; ``seconds`` and ``web_rate`` it can lower but never raise.
+NUCLEI_SERVICE_BUDGET = {'pause_ms': 500, 'seconds': 300, 'web_rate': 25}
+NUCLEI_SERVICE_FLOOR = {'seconds': 10, 'web_rate': 1}  # a task can ask for less, never for nothing
+NUCLEI_SERVICE_PAUSE_MAX = 10000
+# The pause a class needs of its own. OpenSSH 9.8 and later (PerSourcePenalties, on by default) adds 5 seconds of penalty to a source for each failed
+# authentication and refuses the source once 15 seconds have built up. Each of the 15 javascript ssh templates opens a session and makes one authentication
+# attempt with no credential (an unknown user, to read the methods the server offers), so a pause of 500 ms made a real OpenSSH 10.3 refuse the
+# Sentinel after the fourth template (measured: "drop connection ... penalty: attempted authentication by invalid user"). A pause of 5.5 seconds between
+# template runs keeps the penalty from building up (measured: no penalty over the whole class). The task's own pause counts when it is longer.
+NUCLEI_SERVICE_CLASS_PAUSE_MS = {'ssh': 5500}
+# Tags no service run ever has: the web floor (``dos``) and every template that guesses credentials, fuzzes or says it is intrusive. A credential attempt
+# is off unless the owner turns it on: the same rule the OpenVAS and nmap runs follow (no brute force family, no intrusive script). The tags are only the
+# first line: many credential templates carry other tags (enum, vuln, authenticated), so the Sentinel also reads each template and refuses one with
+# ``payloads``, a login or an authentication step (``client.tools._paced_template``). No setting turns that on: no nuclei service run sends credentials.
+NUCLEI_SERVICE_EXCLUDED_TAGS = (*NUCLEI_EXCLUDED_TAGS, *NUCLEI_CREDENTIAL_TAGS, 'fuzz', 'intrusive')
+# the hosts that stop being scanned after this many failed requests (nuclei -mhe; its default is 30): a port that does not speak the protocol stops being tried
+NUCLEI_SERVICE_HOST_ERRORS = 10
+NUCLEI_SERVICE_SILENT_RUNS = 3  # template runs that get no answer at all before the port is given up on (one can fail for its own reasons)
+NUCLEI_SERVICE_TEMPLATE_SECONDS = 30  # one template run is stopped after this long
+NUCLEI_SERVICE_MAX_REQUESTS = 10  # a template that declares more requests than this (``max-request``) is not run on a service: it is a spray, not a check
+# The share of a task's time the non-web ports may use together: the web pass runs first and is stopped when only this share is left, so a task with
+# many slow service ports cannot starve the web scan. Ports not reached are reported (``not_checked``), never silently dropped.
+NUCLEI_SERVICE_TIME_SHARE = 0.35
+NUCLEI_SERVICE_MAX_PORTS = 6  # the most non-web ports the server puts in one task (it splits the rest): kept equal in cveFeed.nuclei_services
+# the most one web host receives per second: nuclei's per-host rate limit (``-per-host-rate-limit``) with ``-rl`` as the per-host rate. The global rate
+# is shared out among the hosts of a pass so no host gets more than its share and the pass as a whole stays at the global rate (``nuclei_web_flags``).
+NUCLEI_WEB_HOST_RATE = 25
 
-def nuclei_flags(tags=None, profile='normal', severities=None, tech=False, templates_dir=None, secret_file=None, proxy_args=()):
+
+# --- nuclei: the network detection pass (contract 10) ---------------------------------------------------------------------
+# The light pass's ``-tags tech`` reaches the http technology templates only: a non-web port gets nothing from it (no network template is tagged tech), so
+# RDP, Redis, MongoDB, RabbitMQ, ActiveMQ, VNC and the SSH and FTP variants were never named by nuclei. A ``nuclei_light`` task that carries
+# ``network_detection: true`` (contract 10) runs the network detection templates instead, on its non-web host:port targets only: each port gets the
+# templates of its class that are on the service-port allowlist (``nuclei_allowlist``) AND whose reviewed path is under ``network/detection/``, through the same
+# paced, one-template-at-a-time service run as every other non-web port (``NUCLEI_SERVICE_BUDGET``, ``NUCLEI_SERVICE_EXCLUDED_TAGS``, the content rule). Never
+# ``network/cves``, ``network/misconfig``, a javascript or an ssl template, a web target or a tag the task names. The server sends the field only to a Sentinel
+# that declared contract ``NUCLEI_DETECTION_SINCE`` or later: an older one would ignore it and run the light pass's tech filter, which checks nothing there.
+NUCLEI_DETECTION_DIR = 'network/detection/'
+NUCLEI_DETECTION_SINCE = 10
+NUCLEI_DETECTION_TYPES = ('tcp',)  # every template under network/ is nuclei's raw tcp type
+# the per-port budget the server asks for (a task may only make it gentler: ``nuclei_service_budget``) and how many ports one task carries, so a light task's
+# own time (``TASK_LIMITS['nuclei_light']``: 840 s at least) covers each port's whole budget: 3 x 240 s. The FTP class has the most templates (79 in v10.5.2).
+NUCLEI_DETECTION_BUDGET = {'pause_ms': 500, 'seconds': 240, 'web_rate': 25}
+NUCLEI_DETECTION_MAX_PORTS = 3
+
+
+# --- nuclei: the approved template set from the template index (contract 11) -----------------------------------------------
+# The server keeps no copy of the template library: a nuclei task's ``template_policy`` carries ``source: "index"`` and the Sentinel builds the approved set
+# itself, from the templates baked into its image (the release ``nuclei_templates`` the image pins) and the template index shipped with this library
+# (``cvengine_scanner.template_index``): only a file whose path and sha256 the index records, and whose recorded verdict passes the policy the task names, is
+# run. An installed template a ``nuclei_validate`` test runs is named by ``template_path`` (read from the same baked set), never sent as text. A target whose
+# host scope refuses (a name that now resolves to an address no Sentinel may scan) is not run and is reported in ``unreachable`` and ``not_checked`` with a
+# reason that starts with ``NUCLEI_REFUSED_PREFIX``, instead of failing the whole task: the server resolves no target name itself. The server sends such work
+# only to a Sentinel that declared ``TEMPLATE_INDEX_SINCE`` or later.
+TEMPLATE_INDEX_SINCE = 11
+TEMPLATE_INDEX_SOURCE = 'index'
+NUCLEI_REFUSED_PREFIX = 'refused by scope: '
+
+
+def nuclei_detection_selection(service):
+    """``{'types', 'tags', 'etags'}`` of the network detection pass on a port of class ``service``: the class's own templates (``nuclei_service_selection``
+    with no task tags: a task's tags never widen or narrow it), of nuclei's raw tcp type only, with ``NUCLEI_SERVICE_EXCLUDED_TAGS`` always excluded.
+    ``None`` for web (the pass never sends an http template) and for a class with no tcp templates of its own (``tls``: ssl templates only)."""
+    if service == NUCLEI_WEB or (service != NUCLEI_UNKNOWN and service not in NUCLEI_SERVICES):
+        return None
+    if service != NUCLEI_UNKNOWN and not set(NUCLEI_SERVICES[service][1]) & set(NUCLEI_DETECTION_TYPES):
+        return None
+    selection = nuclei_service_selection(service, ())
+    return {**selection, 'types': list(NUCLEI_DETECTION_TYPES)}
+
+
+def is_detection_path(path):
+    """Whether a template's reviewed library path (``nuclei_allowlist``'s ``path``) is under ``network/detection/``: a relative path, no ``..``."""
+    if not isinstance(path, str) or path.startswith(('/', '\\')) or '\\' in path:
+        return False
+    parts = path.split('/')
+    return path.startswith(NUCLEI_DETECTION_DIR) and '..' not in parts and '.' not in parts and path.endswith('.yaml')
+
+
+def nuclei_service_budget(requested=None):
+    """The per-service budget a run uses: what the task asked for (``{'pause_ms', 'seconds', 'web_rate'}``) held to this library's bounds. A task can
+    lower ``seconds`` and ``web_rate`` and raise ``pause_ms`` (a gentler run), never the other way, so no server can make a Sentinel hit a service harder
+    than this library says. A missing, malformed or boolean value is the library's own."""
+    asked = requested if isinstance(requested, dict) else {}
+
+    def number(key):
+        value = asked.get(key)
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+    out = dict(NUCLEI_SERVICE_BUDGET)
+    pause = number('pause_ms')
+    if pause is not None:
+        out['pause_ms'] = min(NUCLEI_SERVICE_PAUSE_MAX, max(NUCLEI_SERVICE_BUDGET['pause_ms'], pause))
+    for key in ('seconds', 'web_rate'):
+        value = number(key)
+        if value is not None:
+            out[key] = min(NUCLEI_SERVICE_BUDGET[key], max(NUCLEI_SERVICE_FLOOR[key], value))
+    return out
+
+
+def nuclei_label_key(target):
+    """``(host, port)`` of a ``host:port`` or ``[ipv6]:port`` nuclei target in one canonical spelling (lower case, no trailing dot, an address as
+    ``ipaddress`` writes it, a name in its ASCII form, the port as a number), or ``None`` for a bare host, an address or a URL. Both the server's labels and the
+    targets a Sentinel validated are keyed with it, so a spelling the validation changed still finds its label."""
+    if not isinstance(target, str) or '://' in target:
+        return None
+    text = target.strip()
+    if text.startswith('['):
+        host, _, rest = text[1:].partition(']')
+        port = rest[1:] if rest.startswith(':') else ''
+    elif text.count(':') == 1:
+        host, _, port = text.partition(':')
+    else:
+        return None
+    if not port.isdigit() or not host:
+        return None
+    host = host.strip().lower().rstrip('.')
+    try:
+        host = str(ipaddress.ip_address(host))
+    except ValueError:
+        try:
+            host = host.encode('idna').decode('ascii')
+        except UnicodeError:
+            pass
+    return host, int(port)
+
+
+def nuclei_service_pause_ms(service, budget=None):
+    """The pause between two template runs on a port of class ``service``: the budget's, or the class's own when it needs more (``NUCLEI_SERVICE_CLASS_PAUSE_MS``)."""
+    return max(NUCLEI_SERVICE_CLASS_PAUSE_MS.get(service, 0), nuclei_service_budget(budget)['pause_ms'])
+
+
+def nuclei_service_class(port, label=None):
+    """The class of the nuclei target ``host:port`` for a Sentinel: the server's ``label`` when it is one this library knows
+    (``web``, ``unknown`` or a key of ``NUCLEI_SERVICES``); a label it does not know is ``unknown`` (a newer server's class is never guessed at). Without a
+    label the port number decides, and a port that is in no table is ``unknown``, never web: HTTP goes only to a port that is known to speak it."""
+    if isinstance(label, str):
+        return label if label in NUCLEI_SERVICES or label in (NUCLEI_WEB, NUCLEI_UNKNOWN) else NUCLEI_UNKNOWN
+    return NUCLEI_SERVICE_PORTS.get(port, NUCLEI_UNKNOWN)
+
+
+def nuclei_service_selection(service, task_tags=()):
+    """``{'types', 'tags', 'etags'}`` of the templates one service class takes, or ``None`` when the task's tags name nothing that speaks this protocol.
+    The class's own tags, narrowed to the ones the task asked for when it asked for tags. A class with no tags of its own (a TLS endpoint) takes the task's
+    tags alone. The unknown class takes every network template that belongs to no class of its own (it excludes every class's tags) and the task's tags.
+    ``etags`` are ``NUCLEI_SERVICE_EXCLUDED_TAGS``, always."""
+    asked = sorted({t for t in task_tags or () if isinstance(t, str)})
+    etags = list(NUCLEI_SERVICE_EXCLUDED_TAGS)
+    if service == NUCLEI_UNKNOWN:
+        owned = sorted({tag for tags, _types in NUCLEI_SERVICES.values() for tag in tags})
+        return {'types': list(NUCLEI_NETWORK_TYPES), 'tags': asked, 'etags': [*etags, *[t for t in owned if t not in asked]]}
+    own, types = set(NUCLEI_SERVICES[service][0]), list(NUCLEI_SERVICES[service][1])
+    if not own:
+        return {'types': types, 'tags': asked, 'etags': etags}
+    if not asked:
+        return {'types': types, 'tags': sorted(own), 'etags': etags}
+    both = own & set(asked)
+    return {'types': types, 'tags': sorted(both), 'etags': etags} if both else None
+
+
+def nuclei_service_flags(selection, budget=None):
+    """The nuclei flags of one template run on one non-web host:port: the shared run flags, one template at a time (-c 1), one host, one payload, one
+    javascript runtime, no http probing, the template types of the class, the excluded tags of ``selection`` and the host dropped after
+    ``NUCLEI_SERVICE_HOST_ERRORS`` failures. No retry: a service that did not answer is not asked again. ``-rl`` stays at one: nuclei applies it to http
+    and dns only (see ``NUCLEI_SERVICE_BUDGET``); the pacing is the pause between runs."""
+    flags = list(NUCLEI_FLAGS)
+    for flag, value in (('-rl', 1), ('-c', 1), ('-retries', 0), ('-timeout', 5), ('-etags', ','.join(selection['etags']))):
+        flags[flags.index(flag) + 1] = str(value)
+    flags += ['-bs', '1', '-pc', '1', '-jsc', '1', '-nh', '-mhe', str(NUCLEI_SERVICE_HOST_ERRORS), '-pt', ','.join(selection['types'])]
+    return flags
+
+
+def nuclei_service_listing_flags(selection):
+    """The flags of the listing (``nuclei -tl``: no network) of the templates one service class would run, for the Sentinel to cache once per bundle."""
+    flags = ['-tl', '-silent', '-duc', '-nc', '-pt', ','.join(selection['types']), '-etags', ','.join(selection['etags'])]
+    return flags + (['-tags', ','.join(selection['tags'])] if selection['tags'] else [])
+
+
+def _allow_credentials(argv):
+    """``argv`` with the credential tags taken out of its ``-etags`` (a person turned credential checks on); ``dos`` stays."""
+    argv = list(argv)
+    argv[argv.index('-etags') + 1] = ','.join(NUCLEI_EXCLUDED_TAGS)
+    return argv
+
+
+def nuclei_web_flags(hosts=1, budget=None, allow_credential_checks=False):
+    """The shared run flags for web targets: raw tcp and javascript templates left out, because they connect to the ports their template names
+    (22, 25, 3306...) whatever the target's own port is, so a bare host name would reach every one of them. The rate is per host
+    (``-per-host-rate-limit``): ``NUCLEI_WEB_HOST_RATE`` (the task can lower it), or the global rate shared among ``hosts`` when that is less, so one host
+    never receives the whole global rate and a pass of many hosts stays near it. The credential tags (``NUCLEI_CREDENTIAL_TAGS``) are excluded
+    unless ``allow_credential_checks`` is true."""
+    flags = [*(_allow_credentials(NUCLEI_FLAGS) if allow_credential_checks else NUCLEI_FLAGS), '-ept', ','.join(NUCLEI_TCP_TYPES)]
+    global_rate = int(flags[flags.index('-rl') + 1])
+    per_host = max(1, min(nuclei_service_budget(budget)['web_rate'], global_rate // max(1, int(hosts))))
+    flags[flags.index('-rl') + 1] = str(per_host)
+    return flags + ['-per-host-rate-limit']
+
+
+def nuclei_flags(tags=None, profile='normal', severities=None, tech=False, templates_dir=None, secret_file=None, proxy_args=(), allow_credential_checks=False):
     """The nuclei flags of the server's local run (``cveFeed.nuclei_scan``), optionally narrowed to ``tags`` (an iterable of tag names the caller
     already checked against its allowlist, ``cveFeed.nuclei_templates``). ``profile='light'`` lowers concurrency and rate for a memory-constrained
     retry. ``severities`` narrows the severity list, and ``tech`` is the light technology-fingerprint pass (the http/technologies templates, info
     severity). ``secret_file`` (the path of a nuclei secrets file) makes it an authenticated run: nuclei reads the headers from that file, so no
     value is ever on the command line, and ``-dr`` stops it following redirects, which could carry a header to another host. ``proxy_args`` is the
-    egress proxy's argument list (empty for a direct run). ``-etags dos`` is always there."""
-    flags = list(NUCLEI_BASE_FLAGS)
+    egress proxy's argument list (empty for a direct run). ``-etags dos`` is always there, and the credential tags with it unless
+    ``allow_credential_checks`` is true."""
+    flags = _allow_credentials(NUCLEI_BASE_FLAGS) if allow_credential_checks else list(NUCLEI_BASE_FLAGS)
     if templates_dir:
         flags += ['-t', templates_dir]
     if severities or tech:
@@ -84,7 +340,8 @@ NSE_FLAGS = ['--script', ','.join(NSE_SCRIPTS), '--script-timeout', '30s']
 UDP_NSE_SCRIPTS = ('snmp-sysdescr', 'snmp-info', 'ntp-info', 'upnp-info', 'ipmi-version')
 # nmap's own documentation says a version scan "automatically executes the scripts in the version category" (rpcinfo, hnap-info, vmware-version,
 # skypev2-version, and more) whenever -sV runs, regardless of --script; these "cannot be selected explicitly". Their output is still written to
-# -oX. None of them has been reviewed the way NSE_SCRIPTS has, so ``reviewed_scripts`` drops anything -sV smuggled in before it is stored.
+# -oX. None of them has been reviewed the way NSE_SCRIPTS has, so ``reviewed_scripts`` drops anything -sV smuggled in from the reviewed output; what they
+# printed (no request of ours) is kept apart, as text the server only reads for a version (``version_scripts`` of a port, parsers._version_script_texts).
 NSE_SCRIPT_SET = frozenset(NSE_SCRIPTS) | frozenset(UDP_NSE_SCRIPTS)
 
 
@@ -112,7 +369,17 @@ EXTRA_PORTS = (
     9042, 9092, 9100, 9200, 9300,     # Cassandra, Kafka, node exporter, Elasticsearch HTTP and transport
     9443, 10250, 10255, 11211, 15672,  # alternate HTTPS, kubelet, kubelet read-only, Memcached, RabbitMQ console
     16686, 27017, 27018, 50070, 61616, 1883, 8883,  # Jaeger, MongoDB, Hadoop, ActiveMQ, MQTT (plain and TLS)
+    5005, 5006, 5007, 5008, 5009, 5010, 8787, 9009,  # Java debug (JDWP) ports: an open one runs any code it is sent (see JDWP_VERSION_SCRIPT)
+    *AI_PORTS,                        # AI model servers and agent dashboards
 )
+# nmap's jdwp-version is a "version" category script: it cannot be named in --script, and -sV runs it by itself, at intensity 7 or more, on a port
+# that closed on nmap's NULL probe (a JDWP debuggee hangs up after two seconds without a handshake, so the port reads as tcpwrapped). Reviewed as
+# read-only: it sends the 14-byte "JDWP-Handshake" and then the one command VirtualMachine.Version (command set 1, command 1), and stores what it
+# read as the port's service ("jdwp"), product and version. Both the fingerprint pass (--version-intensity 7) and the version probe (--version-all)
+# run it. Its result is the port row itself, never script output, so ``reviewed_scripts`` has nothing of it to drop. cvENGINE reads that port as a Java
+# runtime and as an open debug port (cveFeed.java_runtime); the java_runtime kind asks the same two questions of a debug port nmap left unidentified.
+JDWP_VERSION_SCRIPT = 'jdwp-version'
+JDWP_PORTS = (5005, 5006, 5007, 5008, 5009, 5010, 8000, 8787, 9009)  # the debug ports the java_runtime kind may be asked to try
 # nmap's OS detection (-O --osscan-limit) needs one open and one CLOSED TCP port, and a pass over naabu's open ports alone has no closed one, so
 # the host was never OS-fingerprinted. These unassigned ports are nearly always answered with a reset when the host answers at all: one is
 # enough, two tolerate a firewall that drops one of them.
@@ -157,7 +424,11 @@ def nmap_pass_flags(ports=None):
 # the Sentinel has always used. naabu's come from a measured full sweep: 65,535 SYN probes at 1000 per second took 138 s on one loopback
 # host (proofs/scan3-lab/naabu-live.txt), so one host gets 150 s and a task of more than 24 hosts is split (review H5). The Sentinel and the
 # server both read a task's limit here, so neither gives up a task the other is still running (review M7).
-TASK_LIMITS = {'nmap': (600, 90, 3600), 'naabu': (900, 150, 3600)}
+# (smallest, per host, largest) seconds. The nuclei kinds end 60 seconds before the server stops waiting for them (agentapi.sentinel_dispatch: COMPLETION_CEILING
+# plus PER_TARGET_SECONDS for each target beyond the first), so what a run found reaches the server instead of arriving after it gave up. Before, the daemon
+# passed no limit and every nuclei run could take 3600 s: 13 nuclei_targeted results in two days on the VPS came back after the server had stopped waiting.
+TASK_LIMITS = {'nmap': (600, 90, 3600), 'naabu': (900, 150, 3600),
+               'nuclei_light': (840, 20, 3600), 'nuclei_targeted': (1740, 30, 3600), 'nuclei_deep': (3540, 60, 7200)}
 NAABU_MAX_SECONDS = TASK_LIMITS['naabu'][2]
 
 

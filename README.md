@@ -41,28 +41,85 @@ takes only the provisioning blob from the server.
 | Requirement                                                                                                  | Why                                                                                                                                      |
 | ------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
 | Docker Engine (or Docker Desktop) with Docker Compose v2 (`docker compose`, not `docker-compose`)            | Runs the stack. The updater uses `docker compose pull --ignore-buildable` and `pull_policy: build`, so use a current Compose v2 release. |
-| Permission to run `docker`: membership in the `docker` group, or `sudo`                                      | Every command below. Membership in the `docker` group is equivalent to root on that machine (see [Security model](#security-model)).     |
+| Permission to run `docker`: membership in the `docker` group, or `sudo`                                      | Every command below. `install.sh` gives its `cvengine` user that membership. Membership in the `docker` group is equivalent to root on that machine (see [Security model](#security-model)).     |
 | `git`                                                                                                        | Cloning, and the updater (it fast-forwards this checkout).                                                                               |
-| `bash`                                                                                                       | `./setup.sh`. On Windows run it from WSL or Git Bash, or write `.env` by hand.                                                           |
+| `bash`                                                                                                       | `install.sh`, `./setup.sh`. On Windows run it from WSL or Git Bash, or write `.env` by hand.                                                           |
 | For the updater only: Linux, systemd or cron, `flock` (util-linux), and `sudo` or a root shell to install it | See [Updates](#updates). The user who owns the checkout must be in the `docker` group, because the updater runs as that user.            |
 | For the full profile: disk space for tens of GB of OpenVAS feed data                                         | See [Full or light](#full-or-light).                                                                                                     |
 
 ## Set up
 
-1. Clone this repository onto the machine that will do the scanning:
+On a Linux machine with Docker, install as a service user: `install.sh` creates a `cvengine` system user, puts the
+checkout in `/opt/cvengine-sentinel` owned by that user, and runs `setup.sh`, `docker compose up -d` and the updater as
+that user. Nothing is owned by root and nothing runs as root by default, so you do not clone into `/root` and run a
+Sentinel from there (a checkout under `/root` can never be handed to another user: a non-root user cannot enter `/root`).
+
+1. On your CVEngine instance's **Sentinels** page (`/cve/sentinels/`), pick the project and click **Provision**. Copy
+   the one-time blob (or the command the page shows, which already holds it). It is single-use and expires in 30
+   minutes. You need the admin role in the project or its organization (see
+   [docs/FRONTEND.md](https://github.com/hevnsnt/CVEngine/blob/develop/docs/FRONTEND.md#sentinels) in the main
+   repository).
+
+2. On the machine that will scan, download `install.sh` and run it with `sudo`. The blob goes in on standard input, so
+   it never appears in the process list:
+
+   ```bash
+   f=$(mktemp) && curl -fsSL https://raw.githubusercontent.com/hevnsnt/cvengine-sentinel/main/install.sh -o "$f"
+   sudo bash "$f" --light --internal --name office-lan --yes --blob - <<'EOF'
+   PASTE_THE_BLOB_VALUE_HERE
+   EOF
+   rm -f "$f"
+   ```
+
+   (Or clone the repository anywhere and run `sudo ./install.sh ...` from it; it makes its own clone in
+   `/opt/cvengine-sentinel` either way.) Read `install.sh` first if you like: it is one file.
+
+   It takes the same options as `setup.sh` (`--full`/`--light`, `--external`/`--internal`, `--name`, `--blob`,
+   `--host-network`, `--yes`, `--updater`/`--no-updater`) plus `--dir DIR` (default `/opt/cvengine-sentinel`; not under
+   `/root`). Run again, it reuses the user, the checkout and the `.env`. In order, it:
+
+   - checks that Docker, Compose v2 and the `docker` group exist (and stops before changing anything if not);
+   - creates the user and group `cvengine` if missing (`useradd --system --user-group --create-home --home-dir
+     /home/cvengine --shell /usr/sbin/nologin`, or the `nologin` path your distribution has) and adds it to `docker`;
+   - clones this repository into the directory as `cvengine`, or reuses a checkout there that `cvengine` owns and whose
+     `origin` is this repository;
+   - runs `setup.sh` as `cvengine` (with `--no-updater`), then installs the updater, which runs as `cvengine`;
+   - runs `docker compose up -d` as `cvengine`, and prints the user, the directory and what is and is not unprivileged.
+
+   Expected output ends like this (abridged):
+
+   ```
+   cvENGINE Sentinel installed.
+     User:       cvengine (uid 998), a system account with no login shell
+     Directory:  /opt/cvengine-sentinel, owned by cvengine:cvengine
+     Updater:    installed, runs as cvengine
+   ```
+
+3. From then on, run every `docker compose` command for this Sentinel as that user, in its directory:
+
+   ```bash
+   cd /opt/cvengine-sentinel && sudo -u cvengine docker compose ps
+   ```
+
+   (`.env` is mode 600 and owned by `cvengine`, so another user cannot read it.)
+
+**Already running a Sentinel from `/root/cvengine-sentinel` (or any root-owned checkout)?** It keeps working as it is
+(the updater refuses a root-owned checkout unless you pass `--allow-root`). To move it to the service user without
+losing its enrollment, see [Moving an existing install to the service user](#moving-an-existing-install-to-the-service-user).
+
+### Installing by hand, as a normal user
+
+`install.sh` is the supported way on Linux. On macOS and Windows (Docker Desktop), or if you want to own the checkout
+yourself, set it up as an ordinary user who can run `docker`:
+
+1. Clone this repository:
 
    ```bash
    git clone https://github.com/hevnsnt/cvengine-sentinel.git
    cd cvengine-sentinel
    ```
 
-2. On your CVEngine instance's **Sentinels** page (`/cve/sentinels/`), pick the project and click **Provision**. Copy
-   the one-time blob it shows. It is single-use and expires in 30 minutes. You need the admin role in the project or
-   its organization (see
-   [docs/FRONTEND.md](https://github.com/hevnsnt/CVEngine/blob/develop/docs/FRONTEND.md#sentinels) in the main
-   repository).
-
-3. Create `.env`. The easy way is `./setup.sh`, which asks for the profile, the network, a name and the blob. To skip
+2. Create `.env`. The easy way is `./setup.sh`, which asks for the profile, the network, a name and the blob. To skip
    the questions, pass everything as options and give the blob on standard input, so it never appears in your shell
    history or the process list:
 
@@ -86,11 +143,14 @@ takes only the provisioning blob from the server.
    # then edit .env: set CVENGINE_SENTINEL_BLOB=..., and COMPOSE_PROFILES / CVENGINE_SENTINEL_PROFILE (see "Full or light")
    ```
 
-4. Start it:
+3. Start it:
 
    ```bash
    docker compose up -d
    ```
+
+Do not do this as root in root's home: the updater would refuse the checkout, and a checkout under `/root` cannot be
+given to another user. Run it as a normal user, or use `install.sh`.
 
 The first start decodes the blob, trades its one-time secret for this Sentinel's own token, and saves that token in the
 `sentinel-state` Docker volume. Every later start uses the saved token, so the blob is read only once. You can then
@@ -130,7 +190,8 @@ What it does, in order:
 
 ## Everyday commands
 
-Run these in the checkout directory.
+Run these in the checkout directory (`/opt/cvengine-sentinel` after `install.sh`), as the user that owns it: put `sudo -u cvengine` in front
+of `docker compose` there.
 
 | Command                                                         | What it does                                                                                                                               |
 | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -146,6 +207,37 @@ Check that it registered: open the **Sentinels** page on your CVEngine instance.
 (`CVENGINE_SENTINEL_NAME`, else the container's host name), `pending` until an administrator approves it, then
 `active`, and `live` once it heartbeats. It is administered like any other agent there (**Suspend**, **Revoke**), or
 over the API and MCP tools (`GET /api/v1/agents?kind=scanner`, `list_sentinels`, `get_sentinel`).
+
+## Moving an existing install to the service user
+
+An install made by running `git clone` and `setup.sh` as root (typically `/root/cvengine-sentinel`) works as it always
+did. To stop it running as root, move it. The script keeps the Sentinel's enrollment: the token lives in the Docker
+volume `sentinel-state` (and `sentinel-badkeys` and the OpenVAS volumes), and volumes are found by the Compose project
+name, which the move keeps the same.
+
+```bash
+sudo /root/cvengine-sentinel/scripts/migrate-to-service-user.sh --dry-run   # print the plan, change nothing
+sudo /root/cvengine-sentinel/scripts/migrate-to-service-user.sh             # do it
+```
+
+In order, it: works out the Compose project name and checks its volume exists; creates the `cvengine` user (the same code as
+`install.sh`); runs `docker compose down` in the old directory (never `-v`); moves the checkout to
+`/opt/cvengine-sentinel`, keeping `.env`, `docker-compose.override.yml` and every untracked file; runs
+`chown -R cvengine:cvengine` on it; runs `docker compose up -d` as `cvengine`; reinstalls the updater for the new path
+(`User=cvengine`; a cron entry for the old path is removed) if one was installed; waits up to 5 minutes for the
+container to report healthy; and prints a before and after summary. Options: `--from DIR`, `--dir DIR`, `--updater`
+(add an updater even if there was none), `--wait SECONDS`, `--old-project-name NAME`, `--allow-no-volume`. Run again after an interruption
+it carries on (a checkout already moved is not moved twice).
+
+**The project name.** Docker Compose names the volumes after the project, which comes from the checkout's directory name
+(`cvengine-sentinel_sentinel-state` for a directory called `cvengine-sentinel`) or from `COMPOSE_PROJECT_NAME` in `.env`.
+`docker-compose.yml` does not fix it, so nothing changes for an install that stays where it is. The script works out the
+old name (`COMPOSE_PROJECT_NAME` from the old `.env`, else the directory name lower-cased with other characters
+removed), keeps it, and when `/opt/cvengine-sentinel` would give another name, writes `COMPOSE_PROJECT_NAME=<old name>`
+into the moved `.env`. It refuses (before changing anything) only when no `<name>_sentinel-state` volume exists, so it
+never starts a fresh, unenrolled stack silently. If its guess is wrong (you used `docker compose -p`), name the project
+yourself with `--old-project-name NAME` (check `docker volume ls | grep sentinel-state`); `--allow-no-volume` is for a
+Sentinel that never started. `install.sh` does the same for a fresh install in a `--dir` not called `cvengine-sentinel`.
 
 ## Stop, restart and remove
 
@@ -190,8 +282,11 @@ used again, even if a copy of the `sentinel-state` volume survives somewhere.
 
 ### Revoked token
 
-When cvENGINE answers 401 or 403, the Sentinel logs `this Sentinel's token was revoked or is invalid; stopping` and
-exits with status 1. Docker's restart policy (`unless-stopped`) then restarts it, and it stops again each time.
+When cvENGINE answers 401, or 403 with `"code": "token_revoked"` (or a message saying the token is revoked or invalid),
+the Sentinel logs `this Sentinel's token was revoked or is invalid; stopping` and exits with status 1. A Sentinel that
+cvENGINE holds instead (pending approval, suspended, or a 403 `"code": "agent_blocked"` / "no work can be assigned" for
+an active agent whose user is disabled, whose token is read only or expired, or whose user must set up MFA) keeps its
+token, logs the server's reason once and keeps heartbeating and polling until that is fixed in cvENGINE: do not re-enroll it. Docker's restart policy (`unless-stopped`) then restarts it, and it stops again each time.
 Restarting does not help: provision it again. Delete only the saved token (the same volume holds the GVM login,
 which you want to keep), put a new blob in `.env`, and start it:
 
@@ -240,7 +335,7 @@ container. "Not passed by compose" below means a value in `.env` has no effect; 
 | `OPENVAS_LOG_LEVEL`                                                                                             | No               | `127`                                                 | The OpenVAS scanner's own log level. `128` is debug (about 50 MB for one 40 minute scan of one host); set it only while debugging, then `docker compose up -d`.                                   | Docker Compose (`openvas-configure`)                                      |
 | `CVENGINE_OPENVAS_MAX_HOURS`                                                                                    | No               | `24`                                                  | This machine's ceiling on one OpenVAS task's time budget, in hours (at least 1). **Not passed by compose.**                                                                                       | daemon                                                                    |
 | `CVENGINE_SENTINEL_VERSION`                                                                                     | No               | the commit stamped into the image                     | Used only when the image has no stamp (built without `.git`). **Not passed by compose**, and `scripts/update.sh` deletes the line from `.env`.                                                    | daemon                                                                    |
-| `CVENGINE_SENTINEL_DRAIN_TIMEOUT`                                                                               | No               | `1800`                                                | Seconds an update waits for running tasks. Must be a whole number above 0. **Not read from `.env`**: set it in the updater's environment (see [Updater settings](#updater-settings)).             | `scripts/update.sh`                                                       |
+| `CVENGINE_SENTINEL_DRAIN_TIMEOUT`                                                                               | No               | `4200`                                                | Seconds an update waits for running tasks (70 minutes: longer than the longest task budget, an hour). Must be a whole number above 0. **Not read from `.env`**: set it in the updater's environment (see [Updater settings](#updater-settings)).             | `scripts/update.sh`                                                       |
 | `CVENGINE_SENTINEL_BRANCH`                                                                                      | No               | `main`                                                | The branch the updater follows; the checkout must be on it. **Not read from `.env`**: set it in the updater's environment.                                                                        | `scripts/update.sh`                                                       |
 | `CVENGINE_SENTINEL_TOKEN_FILE`                                                                                  | No               | `/var/lib/cvengine-sentinel/token.json`               | Development and tests only: where the token is saved. The status files live in the same directory. Not passed by compose.                                                                         | daemon                                                                    |
 | `CVENGINE_OPENVAS_SOCKET`                                                                                       | No               | `/run/gvmd/gvmd.sock`                                 | Development, tests and CI only: gvmd's socket. Not passed by compose.                                                                                                                             | daemon                                                                    |
@@ -249,7 +344,7 @@ container. "Not passed by compose" below means a value in `.env` has no effect; 
 | `CVENGINE_SENTINEL_SHOT_MAX_RSS_MB` | No | `1500` | The memory the screenshot browser and everything it started may hold together (300 to 16384) before the whole tree is killed and the page in flight is recorded `too_big`. Not passed by compose. | `web_screenshot` (`client/shot.py`) |
 | `CVENGINE_SCRIPT_BODY_READ` | No | on | `0` (or `false`, `no`, `off`) stops the reading of a page's scripts for library versions (`http_probe`, `route_probe` and `page_read`): a script's name stays a hint and nothing is fetched. Not passed by compose. | `cvengine_scanner/probes/js_libraries.py` |
 | `CVENGINE_SCRIPT_READ_MAX_REQUESTS`, `CVENGINE_SCRIPT_READ_MAX_SECONDS` | No | `300`, `600` | Most script requests, and seconds of reading, one scan of a host spends on that. Not passed by compose. | `cvengine_scanner/probes/js_libraries.py` |
-| `CVENGINE_SENTINEL_INSTALL_PREFIX`                                                                              | No               | empty                                                 | Tests only: where `install-updater.sh` writes `/etc`, `/run` and `/var/log`. `sudo` drops it.                                                                                                     | `scripts/install-updater.sh`                                              |
+| `CVENGINE_SENTINEL_INSTALL_PREFIX`                                                                              | No               | empty                                                 | Tests only: where `install-updater.sh` writes `/etc`, `/run` and `/var/log`, and where `install.sh` and `migrate-to-service-user.sh` put `/opt` and `/home` (and skip the root and Linux checks). `sudo` drops it.                                                                                                     | `scripts/install-updater.sh`                                              |
 
 ### Full or light
 
@@ -293,8 +388,8 @@ docker compose up -d
 ```
 
 `docker-compose.override.yml` is git-ignored, and Compose reads it automatically. Host networking needs no privileged
-mode: nmap's OS detection, naabu's SYN scan and the UDP sweep use the `NET_RAW` and `NET_ADMIN` capabilities
-`docker-compose.yml` already grants. Host networking in this form is a Linux feature; Docker Desktop on macOS and
+mode: nmap's OS detection, naabu's SYN scan and the UDP sweep use the `NET_RAW` capability
+`docker-compose.yml` already grants (with every other capability dropped, `NET_ADMIN` included, the set is the same as on the bridge network). Host networking in this form is a Linux feature; Docker Desktop on macOS and
 Windows handles it differently.
 
 ### What docker-compose.yml sets
@@ -302,7 +397,8 @@ Windows handles it differently.
 | Setting                     | Value                                                                                           | Why                                                                                                        |
 | --------------------------- | ----------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
 | `image`                     | `cvengine-sentinel-local:latest`, `pull_policy: build`                                          | Built locally, never pulled from a registry. A plain `docker compose pull` does not ask Docker Hub for it. |
-| `cap_add`                   | `NET_RAW`, `NET_ADMIN` (no `--privileged`)                                                      | Raw sockets for nmap, naabu and the UDP sweep. The Sentinel runs as an unprivileged user (uid 10001) and only nmap and naabu carry file capabilities that use these; no other process in the image holds a capability.                                                             |
+| `cap_drop`, `cap_add`       | `ALL`, then `NET_RAW` and `SYS_CHROOT` (no `--privileged`, no `NET_ADMIN`)                      | `NET_RAW`: raw sockets for nmap (SYN scan, OS detection, UDP sweep) and naabu; the Sentinel runs as an unprivileged user (uid 10001) and only nmap and naabu carry a file capability (`cap_net_raw`); no other process in the image holds one. `SYS_CHROOT`: Chromium's sandbox (screenshots). Every one is proven by the scan smoke run in CI (`scripts/ci_scan_smoke.sh`). |
+| `no-new-privileges`, `read_only` | not set | `no-new-privileges` makes the kernel ignore file capabilities, so nmap and naabu keep raw sockets only on a container engine that passes the added `NET_RAW` on as an ambient capability (CI's does; an older engine on your host may not, and an update would silently end the raw-socket scans); add `security_opt: [no-new-privileges:true]` in `docker-compose.override.yml` if you have checked yours. The root filesystem stays writable: with `read_only: true` and memory-backed home subdirectories every scan works except bbot's discovery, which needs a writable `~/.bbot/tools` (907 MB of tools baked into the image). |
 | `init`, `stop_grace_period` | `true`, `75s`                                                                                   | See [Shutdown](#shutdown).                                                                                 |
 | `pids_limit`, `mem_limit`   | `512`, `2g`                                                                                     | Bounds a runaway tool.                                                                                     |
 | `healthcheck`               | `python3 -m client.control health` every 60 s                                                   | See [Health check](#health-check).                                                                         |
@@ -317,37 +413,41 @@ argument list plus the task's validated targets: no shell, and no server text is
 
 | Kind                                             | Tool                                                                             | Target the task names                                                         | Notes                                                                                                                                                                                                           |
 | ------------------------------------------------ | -------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `nmap`                                           | nmap (`-Pn -sV -O --top-ports 1000`, no reverse DNS)                             | up to 64 IP addresses or host names                                           | A host name is replaced by the first IPv4 address it resolved to. Time limit: 90 s per host, at least 600 s, at most 3600 s.                                                                                    |
+| `nmap`                                           | nmap (`-Pn -sV -O --top-ports 1000`, no reverse DNS)                             | up to 64 IP addresses or host names                                           | A host name is replaced by the first IPv4 address it resolved to. Time limit: 90 s per host, at least 600 s, at most 3600 s. Contract 5: each port also carries what nmap learned (banner, extra info, CPEs, `tunnel` `ssl`, the certificate summary, the reviewed NSE scripts' output) and each host its OS detail, the ports it probed (`scanned_ranges`) and the closed port OS detection used (`closed_tcp`); what was cut is named in `cuts`. Service features (`service_features`, `cvengine_scanner.probes.service_probes`): the SSH algorithm readings (Terrapin, CBC, AES-GCM) and whether RDP requires NLA, read from the `ssh2-enum-algos` and `rdp-enum-encryption` output nmap already wrote, plus one EHLO (then QUIT) on each cleartext SMTP port and one SMB2 and one SMB1 NEGOTIATE on port 445 of the task's own addresses, never anything after NEGOTIATE or EHLO; at most 64 endpoints and 120 s, always 30 s inside the task's limit.                                                                              |
 | `naabu`                                          | naabu (all TCP ports, 1000 packets/s)                                            | up to 64 IP addresses or host names                                           | Names resolved as for nmap. Time limit 900 s.                                                                                                                                                                   |
-| `nuclei_light`, `nuclei_targeted`, `nuclei_deep` | nuclei                                                                           | up to 64 hosts, `host:port`, `[ipv6]:port` or `http(s)` URLs                  | The same run for all three; cvENGINE picks the tags and severities. Denial-of-service templates never run (`-etags dos`). A tag filter with no usable tag is refused. At most 5000 findings. Time limit 3600 s. |
+| `nuclei_light`, `nuclei_targeted`, `nuclei_deep` | nuclei                                                                           | up to 64 hosts, `host:port`, `[ipv6]:port` or `http(s)` URLs                  | The same run for all three; cvENGINE picks the tags and severities. Denial-of-service templates never run (`-etags dos`). A port only receives the templates of the protocol that speaks there: the task's optional `services` map labels each `host:port` (`web`, `unknown` or a class such as `ssh`, `smtp`, `imap`, `tls`). Web targets run first, together, without the raw tcp and javascript templates and at no more than 25 requests a second a host. Every other `host:port` runs alone, one template at a time, at least 500 ms apart (5.5 s for ssh) and for at most 300 s, with only its protocol's templates (a port with no class of its own gets the generic network templates, never an http one). Default deny: a service port runs only a template on the pinned allowlist shipped in the library (`cvengine_scanner/data/nuclei_service_allowlist.json`: template id and sha256 of the file, for the pinned nuclei-templates release); one not listed, or whose file differs, never runs, and `scripts/check_tool_versions.py --fail-if-behind` fails when the pinned release is not the one the list was generated for. A task's `budget` can make this gentler, never harsher. The result's `not_checked` names a port that was not fully checked and why. A tag filter with no usable tag is refused. The approved set is built here from the baked templates and the library's template index when the task's `template_policy` says `source: "index"` (contract 11; the server keeps no template copy), and a target scope refuses is named in `not_checked` and `unreachable` instead of failing the task; a task with `external: true` is judged as on a Sentinel that is not internal, whatever this machine's setting. A `nuclei_light` task with `network_detection: true` (contract 10) is the network detection pass: only its non-web `host:port` targets run, each with the allowlisted templates of its class whose reviewed path is under `network/detection/` (raw tcp only, never `network/cves`, a misconfiguration, an exposure, a javascript or an ssl template), under the same pacing; a web target is not run, a class with no such template (`tls`, `smb`, `mssql`) has no check. At most 5000 findings. Time limit 3600 s. |
 | `testssl`                                        | testssl.sh                                                                       | one host name (for SNI), one IP address, one port, optional STARTTLS protocol | Connects to the IP only (`--nodns none`). A timeout is reported as an error. Time limit 900 s.                                                                                                                  |
 | `nmap_udp`                                       | nmap `-sU`                                                                       | one IP address or host name                                                   | 18 curated UDP ports at 20 packets/s. Time limit 1500 s.                                                                                                                                                        |
 | `wpscan`                                         | WPScan                                                                           | one `http(s)` URL                                                             | Passive plugin and theme detection. A WPScan API token, when cvENGINE sends one with the task, is passed in the environment, never on the command line or in a log. Time limit 900 s.                           |
 | `wpscan_thorough`                                | WPScan (mixed plugin and theme detection, `--enumerate ap,at,tt`)                | one `http(s)` URL, an optional API token and the run's `timeout_seconds`      | The thorough pass: every plugin and theme WPScan knows (about 170,000 requests), hours per site (contract version 3). The task's own time limit, 600 s to 24 h (12 h by default, `CVENGINE_WPSCAN_THOROUGH_TIMEOUT` on the server), ends the scan 30 s early and reports what it read. One at a time per Sentinel, and never the last free slot of a Sentinel that has several; set `CVENGINE_SENTINEL_DISABLE=wpscan_thorough` to keep a Sentinel free of it. The token is handled as for `wpscan`. |
 | `waf`                                            | wafw00f (`-a -r`, JSON report)                                                   | one host name, its IP address, a port and `http` or `https`                   | Names the web application firewall in front of a site: a product name and no version. Needs contract version 2, which this Sentinel declares at registration and every heartbeat. A site that never answers is an error. Time limit 60 s. |
-| `bbot_discovery`                                 | bbot (the presets, required flags and excluded modules the server chose for the mode) | one domain and the scope it must keep to | Discovery of a domain, streamed: what bbot finds is posted in numbered batches to `sentinel/tasks/{id}/partial` every few seconds while it runs (screenshots included, as PNG or JPEG of at most 2 MiB), and the result closes the run. A 409 from the server (the task was cancelled or its scan stopped) stops bbot. bbot is given the scope's denied ranges, every excluded name (with its subdomains) and this Sentinel's own floor as its blacklist, and everything it reports is held to the scope again before it is sent. A project's API keys for bbot's modules are read once from the server (the built-in scanner, or a Sentinel that reports `info.features` `bbot_keys` and that the owner has not opted out) into a private file (0600, in a fresh 0700 directory, removed when the run ends and swept at the next start if the run crashed), never onto the command line; every key is masked in the batches and the result. Needs contract version 3 and bbot in the image. Time limit: the task's own, up to 24 hours (six by default). |
-| `http_probe`                                     | in-process HTTP GETs (`cvengine_scanner.probes.version_probes`)                  | up to 300 planned version and identity probes (host, probe, web base) and a scope policy | The version and identity probes cvENGINE plans for hosts whose product has no version: browser-like GETs, no cookie or credential, bounded bytes and time, at most 2 redirects inside the host's group. Every hop, redirects and script reads included, must pass the task's scope policy as well as the floor below; the result names every host asked (`touched`) and every hop refused (`refused`). Needs contract version 3. |
+| `bbot_discovery`                                 | bbot (the presets, required flags and excluded modules the server chose for the mode) | one domain and the scope it must keep to | Discovery of a domain, streamed: what bbot finds is posted in numbered batches to `sentinel/tasks/{id}/partial` every few seconds while it runs (screenshots included, as PNG or JPEG of at most 2 MiB), and the result closes the run. A 409 from the server (the task was cancelled or its scan stopped) stops bbot. bbot is given the scope's denied ranges, every excluded name (with its subdomains) and this Sentinel's own floor as its blacklist, and everything it reports is held to the scope again before it is sent. A project's API keys for bbot's modules are read once from the server (the built-in scanner, or a Sentinel that reports `info.features` `bbot_keys` and that the owner has not opted out) into a private file (0600, in a fresh 0700 directory, removed when the run ends and swept at the next start if the run crashed), never onto the command line; every key is masked in the batches and the result. Needs contract version 3 and bbot in the image. Time limit: the task's own, up to 24 hours (six by default). bbot 3.1.0 is held to the pace of 3.0.2 (the command sets them after the task's own values and nothing in a task can change them): `dns.threads` 25 for the subdomain presets and 10 otherwise with `dns.max_concurrency` the same, DNS brute force capped at 1000 queries a second and 3 retries, the baddns `DELEGATION` check off, `lightfuzz` told to skip WAF-fronted hosts (`avoid_wafs: always`) with `nowafpls` excluded, `js_unpacker` (it requests every source map a script names) excluded, and `dnsdumpster` and `otilabs` (they now need an API key) excluded unless the project stored a key for them. A technology bbot names by product but also gives a CPE for (`cpe:/a:openbsd:openssh:7.2p2`) is reported as that CPE, which is what bbot 3.0.2 sent and what the server reads a version from. |
+| `http_probe`                                     | in-process HTTP GETs (`cvengine_scanner.probes.version_probes`)                  | up to 300 planned version and identity probes (host, probe, web base) and a scope policy | The version and identity probes cvENGINE plans for hosts whose product has no version: browser-like GETs, no cookie or credential, bounded bytes and time, at most 2 redirects inside the host's group. Every hop, redirects and script reads included, must pass the task's scope policy as well as the floor below; the result names every host asked (`touched`) and every hop refused (`refused`). The front page answer of `headers-root` also gives two service features with no request of its own (HTTP/3 advertised in `Alt-Svc`, PHP on Windows from `Server` and `X-Powered-By`), and an entry's optional `features` list asks for more, once per web base: `webdav` (one `OPTIONS /`, the `DAV` header and the `Allow` / `Public` methods) and `vpn_fortinet`, `vpn_globalprotect`, `vpn_cisco`, `vpn_citrix`, `vpn_ivanti` (a GET of that vendor's portal page and of one path that cannot exist beside it, never a form post or a credential); the readings come back in `service_features` (`cvengine_scanner.probes.service_reads`). Needs contract version 3. |
 | `dns_resolve`                                    | this Sentinel's resolver                                                         | up to 500 host names and a scope policy                                        | Resolves the names cvENGINE's discovery records, from this Sentinel's view of DNS. A name outside the scope policy is not looked up; a lookup the resolver could not answer is reported as such, never as a name with no address. Needs contract version 3. |
 | `nmap_full`                                      | nmap (`-p- --open -T4`, no reverse DNS)                                          | one IP address                                                                | Every TCP port, open ports only: cvENGINE's background full sweep. The raw report goes back and is read by the server's own parser. A host that answers on more than 100 ports (a tarpit or a filtering device) comes back as a normal result: its first 100 open ports and a `cvengine-note` element reading "port list truncated: this host answers on an unusually large number of ports (tarpit or filtering device)", never as a failed task. Contract version 3 (the note is inside the `xml` string; no field was added). Time limit 1500 s. |
 | `nmap_verify`                                    | nmap `-sV` on named ports                                                        | one IP address, up to 64 ports, an intensity or `--version-all`, NSE script names | The scripts must be on the reviewed list in `cvengine_scanner/flags.py` (`NSE_SCRIPTS`); any other name is refused. Per-host timeout 10 to 600 s. Contract version 3. |
 | `node2shell`                                     | Assetnote's node2shell detector (vendored in `client/vendor`, MIT)               | one `http(s)` URL                                                             | Read-only: uploads about 23 MB, executes nothing, sends no credential. Reports vulnerable, not vulnerable or inconclusive. Contract version 3. |
 | `rdp_shot`                                       | aardwolf, RDP with no credentials                                                | one IP address and a port                                                     | A PNG of the pre-authentication screen (at most 4 MB). cvENGINE decides whether it is a real frame and reads it; nothing here looks at it. A server that cannot be reached or requires NLA paints nothing. Contract version 3. |
 | `db_probe`                                       | one credential-less connection (`client/dbprobe.py`)                             | one IP address, a port and a database (`redis`, `memcached`, `postgres`, `elastic`, `couchdb`, `mysql`, `mongodb`) | Exactly one attempt, no password, nothing read past a version or a count of database names. Contract version 3. |
-| `path_probe`                                     | nmap: a plain SYN and the FIN+PSH+URG probe                                      | up to 8 IPv4 addresses, each with a closed port                               | Measures whether this machine's own path loses a malformed probe (what makes OS detection unreliable). cvENGINE offers it only to its built-in scanner. Contract version 3. |
-| `nuclei_validate`                                | nuclei                                                                           | a template, and for a test up to 64 targets                                   | Checks an AI-written template (`nuclei -validate` and a benign loopback page it must not match) or runs an approved one against the targets. A template with a `code`, `file`, `headless`, `javascript`, `flow` or workflow section is refused. cvENGINE offers it only to its built-in scanner. Contract version 3. |
+| `path_probe`                                     | nmap: a plain SYN and the FIN+PSH+URG probe                                      | up to 8 IPv4 addresses, each with a closed port                               | Measures whether this machine's own path loses a malformed probe (what makes OS detection unreliable). cvENGINE offers it to its built-in scanner while it has one, else to the project's own Sentinels, and keeps the verdict per Sentinel. Contract version 3. |
+| `nuclei_validate`                                | nuclei                                                                           | a template, and for a test up to 64 targets                                   | Checks an AI-written template (`nuclei -validate` and a benign loopback page it must not match) or runs an approved one against the targets (from contract 11 an installed one is named by `template_path` and read from this image's baked set, checked against the template index and the task's hash). A template with a `code`, `file`, `headless`, `javascript`, `flow` or workflow section is refused. cvENGINE offers it to its built-in scanner while it has one, else to the project's own Sentinels (contract version 4). Outside the built-in scanner a check runs only when the task's `template_sha256` matches the text on disk and the server names that hash and mode for the task (`GET sentinel/tasks/<id>/check`), the server's answer names the task's sorted targets, the text passes the server's read-only rules and the whole-document allowlist (`cvengine_scanner.checks`, `cvengine_scanner.check_allowlist`: only side-effect-free helpers, plain requests, YAML nuclei reads alike) and it reaches only the task's own target and port; nuclei resolves each target only through the Sentinel's own pinned resolver and runs with a minimal environment and memory and output caps; a result line for another host is never a hit. Contract version 3 (the hash: 4). |
 | `alive_check`                                    | in-process GET or TCP connect (`cvengine_scanner.probes.alive`)                  | up to 600 checks (a retired name, its last known address and port, `http`, `https` or `tcp`) and a scope policy | Whether a name that vanished from DNS still answers on its old address (a zombie host): a GET of `/` to the address as the old name, any answer counting, or a bare connect with nothing sent. Each address is asked as itself and must pass the scope policy. Needs contract version 3. |
-| `secrets_scan`                                   | Kingfisher 2.16.0 (`scan --no-validate --no-update-check --no-dedup`)            | up to 25 web hosts, each with up to 20 URLs and 8 of its own scripts          | Reads the named pages and scripts and the scripts' same-origin source maps (anonymous GET, no redirects, pinned to the address it judged, 8 scripts per host, 2 MB a script, 8 MB a map, 32 MB in all), then finds secrets in them with every proxy pointed at a closed port, so the detection pass has no network. Needs contract version 3. A second, validating pass runs only when cvENGINE asks for it (its built-in scanner, a project that opted in), with the rules cvENGINE allow-listed and only on the Kingfisher version they were reviewed for. One at a time; about 150 MB of memory for 32 MB of input. `revoke` and `self-update` are never run. Time limit 300 s per pass. |
+| `secrets_scan`                                   | Kingfisher 2.18.1 (`scan --no-validate --no-update-check --no-dedup`)            | up to 25 web hosts, each with up to 20 URLs and 8 of its own scripts          | Reads the named pages and scripts and the scripts' same-origin source maps (anonymous GET, no redirects, pinned to the address it judged, 8 scripts per host, 2 MB a script, 8 MB a map, 32 MB in all), then finds secrets in them with every proxy pointed at a closed port, so the detection pass has no network. Needs contract version 3. A second, validating pass runs only when cvENGINE asks for it (its built-in scanner, a project that opted in), with the rules cvENGINE allow-listed and only on the Kingfisher version they were reviewed for. One at a time; about 150 MB of memory for 32 MB of input. `revoke` and `self-update` are never run. Time limit 300 s per pass. |
 | `bucket_check`                                   | in-process HTTPS GET and HEAD (`cvengine_scanner.probes.buckets`)                | up to 100 buckets (AWS S3, Google Cloud Storage, an Azure account and container), a request rate and a scope policy | Whether a bucket is public, private or not registered: verified HTTPS on 443 to the platforms' documented endpoints only, no credential, one listing page and one HEAD of a listed object, never an object's content, paced at the task's rate. Needs contract version 3. |
 | `vhost_probe`                                    | in-process HTTP GETs (`cvengine_scanner.probes.vhost`)                           | up to 10 addresses, each with up to 200 host names the project already knows, a pace and a scope policy | Whether an address serves other sites than the one it shows: a GET of `/` at the address, then one as each name (the name as the Host header and TLS server name), no body, cookie or credential, no redirect followed, paced at the task's gap. A name that differs from the default gets its own site compared (the front page cvENGINE stored, else one GET of the name at its own address) and its page is returned for cvENGINE to read. An edge that challenges ends the address and is reported, never worked around; what could not be asked is not reported. Needs contract version 3. |
 | `subdir_probe`                                   | in-process HTTP GETs (`cvengine_scanner.probes.subdir`, curated data `subdir_apps.json`) | up to 10 web hosts, the curated mount paths, the directories cvENGINE's own URLs show, a request budget, a pace and a scope policy | Which well-known applications (Jira, Grafana, phpMyAdmin ...) are mounted under a subdirectory of a web host: one GET of a path no site serves, `robots.txt`, `sitemap.xml`, each curated path and at most 10 directories the host's own data shows, GET only, nothing sent but the request, no redirect followed, at most the task's budget per host. Every answer that means "something is there" is returned with what the response says it is; cvENGINE decides what is a mount. Needs contract version 3. |
 | `route_probe`                                    | in-process GET (`cvengine_scanner.probes.routes`)                                | up to 25 web hosts, each with up to 20 routes (URLs on that host) and a scope policy | How a web route answers an anonymous request: open, a login page, a session requirement, single sign-on, a redirect or not found, with the answer compared with the server's answer for a path that cannot exist (a route that answers like one is `catch_all`). A front page's own scripts are read for the libraries they state, and the sensitive data a body serves is counted and masked; a credential is also returned as its value over the authenticated channel, for cvENGINE's secrets inventory (it fingerprints and masks it at once, and never stores it). Anonymous: no credential, no cookie, no redirect followed, 64 KB of a page and 300 KB of a front page, every hop and address held to the scope policy. A route that could not be asked is reported with an error, never as a state. Needs contract version 3. |
 | `route_probe_signed`                              | in-process GET with the stored sign-in (`cvengine_scanner.probes.routes_signed`, `client/signed_in.py`) | up to 25 web hosts with up to 20 routes each and a scope policy; the sign-in is named by reference, never carried | The routes of `route_probe` asked once each signed in, on the built-in scanner only (no other Sentinel declares or is offered it). The scanner reads the stored sign-in once through the server's single-use read, sends it only to a route whose host, scheme and port it was stored for (and the scope policy allows, not expired), verifies the server certificate unless the sign-in's owner allowed otherwise, follows no redirect, reads no script and searches the body for nothing. Each answer is the route's state with a few facts (status, title, redirect target); the values never appear in a result, log line or error (redacted). A route not asked is reported with an error, never as a state. Needs contract version 3. |
 | `supplier_check`                                 | in-process DNS, TLS and HTTP(S) requests (`cvengine_scanner.probes.suppliers`)   | up to 25 exact domain names of one supplier, a pace, a request budget and a scope policy                            | Passive posture checks of a third-party supplier's public names, nothing else: each name is resolved once and every address must pass the scope policy, then the certificate and TLS versions on 443, SPF, DKIM, DMARC, MTA-STS and the MailFail checks from this machine's resolver (plus the one MTA-STS policy file over verified HTTPS), the front page over HTTPS and HTTP, and one plain GET per path of a short fixed list of well-known administration and login pages. Anonymous, no redirect followed, at most 64 KB a response, paced at the task's gaps and held to its request budget; an edge that challenges a request is recorded, never worked around. It reports what it found and what the front page announces; cvENGINE matches the CVE catalog itself. Needs contract version 3.|
-| `hygiene_check`                                  | in-process TLS handshakes and DNS lookups (`cvengine_scanner.probes.hygiene`, `mailfail`) | up to 300 TLS endpoints, up to 101 names to review for mail, and a scope policy | The TLS and email half of a target's hygiene sweep: each endpoint's certificate, chain verdict and whether TLS 1.0 / 1.1 is accepted (verification off to read broken certificates, nothing sent), and for each mail domain the SPF, DMARC, DKIM, CAA and MailFail checks, read from this Sentinel's resolver, with the domain's MTA-STS policy fetched over verified HTTPS and a registry (RDAP) asked whether a referenced domain is registered. Every connection must pass the scope policy. cvENGINE decides what a certificate means and stores the findings. Needs contract version 3. |
+| `hygiene_check`                                  | in-process TLS handshakes and DNS lookups (`cvengine_scanner.probes.hygiene`, `mailfail`) | up to 300 TLS endpoints, up to 101 names to review for mail, and a scope policy | The TLS and email half of a target's hygiene sweep: each endpoint's certificate, chain verdict, whether TLS 1.0 / 1.1 is accepted and whether it offers HTTP/2 (the ALPN protocol it chose from `h2` and `http/1.1` in the same handshake) (verification off to read broken certificates, nothing sent), and for each mail domain the SPF, DMARC, DKIM, CAA and MailFail checks, read from this Sentinel's resolver, with the domain's MTA-STS policy fetched over verified HTTPS and a registry (RDAP) asked whether a referenced domain is registered. The optional `slp` list (VMware ESXi hosts, or 427 open) gets one SLPv2 service request each over TCP, never a registration, and reports whether SLP answers (`service_features`: `slp`). Every connection must pass the scope policy. cvENGINE decides what a certificate means and stores the findings. Needs contract version 3. |
 | `dangling_dns_check`                             | in-process DNS questions and HTTP GET (`cvengine_scanner.probes.dangling_dns`)   | up to 50 baddns findings (a host, the kind of finding and its trigger names), cvENGINE's provider lists and a scope policy | Whether a dangling NS or CNAME is claimable by an outsider: the zone cut is found by non-recursive questions to the servers being evaluated (never to an address the policy or this Sentinel's floor refuses), the target's registration is asked of its registry (RDAP), and a provider's "not found" page is compared with a control request to the same addresses. A check with no usable answer is reported `unknown`. Needs contract version 3. |
 | `identity_check`                                 | in-process DNS reads and a TLS handshake (`cvengine_scanner.probes.identity`)    | up to 200 DNS questions (`A`, `CNAME`, `NS`, `MX`, `PTR`), up to 50 TLS endpoints and a scope policy | What cvENGINE's own server used to read about a name or an address: the addresses of a name, the alias a hostname ends at, a domain's name and mail servers, an address's reverse name, and the names on the certificate an endpoint serves (verification off, nothing sent, closed at once). Each name must pass the scope policy; an answer the resolver could not give is reported `unknown`, never `none`. Needs contract version 3. |
 | `page_read`                                      | in-process GETs and HEADs (`cvengine_scanner.probes.page_read`)                  | up to 10 reads (a HEAD of one URL, or the front pages of up to 6 web bases of a host and the scripts they load, or a control GET, or the readmes of up to 8 plugins) and a scope policy | A validation re-test's reads of a host's own pages: one HEAD of a URL (a GET only after a 405; status, `Server`, `X-Powered-By` and title, never a body), or each web base's front page and the scripts it loads, each fetched in full and searched whole for a library version banner, plus the files the host was seen to load the library from. Every hop passes the scope policy; a read that cannot be made says why and is unknown, never a state. Two more ops serve the server's last target reads: `control` (one GET of `/.cvengine-control-<12 hex>` on the host, nothing else is accepted; returns the status, redirect target, length and a SHA-256 of the whitespace-collapsed body, never the body, so the nuclei result screen can tell a catch-all page) and `readme` (the `readme.txt` of up to 8 plugin slugs of a WordPress site; returns each title found and how many could not be read). |
-| `ssh_probe`                                      | sshamble 0.5.1 (`scan --checks badkeys-blocklist`, `cvengine_scanner.probes.ssh_probe`) | up to 25 addresses, each with a port, and a scope policy | Read-only look at an SSH service's own handshake: banner and software version, host key algorithms and sizes, the authentication methods offered, the algorithm lists and the extensions. Only the host key check runs (`check_argv` refuses any other command line): no password, key or user list is ever passed. A host key on the badkeys blocklist is a check hit. The blocklist data is a rolling public download that is not in the image: the daemon fetches it itself with `sshamble badkeys-update` at start when it is missing or older than 24 hours and then about every 24 hours (`CVENGINE_BADKEYS_DIR`, default `/var/lib/cvengine-sentinel/badkeys`, a named compose volume), validates it and swaps it in atomically, keeping the old data when a refresh fails. Each result says `host key blocklist data: N hours old`, and the heartbeat reports the data's age. Without data (or with `CVENGINE_BADKEYS_REFRESH=0`, for an air-gapped Sentinel) the result says the keys were not checked (unverified). An address that is refused, times out, writes nothing or is not SSH is unverified, never clean. 30 s per address. Needs contract version 3. |
+| `ssh_probe`                                      | sshamble 0.5.1 (`scan --checks badkeys-blocklist`, `cvengine_scanner.probes.ssh_probe`) | up to 25 addresses, each with a port, and a scope policy | Read-only look at an SSH service's own handshake: banner and software version, host key algorithms and sizes, the authentication methods offered, the algorithm lists and the extensions. Only the host key check runs (`check_argv` refuses any other command line): no password, key or user list is ever passed. A host key on the badkeys blocklist is a check hit. The blocklist data is a rolling public download that is not in the image: the daemon fetches it itself with `sshamble badkeys-update` at start when it is missing or older than 24 hours and then about every 24 hours (`CVENGINE_BADKEYS_DIR`, default `/var/lib/cvengine-sentinel/badkeys`, a named compose volume), validates it and swaps it in atomically, keeping the old data when a refresh fails. The result also carries the server's Terrapin, CBC and AES-GCM readings and the authentication methods it listed as `service_features`, read from the same record. Each result says `host key blocklist data: N hours old`, and the heartbeat reports the data's age. Without data (or with `CVENGINE_BADKEYS_REFRESH=0`, for an air-gapped Sentinel) the result says the keys were not checked (unverified). An address that is refused, times out, writes nothing or is not SSH is unverified, never clean. 30 s per address. Needs contract version 3. |
+| `java_runtime`                                   | in-process HTTP GETs and one TCP exchange (`cvengine_scanner.probes.java_runtime`, readers in `cvengine_scanner.java`) | up to 50 web hosts, each with the checks cvENGINE chose for it (`actuator`, `jolokia`, `solr`, `geoserver`, `druid`, `elasticsearch`), up to 25 JDWP endpoints (an address and a port) and a scope policy | Reads the Java runtime a host states about itself: a fixed short list of GETs per check (for `actuator`: `/actuator/env/java.version`, `/actuator/info`, `/actuator/metrics/jvm.info`, `/env/java.version`, never the whole environment; `jolokia`: `/jolokia/version`, then the Runtime MXBean's `VmVersion` and `VmVendor` only when Jolokia answered; one status page for each of Solr, GeoServer, Druid and Elasticsearch or OpenSearch), each stopping at its first reading. Only an answer of the exact JSON shape its reader expects is read, and only its Java version and vendor fields; `X-Powered-By` and `Server` of every answer are read too. On a JDWP endpoint: the 14-byte `JDWP-Handshake` and, only when it is echoed, the one command `VirtualMachine.Version` (what nmap's jdwp-version sends); no other JDWP command is ever built. A refused, silent or unreadable endpoint is unknown, never clean. Needs contract version 6. |
+| `version_read`                                   | in-process HTTP GETs (`cvengine_scanner.probes.version_read`)                    | up to 100 reads (one web base of a host each), each up to 4 requests from cvENGINE's version source catalogue, and a scope policy | The anonymous GETs cvENGINE's catalogue of version sources names for a host already identified as the product, or a port whose service suggests it (Grafana's `/api/health`, Jira's `/rest/api/2/serverInfo`, a Prometheus `/metrics`, Docker's `/version` ...). The Sentinel knows no product: each request is a path and how much of its answer comes back, and nothing else does. `json`: only the dotted fields named (a part that is a number indexes an array: `models.0.name`), each a scalar clipped to 200 characters or a container's type and size, so an actuator `env`, Consul's `DebugConfig` or Nomad's agent configuration never leaves the Sentinel; `text`: 1,024 characters from the first occurrence of a literal (never a pattern); `metrics`: only the `*_info` samples, each rebuilt with only its version-like labels (`version`, `vendor`, `runtime`, `revision`, `goversion`, `implementation`, `*_version`), no value and no other sample; `headers`: no body. Every answer also has its status, content type, size and the response headers the request names (never a cookie or an authorization header). There is no method field: every request is a GET, anonymous, through the version probes' fetch (pinned vetted address, redirects only inside the host's group and the scope policy, bounded bytes and time); one host's requests run 0.5 s apart. cvENGINE parses the versions. Needs contract version 7. |
+| `version_digest`                                 | in-process HTTP GETs (`cvengine_scanner.probes.version_read`)                    | a `version_read` target whose requests may also use the read `digest` | The same GETs as `version_read`, for the static files of an edge appliance cvENGINE already identified (NetScaler, PAN-OS, FortiOS, Pulse Connect Secure). A `digest` read returns the SHA-256 of the body (only when the whole body was read, at most 300 KB) and its first 16 bytes as they came over the wire, in hex (a file's magic number and header: a gzip file's own timestamp), never the body; an answer a redirect served is `redirected` and carries no digest. `version_read` refuses a digest read. Needs contract version 8. |
+| `version_rows`                                   | in-process HTTP GETs (`cvengine_scanner.probes.version_read`)                    | a `version_read` target whose requests may also use the read `rows` | The same GETs as `version_read`, for a status page cvENGINE already has reason to read: Apache's `/server-status?auto` on a host identified as Apache, or a phpinfo page a scan already found (never a guessed path). A `rows` read returns only the rows the request names (a `Name: value` line, or the first two cells of an HTML table row), each a value of at most 120 version-like characters with a version in it (a dotted number or a bare build number), never the page: a phpinfo page carries the environment, cookies and credentials, and none of it leaves the Sentinel. `version_read` and `version_digest` refuse a rows read. Needs contract version 9. |
 | `web_screenshot`                                 | Playwright's headless Chromium (`client/shot.py`), inside Chromium's own sandbox, every connection through a vetting proxy | up to 6 `http(s)` pages, a scope policy and whether the open web may be reached for the page's own resources | A PNG of each page, its final address, status and title. The browser's sandbox is proved before any page is opened (a Sentinel that cannot prove it takes no picture and says why); the page, each redirect and each sub-resource are checked against the scope policy and this Sentinel's address floor before a byte leaves, so a page never reaches an internal address. Needs contract version 3, the image's browser and the seccomp profile `docker-compose.yml` applies. |
 | `openvas`                                        | OpenVAS/GVM over GMP                                                             | up to 16 plain IP addresses                                                   | Full profile only, and only once the GVM stack is ready. See [OpenVAS](#openvas).                                                                                                                               |
 | `discover`                                       | nmap ping sweep (`-sn`: ARP on the local segment, ICMP and a few TCP/UDP probes) | one private IPv4 network, at most 512 addresses                               | Internal Sentinels only: `CVENGINE_SENTINEL_NETWORK=internal` on this machine, and not lowered to external by cvENGINE. ARP discovery needs [host networking](#host-networking).                                |
@@ -531,7 +631,7 @@ default, `GET/PUT sentinels/defaults`):
 | --------- | ---------------------------------------------------------------------------------------------------------------------- |
 | Off       | It never changes its own code.                                                                                         |
 | Manual    | It updates only when an administrator presses **Update now** for it (or `PATCH agents/{id}` with `{"update": "now"}`). |
-| Automatic | It updates at the next updater run after something new is on the branch.                                               |
+| Automatic | It updates at the next updater run after cvENGINE has named a newer commit for it (see [What Automatic trusts](#what-automatic-trusts)). |
 
 `CVENGINE_SENTINEL_UPDATE` in `.env` is a ceiling on that setting, not just a starting value: `off` means this
 Sentinel never self-updates, whatever cvENGINE says and even when an administrator presses **Update now**; `manual`
@@ -554,16 +654,39 @@ Who acts on the request:
 | Setup | What happens |
 | --- | --- |
 | The host updater is installed (`scripts/install-updater.sh`, the default of `setup.sh`) | `scripts/update.sh` sees `requested` at its next run (hourly), builds, drains and swaps, exactly as for **Update now**. Nothing else to set. |
-| `CVENGINE_SENTINEL_UPDATE_EXIT=1` and a supervisor that replaces the image on exit | The daemon takes no new work, waits for the running tasks (up to `CVENGINE_SENTINEL_DRAIN_TIMEOUT`, 1800 s; past that it goes back to work and keeps every task), then exits with **code 76**. `scripts/pull-on-exit.sh` (run it in the checkout) fast-forwards, pulls, builds and recreates the container on exit code 76 and nothing else; a registry-image setup can use any puller instead. The same target is not acted on twice within 6 hours, so a supervisor that brings nothing newer is not a restart loop. |
+| `CVENGINE_SENTINEL_UPDATE_EXIT=1` and a supervisor that replaces the image on exit | The daemon takes no new work, waits for the running tasks (up to `CVENGINE_SENTINEL_DRAIN_TIMEOUT`, 4200 s; past that it goes back to work and keeps every task), then exits with **code 76**. `scripts/pull-on-exit.sh` (run it in the checkout) fast-forwards to the commit the Sentinel left for (the same rules as the updater), pulls, builds and recreates the container on exit code 76 and nothing else; a registry-image setup can use any puller instead. The same target is not acted on twice within 6 hours, so a supervisor that brings nothing newer is not a restart loop. |
 | The built-in scanner of a cvENGINE server | Not the daemon: the server asks its host (`scripts/update-watch.sh`, `scripts/scanner-update.sh`) to pull the newest image when the scanner is idle. |
 
 Exit codes of the daemon: `0` stopped on request, `1` token refused or fatal, `3` heartbeats stopped (restart), `75` re-enrol (built-in scanner), `76` drained to be updated.
 Command line equivalents (the interface is cvENGINE, these are the same actions): `scripts/update.sh --now` on this machine, `PATCH agents/{id}` with `{"update": "now"}` on the API, and `docker compose exec sentinel python3 -m client.control status` to see what the daemon was told.
 
+### What Automatic trusts
+
+An Automatic Sentinel (and a Manual one when an administrator presses **Update now**) moves to **the commit cvENGINE named** in its heartbeat
+(`target`), and to no other. It never builds "whatever is at the head of `main` today". When cvENGINE has named no target (Automatic and requested
+updates both need one), `scripts/update.sh` changes nothing, reports **waiting: the server named no target** (once a day, not by every hourly run, and
+never as a failure; `.update-no-target` is the marker) and exits 0: nothing is wrong on this machine. It refuses, reports the update as failed to
+cvENGINE, exits non-zero and leaves the running Sentinel unchanged when:
+
+- the target is not in the history fetched from `origin` (a bad or unknown commit id);
+- the target is not reachable from `origin/main` (a commit pushed to another branch is not an update);
+- the target is not a descendant of the commit this Sentinel runs (no downgrade, no sideways move). A target that is simply *older* than what runs (a server that pins an older build) is no failure either: nothing moves and it is reported as waiting, once a day.
+
+After the checkout, `HEAD` must equal the target before anything is built or restarted. The same rules apply to `scripts/pull-on-exit.sh`.
+
+What is still trusted: **cvENGINE's choice of commit, and the repository's `main` branch** (whoever can push to `main` of the repository `origin` points
+at, or take over the server's idea of the newest build, decides what an Automatic Sentinel runs). **Commits are not signature-checked in 1.4.0**: there
+is no signing key and no verification of tags or commits. To stay in control of what runs, set the Sentinel to **Manual** (in cvENGINE, or
+`CVENGINE_SENTINEL_UPDATE=manual` in `.env`, which cvENGINE cannot loosen) or **Off**, and update by hand after you have looked at the change.
+
+A person at the machine can run `scripts/update.sh --now`: with no target from cvENGINE it moves to the head of `origin/main`, says which commit that is
+and that it is trusted only as far as the repository is. `scripts/update.sh --to COMMIT` names the commit; `--allow-non-descendant` (with `--now` or
+`--to`, by hand only) allows a rollback to an older commit on `origin/main`.
+
 ### The updater
 
 `scripts/update.sh` acts on the setting. It runs on the Docker host (Linux only), hourly, as the user who owns the
-checkout. `./setup.sh` installs it by default; `./setup.sh --no-updater` leaves it out; `sudo ./scripts/install-updater.sh`
+checkout. `install.sh` and `./setup.sh` install it by default; `--no-updater` leaves it out; `sudo ./scripts/install-updater.sh`
 installs it later; `sudo ./scripts/install-updater.sh --remove` takes it away. On macOS and Windows, update by hand:
 `git pull --ff-only && docker compose build && docker compose up -d`.
 
@@ -585,12 +708,14 @@ The updater never gets the Docker socket inside a container: it talks to the dae
    existed counts as deployed at HEAD when the running Sentinel reports HEAD as its version.
 5. **Wanted?** Manual with nobody asking: it records `waiting` and stops. `--check` stops here and says what it would
    do.
-6. **Build while the Sentinel keeps working.** It fast-forwards the checkout, pulls the images
+6. **Target, then build while the Sentinel keeps working.** It settles which commit to move to (the one cvENGINE named; refusals as in
+   [What Automatic trusts](#what-automatic-trusts): "cannot update: ...", result `failed`, nothing changed), fast-forwards the checkout to exactly that
+   commit and checks `HEAD` equals it before going on, pulls the images
    (`docker compose pull --ignore-buildable`, so a moved Greenbone pin reaches the stack) and builds the new Sentinel
    image. A failed pull or build puts the checkout back on the commit it had (`git reset --hard`) and records
    `failed`; the Sentinel never stopped taking work. It also deletes any `CVENGINE_SENTINEL_VERSION` line from `.env`.
-7. **Drain.** It asks the Sentinel to stop taking tasks and waits up to `CVENGINE_SENTINEL_DRAIN_TIMEOUT` (default 1800
-   seconds) for running tasks to finish. If one is still running at the deadline, it un-drains, records `waiting`
+7. **Drain.** It asks the Sentinel to stop taking tasks and waits up to `CVENGINE_SENTINEL_DRAIN_TIMEOUT` (default 4200
+   seconds, longer than any task's one-hour budget, so a deep nuclei scan is waited out) for running tasks to finish. If one is still running at the deadline, it un-drains, records `waiting`
    ("update ... is built; a task is still running, will retry") and the Sentinel goes back to work.
 8. **Swap.** `docker compose up -d`, then it waits up to 5 minutes for the new Sentinel to report the new commit as its
    version. Only then is `.deployed-commit` written and `updated` recorded. A failure here records `failed`, and
@@ -607,7 +732,8 @@ prefer to wait longer per run, or lower it to drain for shorter periods.
 
 Every run records when it ran and its result (`ok`, `waiting`, `off`, `updated` or `failed`, with a detail) in the
 state volume, and the Sentinel reports it with its heartbeat. During a run the page also shows the update's progress
-(`waiting`, `draining`, `updating`, `done` or `failed`).
+(`waiting`, `draining`, `updating`, `done` or `failed`). A Sentinel that starts with an update still marked `updating` or
+`draining` (it left with code 76, or an updater died) records `done` when it runs the target build, else `failed` with the reason.
 
 | Updater state                    | What it means                                                                                                                                                          | What to do                                                                                                                                               |
 | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -628,7 +754,9 @@ sudo ./scripts/install-updater.sh --allow-root  # install although root owns the
 - Linux only. The checkout path may contain only letters, digits and `/ . _ -`.
 - The jobs run as the checkout's owner, who must be in the `docker` group (it warns when not:
   `usermod -aG docker USER`). A root-owned checkout is refused unless you pass `--allow-root`, because the updater
-  would then run as root every hour. Run as a normal user, it re-runs itself with `sudo`.
+  would then run as root every hour; the message points at `scripts/migrate-to-service-user.sh`, which moves the install
+  to the `cvengine` user ([Moving an existing install](#moving-an-existing-install-to-the-service-user)). `--allow-root`
+  stays as the escape hatch. Run as a normal user, it re-runs itself with `sudo`.
 - With systemd it installs `cvengine-sentinel-update.timer` (10 minutes after boot, then hourly, with up to 5 minutes
   of random delay; each run may take up to 3 hours) and `cvengine-sentinel-feeds.timer` (daily). The services run
   with `NoNewPrivileges`, `PrivateTmp` and `ProtectSystem=full`. Logs:
@@ -669,6 +797,14 @@ Re-running `install-updater.sh` rewrites that file (a `systemctl edit` drop-in s
   less loaded Sentinel, or this one is over a limit), the Sentinel waits that long (at most 30 seconds, with a little
   jitter, and a stop request ends the wait) before asking again, so it is not parked by the rate limit. A full long poll
   is answered with one second and is asked again at once.
+- Every heartbeat carries `info.machine`: what this machine has and how it is doing (`client/machine.py`): `cpus` (the CPUs this Sentinel may
+  use: its cgroup quota, else its affinity mask), `host_cpus` and the host's `load` average (1, 5 and 15 minutes; inside a container the load is
+  the host's, so it is compared with `host_cpus`), memory and swap from `/proc/meminfo` (`mem_total_mb`, `mem_available_mb`, `swap_total_mb`,
+  `swap_free_mb`), the container's own memory limit and use when it runs in one (`cgroup_limit_mb`, `cgroup_used_mb`, `null` when there is no
+  limit), the kills its memory cgroup counted (`cgroup_oom_kills`) and `oom_kills_1h`, how many runs of each task kind the kernel killed for
+  memory in the last hour (a tool that exited -9 or 137 that the Sentinel did not stop itself). cvENGINE's auto-tuner sizes this Sentinel's
+  concurrency and per-kind slots from it, never above this machine's own `CVENGINE_SENTINEL_MAX_CONCURRENT` (or the detected CPU count). Numbers
+  only, no target or finding; the field is optional and nothing in the contract changes (an older server ignores it).
 - A task the server takes back (it is no longer in the heartbeat's lease list) is killed and not reported.
 - A result that fails to post (network error, 5xx, 429) is retried a few times within 20 seconds. If cvENGINE still
   does not answer (an update, a restart, an outage) the finished result goes to the **spool** and the task slot is free
@@ -683,6 +819,10 @@ Re-running `install-updater.sh` rewrites that file (a `systemctl edit` drop-in s
   which releases the task as before. `CVENGINE_SENTINEL_SPOOL_HOURS=0` turns the spool off. The heartbeat carries
   `info.spool` (`count`, `oldest_seconds`) while results are held, which the Sentinels page shows; the field is
   optional and nothing in the contract changes.
+- Both the registration and every heartbeat carry `info.tool_versions` (`{tool: version}`, from the version probes run once at start: nmap, naabu, nuclei,
+  testssl, wpscan, wafw00f, kingfisher, bbot), so cvENGINE can tell a Sentinel on stale tools; the field is optional and an older server ignores it.
+- A result that cut something says so in `cuts` (contract 5): a list over its cap (`items`: bbot events, http responses and screenshots, nuclei and secrets findings,
+  nmap ports), a text clipped (`chars`) or a tool stopped at its time limit (`time`), each with the limit and how many were dropped.
 - While cvENGINE is unreachable the heartbeat and the poll keep retrying with a capped backoff and log the outage once,
   then at most every 10 minutes, and once more when it ends.
 - A malformed reply or task from the server is logged and skipped, with backoff; it never stops the daemon.
@@ -728,7 +868,7 @@ The `sentinel-state` volume (`/var/lib/cvengine-sentinel` in the container) hold
 ### Files the checkout keeps out of git
 
 `.gitignore` ignores `.env` and every `.env*` file except `.env.example` (so `.env.bak.*` backups too),
-`.deployed-commit`, `.deployed-commit.tmp`, `.update.lock`, `docker-compose.override.yml` and Python caches.
+`.deployed-commit`, `.deployed-commit.tmp`, `.update-no-target`, `.update.lock`, `docker-compose.override.yml` and Python caches.
 `.dockerignore` keeps `.env*`, tests, docs and git history out of the image build; only git's `HEAD` and refs go in,
 so the image can stamp its commit.
 
@@ -743,8 +883,8 @@ the Sentinels page shows. An image built from a download with no `.git` reports 
 Every push to `main` and every `v*` tag builds the image for amd64 and arm64 and pushes it to `ghcr.io/hevnsnt/cvengine-sentinel`
 (`.github/workflows/publish.yml`), with an SBOM and build provenance attached to each platform. It is tagged `sha-<version>` (the
 12-character commit the client reports), `main` for the newest build of `main`, and `X.Y.Z` and `X.Y` for a tag `vX.Y.Z`; the run's summary
-prints the digest. cvENGINE's built-in scanner pins this image by digest (`scanner.lock.json` in the cvENGINE repository), so a tag moving
-never changes what an install runs. A tag cut by the *Tag a release* workflow does not start this one (GitHub never starts a workflow for
+prints the digest. cvENGINE's built-in scanner follows the moving `main` tag (`ghcr.io/hevnsnt/cvengine-sentinel:main`); `scanner.lock.json` in the cvENGINE
+repository is only the known-good floor (a commit, a contract version and a digest for provenance), not a pin. A tag cut by the *Tag a release* workflow does not start this one (GitHub never starts a workflow for
 an event its own token made), so publish such a tag with Actions, Publish, Run workflow on the tag. A Sentinel set up with `setup.sh` still
 builds its own image from this checkout.
 
@@ -754,10 +894,26 @@ needs at the versions and checksums in `docker/wpscan/Gemfile.lock` (regenerate 
 needs it, and the nuclei templates are the pinned release. The image has no git, no Go toolchain, no GVM stack and no docker socket; the image
 workflow checks that on every pull request and the publish workflow on what it pushed.
 
+### Checking that the tools are the newest
+
+`python3 scripts/check_tool_versions.py` reads every pin of the image (the `ARG ..._VERSION` lines of the Dockerfile, the `name==version` lines of
+`requirements.txt` and the test extra of `pyproject.toml`, the pip bootstrap pins, the Ubuntu base image digest and the Greenbone image digests in
+`docker-compose.yml`), asks each upstream for its newest release (GitHub, PyPI, proxy.golang.org, go.dev, rubygems.org, nmap.org, Docker Hub, the
+Greenbone registry) and prints a table: tool, pinned, latest, and whether it is current or behind. `--json` prints the rows as JSON, `--root DIR`
+reads another checkout, and `--fail-if-behind` exits 1 when a tool is behind, a pin cannot be found, a version `ARG` has no known upstream or a
+newest version cannot be read (it fails closed: a renamed pin or an unreachable site must not pass a release). The Chromium build of Playwright
+is shown as a warning only, because it moves with the Playwright pin.
+
+CI runs it in three places (`.github/workflows/tool-releases.yml`, `tag-release.yml`): every week it keeps one open issue listing what is behind;
+every pull request gets a warning for each tool that is behind (never a failure); and *Tag a release* refuses to tag while a tool is behind,
+unless the run ticks `tools_reviewed` after someone looked at the newer version and decided to wait (say why in the release notes). The tests
+(`client/tests/test_tool_versions.py`) feed recorded upstream answers and never use the network. A new version `ARG` in the Dockerfile needs a row in
+`DOCKERFILE_ARGS` in the script (its upstream), or the check fails.
+
 ## The built-in scanner
 
 cvENGINE runs this image next to the server as its built-in scanner, shown as **CVEngine Scanner** (the `scanner` service of cvENGINE's own
-`docker-compose.yml`, pinned there by digest). It is a Sentinel like any other, with `CVENGINE_SENTINEL_BUILTIN=1`, which changes these things:
+`docker-compose.yml`, which runs the moving `main` tag; `scanner.lock.json` there names the floor). It is a Sentinel like any other, with `CVENGINE_SENTINEL_BUILTIN=1`, which changes these things:
 
 - **Name and updates.** It is always called CVEngine Scanner, and its self-update setting is always `off`: cvENGINE's updater replaces its image,
   and rolls back to the previous image if the new one does not heartbeat.
@@ -768,8 +924,8 @@ cvENGINE runs this image next to the server as its built-in scanner, shown as **
   file to change. The blob is never logged.
 - **It restarts itself when its heartbeats stop.** When none has reached the server for 180 seconds it stops with exit code 3, and compose
   (`restart: unless-stopped`) starts a fresh process. Docker never restarts a container only because its health check fails.
-- **What it reports.** `info.builtin = true` and `info.features` (`secret_read`, `vantage`). The server decides from the enrollment whether a
-  Sentinel is its built-in scanner, never from this; the features tell it this image can do the two things below.
+- **What it reports.** `info.builtin = true` and `info.features` (`secret_read`, `vantage`, `credential_filter`). The server decides from the enrollment whether a
+  Sentinel is its built-in scanner, never from this; the features tell it this image can do the things below. `credential_filter` (every Sentinel, not only this one) tells the server this client leaves checks that send credentials out of a nuclei web run; a server that has those checks off gives nuclei web work only to a Sentinel that declares it.
 - **Signed-in nuclei.** A nuclei task marked `signed_in` names a stored sign-in. Only the built-in scanner runs it: it reads the credential once with
   `POST /api/v1/sentinel/tasks/<id>/secret`, writes it as a nuclei secrets file (mode 600, in a private directory on `/dev/shm`), runs nuclei with
   `-sf` and `-dr` (no redirects), then overwrites and removes the file. Any value of it that a finding echoes is replaced by `***`. Every other
@@ -808,17 +964,24 @@ import. The server keeps no copy of its own. It holds:
 
 - `flags.py`, the scan policy: the nmap and nuclei flag builders, the reviewed NSE scripts, `-etags dos` on every nuclei
   run, the UDP port list, the probe ports and the per-task limits;
+- `nuclei_allowlist.py` and `data/`, the service-port allowlist: which nuclei templates a non-web port may receive (id and sha256 per template, with the
+  classes and any port the template names for itself), `nuclei_service_left_out.json` (every candidate left out and why) and `nuclei_service_review.json`
+  (the templates a person read). `scripts/generate_service_allowlist.py --templates DIR --check` regenerates both and fails when they differ from the shipped
+  files; a new nuclei-templates release is regenerated and reviewed before it ships;
 - `parsers.py` and `nmap.py`, the readers of tool output (nmap XML and its service inventory, naabu, nuclei JSON lines,
   testssl.sh, wafw00f);
 - `fingerprint.py`, `cms.py`, `versions.py` and `soft404.py`, the pure readers of a web response (technologies and their
   versions, which CMS a page is, whether a "200" is really a not-found page). They never fetch anything: the server does
   the fetching and hands them what it read;
 - `scope.py`, the Sentinel's own scope floor;
+- `checks.py`, the rules an AI-written or approved nuclei check must meet before a Sentinel other than the built-in scanner runs it: the
+  server's read-only rules, rule for rule (one shared corpus, `fixtures/checks/corpus.json`, is tested on both sides), and the task's own
+  target and port only;
 - `contract/sentinel_contract.json`, the **single source of truth** for the result contract (the server keeps no copy and reads it from
-  its install of this library), with the fixtures for each kind in `fixtures/`. The fixtures under `fixtures/results/v1/` are frozen: they are what a Sentinel of
-  contract version 1 sent, and their hashes are checked.
+  its install of this library), with the fixtures for each kind in `fixtures/`. The fixtures under `fixtures/results/v1/`, `v2/` and `v3/` are frozen: they are
+  what a Sentinel of that contract version sent, and their hashes are checked.
 
-It needs Python 3.12 or newer, and its one dependency is `xmltodict`. Everything in it is pure: no subprocess, no network
+It needs Python 3.12 or newer, and its dependencies are `xmltodict` and `PyYAML` (read only when a check is judged). Everything in it is pure: no subprocess, no network
 and no Django. The image installs it with `pip install`.
 
 **Releases.** The version is the git tag (`setuptools-scm`), so a release is just an annotated tag on `main`:
@@ -831,14 +994,8 @@ Or, without a local clone, run the **Tag a release** workflow (Actions, `tag-rel
 of `main` to tag. It refuses a tag that is not `vMAJOR.MINOR.PATCH`, a commit that is not on `main`, and a tag that already exists.
 
 Use `vMAJOR.MINOR.PATCH`. Raise MAJOR when a function the server calls changes or goes away, and MINOR for a new kind or
-function. A tag is never moved or reused. The server pins the tag in its `web/requirements.txt`, and its Docker build and its
+function. A tag is never moved or reused. The server does not pin a tag. Its `web/requirements.txt` pins a **commit sha of `main`** (cvENGINE 1.4.0 pins `5ac80a23b43f`), and its Docker build and its
 CI both install it from there:
-
-```
-cvengine-scanner @ git+https://github.com/hevnsnt/cvENGINE-sentinel@v1.4.0
-```
-
-The server now pins a **commit sha of `main`** instead (a tag is a release and needs the owner's approval; a sha is not a version change):
 
 ```
 cvengine-scanner @ git+https://github.com/hevnsnt/cvENGINE-sentinel@<40 character sha of a main commit>
@@ -895,11 +1052,19 @@ before the stack is ready fails with "GVM is still syncing its ... feed(s)".
 - This machine's policy as ceilings: network (internal only if `.env` says so), disabled kinds (a veto), self-update
   (`off` or `manual` here cannot be raised).
 - Only known task kinds, each run as a fixed argument list with no shell; a kind it does not run now is refused.
-- nuclei never runs denial-of-service templates; a nuclei task that names the server's approved template bundle (`bundle_sha256`) runs on exactly
-  that set: the bundle is downloaded from this Sentinel's own server, its hash checked, unpacked defensively (regular files and directories only,
-  every path inside the target, bounded size) and kept in the state volume; if it cannot be fetched or does not verify, the task is an error and
-  nothing unapproved runs. A task under the read-only policy that names no bundle is an error too; a task with no policy uses the pinned templates
-  in the image. OpenVAS never runs the Denial of Service or Brute force families.
+- nuclei never runs denial-of-service templates. From contract 11 the server keeps no copy of the template library: a nuclei task whose
+  `template_policy` says `source: "index"` runs on the set this Sentinel builds itself from the templates baked into its image and the template
+  index shipped in the library (`cvengine_scanner/data/nuclei_template_index.json`, made by `scripts/generate_template_index.py` for the pinned
+  release): a file is in the set only when the index records its path with exactly its sha256 and the recorded verdict passes the task's policy
+  (read-only unless the task says plainly it is not; credentials only when the task allows them). A file that is missing or differs is left out,
+  never run unjudged; when nothing approved is in the image the task is an error. The set is built once per index and policy in the state volume.
+  A `nuclei_validate` test may name an installed template by `template_path`: it runs only when the index records that path with the task's hash
+  and the baked file is exactly that, and the result carries the text it ran. For an older server, a task that names its approved bundle (`bundle_sha256`) runs on exactly that set: the
+  bundle is downloaded from this Sentinel's own server, its hash checked, unpacked defensively (regular files and directories only, every path
+  inside the target, bounded size) and kept in the state volume; if it cannot be fetched or does not verify, the task is an error and nothing
+  unapproved runs. A task under the read-only policy that names no bundle or index is an error too; a task with no policy uses the pinned
+  templates in the image. A nuclei target scope refuses is named in `not_checked` (`refused by scope: ...`) and `unreachable` and never run; the
+  task's other targets still run. OpenVAS never runs the Denial of Service or Brute force families.
 - The container runs as an unprivileged user (uid 10001). Raw sockets come from file capabilities on nmap and naabu only; a one-shot
   `sentinel-init` service (root, no capabilities, no network) hands an older state volume to that user before the Sentinel starts.
 - A tool that exits with an error or is killed is reported as an error, never as an empty result; a result over the server's 24 MB limit is
@@ -913,10 +1078,17 @@ again when they run, so a DNS answer that changes in between is not caught (nmap
 
 ### What the operator must do
 
-- **Treat the `docker` group as root.** Anyone in it, including the updater's user, controls the machine.
-- **Protect the code source.** Updates are not signature-checked: the updater builds and runs whatever is on
-  `origin/main` (or the configured branch) of this checkout's `origin` remote. Anyone who can push there reaches every
-  Automatic Sentinel within about an hour. Keep `origin` pointed at
+- **Treat the `docker` group as root.** Anyone in it, including the updater's user, controls the machine. `install.sh` puts
+  its `cvengine` user in that group, so that user is root-equivalent on this machine: someone who gets code running as
+  `cvengine` (or who can write to its checkout, which the updater builds and runs) can become root through Docker.
+  What the service user changes is narrower: the checkout, git, `setup.sh`, the updater and your own `docker compose`
+  commands for this Sentinel are an unprivileged account's, nothing is owned by or runs as root by default, `.env` is not
+  in root's home, and the account has no password or login shell. It is not a sandbox against that account; the
+  container (uid 10001, `cap_drop: [ALL]` plus two capabilities) is the boundary for scan tools.
+- **Protect the code source.** Updates are not signature-checked in 1.4.0: the updater builds and runs the commit cvENGINE
+  names, which must be on `origin/main` (or the configured branch) of this checkout's `origin` remote
+  ([What Automatic trusts](#what-automatic-trusts)). Anyone who can push there reaches every
+  Automatic Sentinel once cvENGINE names that commit. Keep `origin` pointed at
   `https://github.com/hevnsnt/cvengine-sentinel.git` (or a fork you control), protect that repository, and use Manual
   or Off (`CVENGINE_SENTINEL_UPDATE=manual`) where that is not enough.
 - **Mind other unpinned inputs.** The nuclei templates in the image are a pinned release (checksum-verified at build) and are not

@@ -19,11 +19,20 @@ def run_threads_inline(**_kwargs):
 class SweepTests(unittest.TestCase):
     def test_leftover_gvm_objects_are_swept_once_when_the_stack_is_ready(self):
         d = make_daemon()
+        here, mine = threading.get_ident(), []
+
+        def cleanup(*args, **kwargs):
+            # counted only from this test's thread (the sweep runs inline here): a task thread another test left running can reach the same
+            # patched function, and must not be counted as this daemon sweeping twice
+            if threading.get_ident() == here:
+                mine.append((args, kwargs))
+            return {'tasks': 1, 'targets': 1}
         with mock.patch('client.tools.gvm_available', return_value=True), mock.patch('client.tools.gvm_ready', return_value=True), \
-                mock.patch('client.openvas.cleanup_orphans', return_value={'tasks': 1, 'targets': 1}) as sweep, run_threads_inline():
+                mock.patch('client.openvas.cleanup_orphans', side_effect=cleanup), run_threads_inline():
             d._sweep_gvm_orphans()
             d._sweep_gvm_orphans()
-        sweep.assert_called_once_with()
+        self.assertEqual(mine, [((), {})])
+        self.assertTrue(d._gvm_swept)
 
     def test_nothing_is_swept_while_the_stack_is_absent_or_not_ready(self):
         d = make_daemon()

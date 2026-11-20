@@ -14,6 +14,13 @@ class FakeResponse:
     def json(self):
         return __import__('json').loads(self.content)
 
+    def iter_content(self, chunk_size=None):
+        for i in range(0, len(self.content), chunk_size or 65536):
+            yield self.content[i:i + (chunk_size or 65536)]
+
+    def close(self):
+        pass
+
 
 class FakeSession:
     def __init__(self, response):
@@ -85,11 +92,45 @@ class CallTests(Base):
         client.call('GET', 'sentinel', timeout=5)
         self.assertEqual(session.calls[1][2]['timeout'], 5)
 
+    def test_an_answer_past_the_size_limit_is_refused_and_never_read_whole(self):
+        """SN-13: a hostile or broken server cannot make the client hold an unbounded body (the same cap ``download`` has)."""
+        class Endless(FakeResponse):
+            read = 0
+
+            def iter_content(self, chunk_size=None):
+                while True:
+                    Endless.read += chunk_size
+                    yield b' ' * chunk_size
+
+        client, _ = self.make(Endless(200))
+        with self.assertRaises(httpclient.ApiError) as ctx:
+            client.call('POST', 'sentinel/tasks/next')
+        self.assertEqual(ctx.exception.status, 502)
+        self.assertLessEqual(Endless.read, httpclient.MAX_RESPONSE_BYTES + 64 * 1024)
+        client, _ = self.make(FakeResponse(200, b'{"ok": true}', {'Content-Length': str(httpclient.MAX_RESPONSE_BYTES + 1)}))
+        with self.assertRaises(httpclient.ApiError):
+            client.call('GET', 'sentinel')  # a server that declares too much is refused before its body is read
+        client, _ = self.make(FakeResponse(200, b'{"a": "' + b'x' * 100 + b'"}'))
+        with self.assertRaises(httpclient.ApiError):
+            client.call('GET', 'sentinel', max_bytes=50)
+        self.assertEqual(client.call('GET', 'sentinel', max_bytes=1000), {'a': 'x' * 100})
+
     def test_an_error_body_is_clipped_to_the_servers_message(self):
         client, _ = self.make(FakeResponse(403, b'{"error": "suspended"}'))
         with self.assertRaises(httpclient.ApiError) as ctx:
             client.call('POST', 'sentinel/tasks/next')
         self.assertEqual((ctx.exception.status, ctx.exception.message), (403, 'suspended'))
+        self.assertEqual((ctx.exception.code, ctx.exception.reason), (None, None))
+
+    def test_an_error_body_passes_its_code_and_reason_on(self):
+        client, _ = self.make(FakeResponse(403, b'{"error": "no work can be assigned: its user is disabled", "code": "agent_blocked", "reason": "its user is disabled"}'))
+        with self.assertRaises(httpclient.ApiError) as ctx:
+            client.call('POST', 'sentinel/tasks/next')
+        self.assertEqual((ctx.exception.status, ctx.exception.code, ctx.exception.reason), (403, 'agent_blocked', 'its user is disabled'))
+        client, _ = self.make(FakeResponse(403, b'{"error": "x", "code": 7, "reason": ["odd"]}'))
+        with self.assertRaises(httpclient.ApiError) as ctx:
+            client.call('POST', 'sentinel/tasks/next')
+        self.assertEqual((ctx.exception.code, ctx.exception.reason), (None, None))
 
 
 if __name__ == '__main__':

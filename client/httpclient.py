@@ -19,6 +19,7 @@ from . import config
 
 logger = logging.getLogger('sentinel.http')
 
+MAX_RESPONSE_BYTES = 8 * 1024 * 1024  # the most a ``call`` reads of one answer: a task, a heartbeat or an error is a few kilobytes, a hostile or broken server must not fill the 2 GB of memory
 DEFAULT_TIMEOUT = 30  # seconds per call; the long poll's own wait (config.DEFAULT_POLL_WAIT) fits well inside it
 
 
@@ -41,11 +42,13 @@ class ApiError(Exception):
     the server chose to show (or one this client wrote), never a raw response body (which could be arbitrarily large or
     not be JSON at all)."""
 
-    def __init__(self, status, message, retry_after=None):
+    def __init__(self, status, message, retry_after=None, code=None, reason=None):
         super().__init__(f'{status}: {message}')
         self.status = status
         self.message = message
         self.retry_after = retry_after  # seconds the server asked to wait (Retry-After on a 429 or 503), or None
+        self.code = code  # the machine-readable ``code`` of the error body (``agent_blocked``, ``token_revoked``, ...), or None from an older server
+        self.reason = reason  # the error body's human ``reason`` next to that code, or None
 
 
 class ServerURLError(ValueError):
@@ -97,24 +100,39 @@ class Client:
             headers['Authorization'] = f'Bearer {self.token}'
         return headers
 
-    def call(self, method, path, body=None, timeout=None):
-        """One REST call; returns the decoded JSON body. Raises ``ApiError`` on a 3xx (never followed), 4xx or 5xx, or
-        ``requests.RequestException`` on a network failure (connection refused, DNS, timeout): the caller (``daemon``)
-        decides how to back off from each, never this method."""
+    def call(self, method, path, body=None, timeout=None, max_bytes=MAX_RESPONSE_BYTES):
+        """One REST call; returns the decoded JSON body. Raises ``ApiError`` on a 3xx (never followed), 4xx or 5xx, or on an answer larger than
+        ``max_bytes`` (502: read only up to that, never the whole body), or ``requests.RequestException`` on a network failure (connection refused,
+        DNS, timeout): the caller (``daemon``) decides how to back off from each, never this method."""
         url = self.base + path.lstrip('/')
         data = json.dumps(body).encode('utf-8') if body is not None else None
-        response = self.session.request(method, url, data=data, headers=self._headers(), allow_redirects=False,
+        response = self.session.request(method, url, data=data, headers=self._headers(), allow_redirects=False, stream=True,
                                         timeout=timeout if timeout is not None else self.timeout)
-        if 300 <= response.status_code < 400:
-            raise ApiError(response.status_code, 'the server answered with a redirect, which this Sentinel never follows: '
-                                                 'check the server URL (scheme, host and path)')
         try:
-            payload = response.json() if response.content else {}
+            if 300 <= response.status_code < 400:
+                raise ApiError(response.status_code, 'the server answered with a redirect, which this Sentinel never follows: '
+                                                     'check the server URL (scheme, host and path)')
+            too_big = ApiError(502, f'the server answered with more than the {max_bytes} bytes this Sentinel reads of one answer')
+            declared = (response.headers or {}).get('Content-Length', '')
+            if str(declared).isdigit() and int(declared) > max_bytes:
+                raise too_big
+            raw = b''
+            for chunk in response.iter_content(chunk_size=64 * 1024):
+                raw += chunk
+                if len(raw) > max_bytes:
+                    raise too_big
+        finally:
+            response.close()
+        try:
+            payload = json.loads(raw) if raw else {}
         except ValueError:
             payload = {}
         if response.status_code >= 400:
-            message = (payload.get('error') if isinstance(payload, dict) else None) or f'HTTP {response.status_code}'
-            raise ApiError(response.status_code, str(message)[:300], retry_after=parse_retry_after(response.headers.get('Retry-After')))
+            body = payload if isinstance(payload, dict) else {}
+            message = body.get('error') or f'HTTP {response.status_code}'
+            code, reason = body.get('code'), body.get('reason')
+            raise ApiError(response.status_code, str(message)[:300], retry_after=parse_retry_after(response.headers.get('Retry-After')),
+                           code=code[:64] if isinstance(code, str) and code else None, reason=reason[:300] if isinstance(reason, str) and reason else None)
         return payload if isinstance(payload, dict) else {}
 
     def download(self, path, destination, max_bytes, timeout=None):

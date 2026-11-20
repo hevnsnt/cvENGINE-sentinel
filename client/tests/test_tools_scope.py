@@ -52,8 +52,13 @@ class RefusedTargetTests(unittest.TestCase):
             with self.subTest(tool=name, target=target, internal=internal), \
                     mock.patch.object(scope, 'internal_allowed', return_value=internal), \
                     mock.patch('client.tools._run') as fake_run, mock.patch('client.tools.subprocess.Popen') as popen:
-                with self.assertRaises(tools.TargetError):
-                    call(target)
+                if name == 'nuclei':  # contract 11: a refused nuclei target is named and left out, never run, and the task's other targets still run
+                    out = call(target)
+                    self.assertEqual(out['unreachable'], [target])
+                    self.assertTrue(out['not_checked'][0]['reason'].startswith(tools.flags.NUCLEI_REFUSED_PREFIX))
+                else:
+                    with self.assertRaises(tools.TargetError):
+                        call(target)
                 fake_run.assert_not_called()
                 popen.assert_not_called()
 
@@ -105,6 +110,26 @@ class RefusedTargetTests(unittest.TestCase):
             with self.assertRaises(tools.TargetError):
                 tools.run_nmap(['8.8.8.8', 'www.example.test', '169.254.169.254'])
         fake_run.assert_not_called()
+
+    def test_a_refused_nuclei_entry_is_left_out_and_never_reaches_nuclei(self):
+        written = []
+        real = tools._targets_file
+        with mock.patch.object(scope, 'internal_allowed', return_value=False), mock.patch('client.tools._run', return_value='') as fake_run, \
+                mock.patch('client.tools._targets_file', side_effect=lambda values: written.append(list(values)) or real(values)):
+            out = tools.run_nuclei(['www.example.test', 'rebind.example.test', '169.254.169.254'])
+        fake_run.assert_called_once()
+        self.assertEqual(written, [['www.example.test']])
+        self.assertEqual(sorted(out['unreachable']), ['169.254.169.254', 'rebind.example.test'])
+        self.assertEqual(sorted(n['target'] for n in out['not_checked']), ['169.254.169.254', 'rebind.example.test'])
+
+    def test_an_external_task_refuses_private_space_even_on_an_internal_sentinel(self):
+        # contract 11: the server looks no name up; a task it marks external is judged as a Sentinel that is not internal judges it
+        with mock.patch.object(scope, 'internal_allowed', return_value=True), mock.patch('client.tools._run', return_value=FINISHED) as fake_run:
+            out = tools.run_nuclei(['lan.example.test', '10.1.2.3', 'www.example.test'], external=True)
+            self.assertEqual(sorted(out['unreachable']), ['10.1.2.3', 'lan.example.test'])
+            fake_run.assert_called_once()
+            tools.run_nuclei(['lan.example.test'])  # not external: an internal Sentinel scans it as before
+            self.assertEqual(fake_run.call_count, 2)
 
     def test_host_port_is_refused_where_the_tool_cannot_take_it(self):
         with mock.patch.object(scope, 'internal_allowed', return_value=False), mock.patch('client.tools._run', return_value='') as fake_run:

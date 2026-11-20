@@ -4,6 +4,7 @@ import io
 import ipaddress
 import json
 import os
+import re
 import tempfile
 import threading
 import unittest
@@ -118,6 +119,75 @@ class CommandTests(unittest.TestCase):
                 bbot.build_command({**TARGET, 'domain': bad}, '/o', '/b')
 
 
+    def config_of(self, cmd):
+        """The ``-c key=value ...`` options of a command as a dict."""
+        self.assertIn('-c', cmd)
+        out = {}
+        for part in cmd[cmd.index('-c') + 1:]:
+            if part.startswith('-'):
+                break
+            key, _, value = part.partition('=')
+            out[key] = value
+        return out
+
+    def excluded(self, cmd):
+        if '-em' not in cmd:
+            return []
+        out = []
+        for part in cmd[cmd.index('-em') + 1:]:
+            if part.startswith('-'):
+                break
+            out.append(part)
+        return out
+
+    def test_bbot_3_1_is_held_to_the_3_0_2_dns_pace(self):
+        """3.1.0 raised dns.threads from 10 to 50 (and 25 for subdomain-enum, which no longer sets it), added a 256 ceiling and brute force through up to 600
+        resolvers with no rate limit and 20 retries. A Sentinel inside a customer network must not send more DNS than 3.0.2 did."""
+        for presets, threads in ((['subdomain-enum', 'web'], '25'), (['kitchen-sink'], '25'), (['web'], '10'), (['web-screenshots'], '10')):
+            config = self.config_of(bbot.build_command({**TARGET, 'presets': presets}, '/o', '/b'))
+            self.assertEqual(config['dns.threads'], threads, presets)
+            self.assertEqual(config['dns.max_concurrency'], threads, presets)  # the ceiling over all resolvers is one resolver's 3.0.2 share
+            self.assertLessEqual(float(config['dns.brute_rate_limit']), 1000, presets)
+            self.assertGreater(float(config['dns.brute_rate_limit']), 0, presets)  # 0 is unlimited
+            self.assertLessEqual(int(config['dns.brute_retries']), 3, presets)
+
+    def test_the_baddns_delegation_check_stays_off(self):
+        """baddns 2.5.0 turned DELEGATION on by default (_acme-challenge, _dmarc and 15 DKIM selectors a host): more DNS queries than 3.0.2 sent."""
+        light = self.config_of(bbot.build_command({**TARGET, 'presets': ['subdomain-enum', 'web']}, '/o', '/b'))
+        self.assertEqual(light['modules.baddns.enabled_submodules'], '[CNAME,MX,TXT]')  # 3.0.2's default
+        deep = self.config_of(bbot.build_command({**TARGET, 'presets': ['kitchen-sink'], 'require_flags': []}, '/o', '/b'))
+        self.assertEqual(deep['modules.baddns.enabled_submodules'], '[CNAME,NS,MX,TXT,references,DMARC,SPF,MTA-STS,WILDCARD]')  # 3.0.2's baddns-heavy
+        for config in (light, deep):
+            self.assertNotIn('DELEGATION', config['modules.baddns.enabled_submodules'])
+
+    def test_a_deep_scan_keeps_waf_fronted_hosts_out_of_lightfuzz(self):
+        """3.1.0 fuzzes WAF-tagged hosts by default (avoid_wafs: try_bypasses) and pads request bodies with nowafpls to get past the WAF; 3.0.2 skipped them."""
+        for presets in (['subdomain-enum'], ['kitchen-sink']):
+            cmd = bbot.build_command({**TARGET, 'presets': presets, 'require_flags': []}, '/o', '/b')
+            self.assertEqual(self.config_of(cmd)['modules.lightfuzz.avoid_wafs'], 'always')
+            self.assertIn('nowafpls', self.excluded(cmd))
+
+    def test_modules_new_in_3_1_that_send_more_than_3_0_2_or_need_a_key_are_left_out(self):
+        cmd = bbot.build_command(TARGET, '/o', '/b')
+        for module in ('js_unpacker', 'dnsdumpster', 'otilabs', 'nowafpls', 'trufflehog'):
+            self.assertIn(module, self.excluded(cmd), module)
+        # a project that stored a key for one of them gets it back; the other stays out
+        keyed = bbot.build_command(TARGET, '/o', '/b', None, {'modules': {'dnsdumpster': {'api_key': 'k'}, 'shodan_dns': {'api_key': 'j'}}})
+        self.assertNotIn('dnsdumpster', self.excluded(keyed))
+        self.assertIn('otilabs', self.excluded(keyed))
+        self.assertIn('nowafpls', self.excluded(keyed))
+        # a key under another name does not count, and a task that excludes a module itself does not list it twice
+        dup = bbot.build_command({**TARGET, 'exclude_modules': ['otilabs', 'dnsdumpster']}, '/o', '/b')
+        self.assertEqual(self.excluded(dup).count('otilabs'), 1)
+        self.assertEqual(self.excluded(dup).count('dnsdumpster'), 1)
+
+    def test_the_settings_never_come_from_the_task(self):
+        odd = {**TARGET, 'config': {'dns': {'threads': 500}}, 'dns_threads': 500, 'exclude_modules': ['x=1']}
+        cmd = bbot.build_command(odd, '/o', '/b')
+        self.assertNotIn('500', ' '.join(cmd))
+        self.assertEqual(self.config_of(cmd)['dns.threads'], '25')
+
+
 class CollectorTests(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp()
@@ -136,6 +206,17 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(sorted(batch['subdomains']), ['example.com', 'www.example.com'])
         self.assertEqual(batch['resolutions'], [{'name': 'www.example.com', 'ip': '192.0.2.10'}])
         self.assertNotIn('192.0.2.55', batch['ips'])
+
+    def test_an_ipv6_resolution_is_kept_in_its_canonical_form(self):
+        """SN-5: a name's AAAA answer is a resolution like an A answer; an IPv6-only host is not left without an address. A denied one is still dropped."""
+        c = bbot.Collector(bbot.Policy({**TARGET['scope'], 'deny_ranges': [*TARGET['scope']['deny_ranges'], 'fd00::/8']}), self.dir)
+        c.add(event('DNS_NAME', 'www.example.com', 'www.example.com', resolved_hosts=['2001:0db8::1', '192.0.2.10', 'fd00::5', '::ffff:10.20.0.1']))
+        c.add(event('DNS_NAME', 'v6.example.com', 'v6.example.com', resolved_hosts=['2001:db8::2']))
+        batch = c.take(1)
+        self.assertEqual(sorted(batch['ips']), ['192.0.2.10', '2001:db8::1', '2001:db8::2'])
+        self.assertEqual(sorted((r['name'], r['ip']) for r in batch['resolutions']),
+                         [('v6.example.com', '2001:db8::2'), ('www.example.com', '192.0.2.10'), ('www.example.com', '2001:db8::1')])
+        self.assertEqual(list(Draft202012Validator(contract.partial_schema('bbot_discovery')).iter_errors(batch)), [])
 
     def test_events_become_a_batch_in_contract_held_to_the_scope(self):
         os.makedirs(os.path.join(self.dir, 'demo_scan', 'gowitness'))
@@ -168,6 +249,86 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(base64.b64decode(batch['screenshots'][0]['data']), PNG)
         self.assertEqual(batch['scan_name'], 'demo_scan')
         self.assertEqual(c.waiting(), 0)
+
+    def test_a_long_screenshot_name_keeps_its_extension(self):
+        """gowitness names a picture after its URL, which can be far past the contract's 120 characters: the stem is cut, never the extension, because
+        the server drops a screenshot whose extension is not its content type. A name with the wrong extension or none gets the type's own."""
+        folder = os.path.join(self.dir, 'demo_scan', 'gowitness')
+        os.makedirs(folder)
+        long_png = 'https---www.example.com-' + 'a' * 200 + '.png'
+        names = {long_png: PNG, 'page.html': PNG, 'noext': PNG, 'b' * 150 + '.jpeg': b'\xff\xd8\xff\xe0' + b'\0' * 16}
+        for name, raw in names.items():
+            with open(os.path.join(folder, name), 'wb') as handle:
+                handle.write(raw)
+        c = bbot.Collector(bbot.Policy(TARGET['scope']), self.dir)
+        c.add(event('SCAN', {'name': 'demo_scan'}))
+        for name in names:
+            c.add(event('WEBSCREENSHOT', {'path': f'gowitness/{name}', 'url': 'https://www.example.com/'}, 'www.example.com'))
+        batch = c.take(1)
+        self.assertEqual(list(Draft202012Validator(contract.partial_schema('bbot_discovery')).iter_errors(batch)), [])
+        got = [(s['filename'], s['content_type']) for s in batch['screenshots']]
+        self.assertEqual(got, [(long_png[:116] + '.png', 'image/png'), ('page.html.png', 'image/png'), ('noext.png', 'image/png'),
+                               ('b' * 115 + '.jpeg', 'image/jpeg')])
+        self.assertTrue(all(len(name) <= 120 for name, _ in got))
+
+    def test_a_technology_that_bbot_3_1_names_by_product_still_carries_its_version_for_the_server(self):
+        """bbot 3.1 sends ``technology: openssh`` and the CPE in a new ``cpe`` field; 3.0.2 sent the CPE itself. The server reads a product and version out of a
+        CPE (``correlation.split_name_version``) but would see only a product name with no version, so an application CPE is stored as before."""
+        c = bbot.Collector(bbot.Policy(TARGET['scope']), self.dir)
+        for e in (event('TECHNOLOGY', {'host': 'www.example.com', 'technology': 'openssh', 'cpe': 'cpe:/a:openbsd:openssh:7.2p2'}, 'www.example.com'),
+                  event('TECHNOLOGY', {'host': 'www.example.com', 'technology': 'tomcat', 'cpe': 'cpe:2.3:a:apache:tomcat:9.0.50:*:*:*:*:*:*:*'}, 'www.example.com'),
+                  event('TECHNOLOGY', {'host': 'www.example.com', 'technology': 'linux_kernel', 'cpe': 'cpe:/o:linux:linux_kernel:5.4'}, 'www.example.com'),
+                  event('TECHNOLOGY', {'host': 'www.example.com', 'technology': 'nginx'}, 'www.example.com'),
+                  event('TECHNOLOGY', {'host': 'www.example.com', 'technology': 'odd', 'cpe': 'not a cpe'}, 'www.example.com')):
+            c.add(e)
+        names = sorted(t['technology'] for t in c.take(1)['technologies'])
+        self.assertEqual(names, ['cpe:/a:openbsd:openssh:7.2p2', 'cpe:2.3:a:apache:tomcat:9.0.50:*:*:*:*:*:*:*', 'linux_kernel', 'nginx', 'odd'])
+
+    def test_every_technology_name_the_collector_stores_is_one_the_server_can_split(self):
+        """The server's own parser, ``cveFeed.correlation.split_name_version`` (copied here: the Sentinel library does not import the server), on what is stored."""
+        cpe = re.compile(r"^cpe:(?:/a:|2\.3:a:)([^:\s]*):([^:\s]+)(?::([^:\s]+))?", re.IGNORECASE)
+        c = bbot.Collector(bbot.Policy(TARGET['scope']), self.dir)
+        c.add(event('TECHNOLOGY', {'host': 'www.example.com', 'technology': 'openssh', 'cpe': 'cpe:/a:openbsd:openssh:7.2p2'}, 'www.example.com'))
+        stored = c.take(1)['technologies'][0]['technology']
+        match = cpe.match(stored)
+        self.assertEqual((match.group(2), match.group(3)), ('openssh', '7.2p2'))
+
+    def test_a_finding_carries_its_port(self):
+        """SN-9: a bbot FINDING names a port (a TLS or TCP finding): it is kept, from the payload, the event or the URL, else left out."""
+        c = bbot.Collector(bbot.Policy(TARGET['scope']), self.dir)
+        c.add(event('FINDING', {'description': 'Weak cipher: x', 'host': 'www.example.com', 'port': 8443, 'severity': 'LOW'}, 'www.example.com', module='sslcert'))
+        c.add(event('FINDING', {'description': 'Open admin: y', 'host': 'www.example.com', 'severity': 'LOW'}, 'www.example.com', module='x', port=2222))
+        c.add(event('FINDING', {'description': 'Bad page: z', 'host': 'www.example.com', 'url': 'https://www.example.com:9443/a', 'severity': 'LOW'}, 'www.example.com', module='x'))
+        c.add(event('FINDING', {'description': 'Bad page: w', 'host': 'www.example.com', 'url': 'https://www.example.com/a', 'severity': 'LOW'}, 'www.example.com', module='x'))
+        c.add(event('FINDING', {'description': 'No port: v', 'host': 'www.example.com', 'severity': 'INFO'}, 'www.example.com', module='x'))
+        c.add(event('FINDING', {'description': 'Absurd: u', 'host': 'www.example.com', 'port': 99999, 'severity': 'INFO'}, 'www.example.com', module='x'))
+        batch = c.take(1)
+        self.assertEqual([f.get('port') for f in batch['findings']], [8443, 2222, 9443, 443, None, None])
+        self.assertEqual(list(Draft202012Validator(contract.partial_schema('bbot_discovery')).iter_errors(batch)), [])
+
+    def test_a_list_cut_at_the_run_cap_is_counted(self):
+        """SN-6: events, http responses and screenshots past the run's cap are dropped, and the collector says how many."""
+        os.makedirs(os.path.join(self.dir, 'demo_scan', 'gowitness'))
+        with open(os.path.join(self.dir, 'demo_scan', 'gowitness', 'shot.png'), 'wb') as handle:
+            handle.write(PNG)
+        c = bbot.Collector(bbot.Policy(TARGET['scope']), self.dir)
+        c.add(event('SCAN', {'name': 'demo_scan'}))
+        with mock.patch.object(bbot, 'MAX_EVENTS', 3), mock.patch.object(bbot, 'MAX_HTTP', 2), mock.patch.object(bbot, 'MAX_SCREENSHOTS', 1):
+            for i in range(5):
+                c.add(event('DNS_NAME', f'h{i}.example.com', f'h{i}.example.com'))
+                c.add(event('HTTP_RESPONSE', {'url': f'https://www.example.com/{i}', 'status_code': 200}, 'www.example.com'))
+                c.add(event('WEBSCREENSHOT', {'path': 'gowitness/shot.png', 'url': f'https://www.example.com/{i}'}, 'www.example.com'))
+        got = {row['what']: row for row in c.cuts.as_list()}
+        self.assertEqual({k: (v['kind'], v['dropped']) for k, v in got.items()}, {'events': ('items', 7), 'http': ('items', 3), 'screenshots': ('items', 4)})
+        self.assertEqual(got['events']['limit'], 3)
+
+    def test_a_repeated_event_past_the_cap_is_counted_once(self):
+        c = bbot.Collector(bbot.Policy(TARGET['scope']), self.dir)
+        with mock.patch.object(bbot, 'MAX_EVENTS', 1):
+            for _ in range(3):
+                c.add(event('DNS_NAME', 'a.example.com', 'a.example.com'))
+                c.add(event('DNS_NAME', 'b.example.com', 'b.example.com'))
+        self.assertEqual([r['dropped'] for r in c.cuts.as_list()], [1])
 
     def test_a_list_over_its_cap_spills_into_the_next_batch(self):
         c = bbot.Collector(bbot.Policy(TARGET['scope']), self.dir)
@@ -247,6 +408,25 @@ class RunTests(unittest.TestCase):
         with mock.patch.object(bbot.egress, 'for_tool', side_effect=bbot.egress.ProxyUnavailable('no proxy suits bbot')):
             with self.assertRaises(bbot.RunError):
                 self.run_with(FakeProc(self.LINES))
+
+    def test_a_run_that_hit_a_cap_or_its_time_limit_says_so_in_its_result(self):
+        class InstantTimer:  # the time limit passes as soon as the run starts
+            def __init__(self, seconds, function):
+                self.function, self.daemon = function, True
+
+            def start(self):
+                self.function()
+
+            def cancel(self):
+                pass
+        with mock.patch.object(bbot, 'MAX_EVENTS', 1), mock.patch.object(bbot.threading, 'Timer', InstantTimer):
+            result, _client, _seen = self.run_with(FakeProc(self.LINES))
+        self.assertIn('time limit', result['incomplete'])
+        self.assertEqual(sorted((c['what'], c['kind']) for c in result['cuts']), [('events', 'items'), ('time_limit', 'time')])
+        self.assertEqual([c for c in result['cuts'] if c['what'] == 'events'][0]['dropped'], 1)
+        self.assertEqual(list(Draft202012Validator(contract.result_schema('bbot_discovery')).iter_errors(result)), [])
+        whole, _c, _s = self.run_with(FakeProc(self.LINES))
+        self.assertNotIn('cuts', whole)
 
     def test_a_run_that_fails_part_way_is_incomplete_and_one_that_found_nothing_is_an_error(self):
         result, _client, _seen = self.run_with(FakeProc(self.LINES, code=-9))

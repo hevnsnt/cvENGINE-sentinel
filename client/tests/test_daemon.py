@@ -389,7 +389,9 @@ class PollAndExecuteTests(unittest.TestCase):
         with mock.patch('client.tools.subprocess.Popen') as popen:
             d._poll_once()
             self._wait_idle(d)
-        popen.assert_not_called()  # the bad target never reached a subprocess call
+        # the bad target never reached a subprocess call (the background template warm-up an earlier Daemon started may call Popen with its own
+        # arguments while this patch is in place, in an image that carries a template directory: only a call naming the target counts)
+        self.assertFalse([c for c in popen.call_args_list if '192.0.2.10' in repr(c)])
         body = fc.body_for('sentinel/tasks/9/result')
         self.assertEqual(body['outcome'], 'error')
 
@@ -515,9 +517,10 @@ class HeartbeatTests(unittest.TestCase):
         d = daemon.Daemon('https://cve.example.test', 'tok', client=fc, heartbeat_seconds=0.02)
         thread = threading.Thread(target=d._heartbeat_loop, daemon=True)
         thread.start()
-        time.sleep(0.09)
+        # wait for the two beats with a deadline, not a fixed sleep: a busy runner can be slow, and the test is about the loop, not about the clock
+        wait_for(lambda: len([1 for _m, p, _b in list(fc.calls) if p == 'sentinel/heartbeat']) >= 2, timeout=10)
         d.stop_event.set()
-        thread.join(timeout=1)
+        thread.join(timeout=5)
         beats = [p for m, p, _b in fc.calls if p == 'sentinel/heartbeat']
         self.assertGreaterEqual(len(beats), 2)
 
@@ -527,10 +530,11 @@ class HeartbeatTests(unittest.TestCase):
         d = daemon.Daemon('https://cve.example.test', 'tok', client=fc, heartbeat_seconds=0.02)
         thread = threading.Thread(target=d._heartbeat_loop, daemon=True)
         thread.start()
-        time.sleep(0.06)
+        wait_for(lambda: len([1 for _m, p, _b in list(fc.calls) if p == 'sentinel/heartbeat']) >= 2, timeout=10)  # it tried twice, so a failure did not end the loop
         d.stop_event.set()
-        thread.join(timeout=1)
+        thread.join(timeout=5)
         self.assertFalse(thread.is_alive())
+        self.assertGreaterEqual(len([1 for _m, p, _b in fc.calls if p == 'sentinel/heartbeat']), 2)
 
 
 class ShutdownTests(unittest.TestCase):
@@ -1079,6 +1083,45 @@ class KindPolicyTests(DaemonTestCase):
             d._execute({'id': 43, 'kind': 'discover', 'target': {'cidr': '10.0.0.0/24'}}, None)
         runner.assert_not_called()
 
+    def test_a_nuclei_task_runs_with_the_time_limit_of_its_kind_and_size(self):
+        """The daemon passes nuclei a limit under the server's wait (cvengine_scanner.flags.task_seconds), not the 3600 s default."""
+        d = self.make()
+        runner = mock.Mock(return_value={'findings': [], 'unreachable': []})
+        with mock.patch.dict(tools.RUNNERS, {'nuclei_targeted': runner}), mock.patch.object(d, '_approved_templates', return_value=None):
+            d._execute({'id': 44, 'kind': 'nuclei_targeted', 'target': {'targets': ['www.example.test'] * 9, 'tags': ['nginx']}}, None)
+        self.assertEqual(runner.call_args.kwargs['timeout'], tools.task_seconds('nuclei_targeted', 9))
+        self.assertLess(runner.call_args.kwargs['timeout'], 3600)
+
+    def test_a_nuclei_task_allows_credential_checks_only_when_its_field_is_true(self):
+        d = self.make()
+        for kind in ('nuclei_light', 'nuclei_targeted', 'nuclei_deep'):
+            for field, expected in (({}, False), ({'allow_credential_checks': False}, False), ({'allow_credential_checks': 'yes'}, False), ({'allow_credential_checks': True}, True)):
+                runner = mock.Mock(return_value={'findings': [], 'unreachable': []})
+                with self.subTest(kind=kind, field=field), mock.patch.dict(tools.RUNNERS, {kind: runner}), mock.patch.object(d, '_approved_templates', return_value=None):
+                    d._execute({'id': 46, 'kind': kind, 'target': {'targets': ['www.example.test'], 'tags': [], **field}}, None)
+                    self.assertIs(runner.call_args.kwargs.get('allow_credential_checks', False), expected)
+
+    def test_only_a_light_task_whose_field_is_true_is_the_network_detection_pass(self):
+        """Contract 10: ``network_detection: true`` on a nuclei_light task, and nothing else (another kind, a truthy non-boolean), makes the run the detection pass."""
+        d = self.make()
+        for kind in ('nuclei_light', 'nuclei_targeted', 'nuclei_deep'):
+            for field in ({}, {'network_detection': False}, {'network_detection': 'yes'}, {'network_detection': 1}, {'network_detection': True}):
+                runner = mock.Mock(return_value={'findings': [], 'unreachable': []})
+                with self.subTest(kind=kind, field=field), mock.patch.dict(tools.RUNNERS, {kind: runner}), mock.patch.object(d, '_approved_templates', return_value=None):
+                    d._execute({'id': 47, 'kind': kind, 'target': {'targets': ['www.example.test:6379'], 'tags': [], **field}}, None)
+                    self.assertIs(runner.call_args.kwargs.get('network_detection', False), kind == 'nuclei_light' and field.get('network_detection') is True)
+
+    def test_a_nuclei_task_hands_its_service_labels_and_budget_to_the_tool(self):
+        """The server's label of each host:port and the per-service budget reach run_nuclei, which enforces them."""
+        d = self.make()
+        runner = mock.Mock(return_value={'findings': [], 'unreachable': []})
+        target = {'targets': ['www.example.test', 'www.example.test:22'], 'tags': [], 'services': {'www.example.test:22': 'ssh'},
+                  'budget': {'pause_ms': 500, 'seconds': 300, 'web_rate': 25}}
+        with mock.patch.dict(tools.RUNNERS, {'nuclei_deep': runner}), mock.patch.object(d, '_approved_templates', return_value=None):
+            d._execute({'id': 45, 'kind': 'nuclei_deep', 'target': target}, None)
+        self.assertEqual(runner.call_args.kwargs['services'], {'www.example.test:22': 'ssh'})
+        self.assertEqual(runner.call_args.kwargs['budget'], {'pause_ms': 500, 'seconds': 300, 'web_rate': 25})
+
     def test_the_polled_kinds_follow_a_network_setting_from_the_server(self):
         os.environ['CVENGINE_SENTINEL_NETWORK'] = 'internal'
         d = self.make()
@@ -1266,8 +1309,8 @@ class HeldSentinelTests(DaemonTestCase):
                 with mock.patch.object(d.stop_event, 'wait'), self.assertNoLogs('sentinel.daemon', level='WARNING'):
                     d._poll_once()  # the same hold is not logged again
 
-    def test_a_revoked_or_active_answer_still_stops_it(self):
-        for identity in ({'status': 'revoked'}, {'status': 'active'}, {}, 'x', httpclient.ApiError(401, 'invalid, expired or revoked token'),
+    def test_a_revoked_answer_still_stops_it(self):
+        for identity in ({'status': 'revoked'}, httpclient.ApiError(401, 'invalid, expired or revoked token'),
                          httpclient.ApiError(403, 'this agent was revoked by an administrator')):
             with self.subTest(identity=identity):
                 self.fc = FakeClient()
@@ -1299,6 +1342,84 @@ class HeldSentinelTests(DaemonTestCase):
             d._poll_once()
         self.assertTrue(any('no longer holds' in line for line in logs.output))
         self.assertIsNone(d._held_logged)
+
+
+class BlockedSentinelTests(DaemonTestCase):
+    """An active Sentinel whose user or token cannot be given work (user disabled, read-only or expired token, MFA to set up) is refused with a 403
+    "no work can be assigned: ..." (``code`` ``agent_blocked`` from a newer server). Its token is good: it waits like a held one, never stops or
+    forgets the token. Only a 401, or a 403 with ``code`` ``token_revoked`` or a revoked/invalid message, keeps the revoked behaviour."""
+
+    BLOCKED = httpclient.ApiError(403, 'no work can be assigned: its user is disabled', code='agent_blocked', reason='its user is disabled')
+
+    def poll(self, refusal, *identity):
+        self.fc.script[('POST', 'sentinel/tasks/next')] = [refusal]
+        self.fc.script[('GET', 'sentinel')] = list(identity)
+        d = self.make(heartbeat_seconds=7)
+        with mock.patch.object(d.stop_event, 'wait') as wait:
+            d._poll_once()
+        return d, wait
+
+    def test_an_agent_blocked_refusal_waits_a_heartbeat_keeps_the_token_and_says_why_once(self):
+        with self.assertLogs('sentinel.daemon', level='WARNING') as logs:
+            d, wait = self.poll(self.BLOCKED)
+        self.assertEqual((d.stop_event.is_set(), d.exit_code), (False, 0))
+        wait.assert_called_once_with(7)
+        self.assertEqual(self.fc.count('sentinel'), 0)  # the code says it all: no need to ask where it stands
+        text = '\n'.join(logs.output)
+        self.assertIn('its user is disabled', text)
+        self.assertIn('do not re-enroll', text)
+        self.assertNotIn('re-enroll it', text)
+        self.fc.script[('POST', 'sentinel/tasks/next')] = [self.BLOCKED]
+        with mock.patch.object(d.stop_event, 'wait'), self.assertNoLogs('sentinel.daemon', level='WARNING'):
+            d._poll_once()  # the same reason is not logged again
+
+    def test_a_server_without_codes_is_read_by_its_message(self):
+        older = httpclient.ApiError(403, 'no work can be assigned: its token is read only')
+        mfa = httpclient.ApiError(403, 'your organization requires multi-factor authentication: set up MFA in the web app')
+        for identity in ({'status': 'active'}, {}, 'x', mfa):
+            with self.subTest(identity=identity):
+                self.fc = FakeClient()
+                with self.assertLogs('sentinel.daemon', level='WARNING') as logs:
+                    d, wait = self.poll(older, identity)
+                self.assertEqual((d.stop_event.is_set(), d.exit_code), (False, 0))
+                wait.assert_called_once_with(7)
+                self.assertIn('read only', '\n'.join(logs.output))
+
+    def test_the_built_in_scanner_keeps_its_token(self):
+        with mock.patch.object(config, 'builtin', return_value=True):
+            d, _wait = self.poll(self.BLOCKED)
+            self.assertEqual((d.stop_event.is_set(), d.exit_code), (False, 0))
+            self.fc.script[('POST', 'sentinel/heartbeat')] = [self.BLOCKED]
+            d._heartbeat_once()
+        self.assertEqual((d.stop_event.is_set(), d.exit_code), (False, 0))
+
+    def test_a_blocked_heartbeat_does_not_stop_it(self):
+        self.fc.script[('POST', 'sentinel/heartbeat')] = [httpclient.ApiError(403, 'set up MFA', code='agent_blocked', reason='its user has to set up two-step sign-in first')]
+        d = self.make()
+        with self.assertLogs('sentinel.daemon', level='WARNING') as logs:
+            d._heartbeat_once()
+        self.assertEqual((d.stop_event.is_set(), d.exit_code), (False, 0))
+        self.assertIn('two-step sign-in', '\n'.join(logs.output))
+
+    def test_a_revoked_token_still_stops_it(self):
+        cases = ((httpclient.ApiError(403, 'no work can be assigned', code='token_revoked'), ()),
+                 (httpclient.ApiError(403, 'no work can be assigned: the agent is revoked'), ({'status': 'revoked'},)),
+                 (httpclient.ApiError(403, 'no work can be assigned: its token is revoked or expired'), ({'status': 'active'},)),
+                 (httpclient.ApiError(403, 'no work can be assigned: its user is disabled'), (httpclient.ApiError(401, 'invalid, expired or revoked token'),)),
+                 (httpclient.ApiError(401, 'invalid, expired or revoked token'), ()))
+        for refusal, identity in cases:
+            with self.subTest(refusal=refusal):
+                self.fc = FakeClient()
+                with self.assertLogs('sentinel.daemon', level='ERROR') as logs:
+                    d, _wait = self.poll(refusal, *identity)
+                self.assertEqual((d.stop_event.is_set(), d.exit_code), (True, 1))
+                self.assertIn('re-enroll', '\n'.join(logs.output))
+        self.fc = FakeClient()
+        self.fc.script[('POST', 'sentinel/heartbeat')] = [httpclient.ApiError(403, 'gone', code='token_revoked')]
+        d = self.make()
+        with self.assertLogs('sentinel.daemon', level='ERROR'):
+            d._heartbeat_once()
+        self.assertEqual((d.stop_event.is_set(), d.exit_code), (True, 1))
 
 
 class AtomicTokenTests(unittest.TestCase):
@@ -1476,6 +1597,65 @@ class OpenvasSlotTests(DaemonTestCase):
             self.assertTrue(wait_for(lambda: 73 not in d._in_flight))
         runner.assert_not_called()
         self.assertEqual(self.fc.body_for('sentinel/tasks/73/result')['outcome'], 'error')
+
+
+class ToolReprobeTests(unittest.TestCase):
+    """A tool that is installed but did not answer its probe (a timeout on a loaded host) is probed again in the background, so ``bbot_discovery``
+    comes back without a restart."""
+
+    def setUp(self):
+        fresh_tool_probe(self)
+        self.addCleanup(daemon._reprobe.__setitem__, 'thread', None)
+
+    def _first_probe(self, found):
+        with mock.patch('client.tools.detect_tools', return_value=found):
+            daemon.detected_tools()
+
+    def _join(self):
+        thread = daemon._reprobe['thread']
+        self.assertIsNotNone(thread)
+        thread.join(5)
+        self.assertFalse(thread.is_alive())
+
+    def test_a_slow_tool_is_found_by_the_next_probe(self):
+        self._first_probe(['nmap'])
+        daemon._detected['probed_at'] -= daemon.DETECT_RECHECK_SECONDS + 1
+        release = threading.Event()
+
+        def slow_probe():
+            release.wait(5)
+            return ['nmap', 'bbot']
+        with mock.patch('client.tools.unprobed_tools', return_value=['bbot']), mock.patch('client.tools.detect_tools', side_effect=slow_probe), \
+                mock.patch('client.tools.tool_versions', return_value={'bbot': '3.1.0'}):
+            self.assertEqual(daemon.detected_tools(), ['nmap'])  # the caller is never kept waiting for the probe
+            release.set()
+            self._join()
+        self.assertEqual(daemon.detected_tools(), ['nmap', 'bbot'])
+        self.assertEqual(daemon.detected_versions(), {'bbot': '3.1.0'})
+
+    def test_nothing_is_probed_again_when_every_installed_tool_answered(self):
+        self._first_probe(['nmap'])
+        daemon._detected['probed_at'] -= daemon.DETECT_RECHECK_SECONDS + 1
+        with mock.patch('client.tools.unprobed_tools', return_value=[]), mock.patch('client.tools.detect_tools') as probe:
+            daemon.detected_tools()
+        probe.assert_not_called()
+        self.assertIsNone(daemon._reprobe['thread'])
+
+    def test_nothing_is_probed_again_before_the_interval(self):
+        self._first_probe(['nmap'])
+        with mock.patch('client.tools.unprobed_tools', return_value=['bbot']), mock.patch('client.tools.detect_tools') as probe:
+            daemon.detected_tools()
+        probe.assert_not_called()
+        self.assertIsNone(daemon._reprobe['thread'])
+
+    def test_a_probe_that_raises_leaves_the_known_tools_and_is_tried_again_later(self):
+        self._first_probe(['nmap'])
+        daemon._detected['probed_at'] -= daemon.DETECT_RECHECK_SECONDS + 1
+        with mock.patch('client.tools.unprobed_tools', return_value=['bbot']), mock.patch('client.tools.detect_tools', side_effect=RuntimeError('boom')), \
+                self.assertLogs('sentinel.daemon', 'ERROR'):
+            daemon.detected_tools()
+            self._join()
+        self.assertEqual(daemon.detected_tools(), ['nmap'])
 
 
 if __name__ == '__main__':

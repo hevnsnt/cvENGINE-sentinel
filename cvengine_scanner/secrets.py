@@ -20,7 +20,7 @@ from urllib.parse import urljoin, urlsplit
 
 from cvengine_scanner import context as masked_context
 
-KINGFISHER_VERSION = '2.16.0'  # the Dockerfile pin (ARG KINGFISHER_VERSION); a test holds the two together
+KINGFISHER_VERSION = '2.18.1'  # the Dockerfile pin (ARG KINGFISHER_VERSION); a test holds the two together
 WALL_SECONDS = 300
 MAX_REPORT_BYTES = 16 * 1024 * 1024
 MAX_FINDINGS = 500
@@ -211,7 +211,7 @@ def _secret_ok(value):
     return MIN_SECRET <= len(value) <= limit
 
 
-def read_report(text, manifest, keep_validation=False, body_of=None):
+def read_report(text, manifest, keep_validation=False, body_of=None, cuts=None):
     """``(findings, truncated)`` from Kingfisher's JSON report: each finding mapped to the URL of its file (``manifest``: file name -> entry), with
     the contract's fields only. A pair's secret half (an AWS secret key in ``dependent_captures``) is a finding of its own at the same place.
     ``keep_validation`` keeps Kingfisher's outcome (a validation pass); otherwise every outcome is ``not_attempted``.
@@ -267,7 +267,9 @@ def read_report(text, manifest, keep_validation=False, body_of=None):
         for item in rows:
             if len(out) >= MAX_FINDINGS:
                 truncated = True
-                break
+                if cuts is not None:
+                    cuts.items('findings', MAX_FINDINGS, 1)  # counted: the stats say truncated, the cuts say how many
+                continue
             out.append(item)
     return out, truncated
 
@@ -290,7 +292,7 @@ def exit_ok(code):
 
 
 def version_of(text):
-    """The version ``kingfisher --version`` prints (``kingfisher 2.16.0``), or ``''``."""
+    """The version ``kingfisher --version`` prints (``kingfisher 2.18.1``), or ``''``."""
     found = re.search(r'(\d+\.\d+\.\d+)', text or '')
     return found.group(1) if found else ''
 

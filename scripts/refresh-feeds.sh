@@ -1,7 +1,7 @@
 #!/bin/sh
 # Refresh the OpenVAS feed data (vulnerability tests, notus, SCAP, CERT, data objects, report formats, GPG keys). Each feed container copies its
-# image's data into a volume only when it is created, and update.sh pulls images only when a new commit arrives, so without this job the feeds
-# would age for as long as the code does not change. scripts/install-updater.sh runs it daily as the checkout's owner.
+# image's data into a volume only when it is created, and update.sh never re-pulls an image this machine already has (it pulls only the ones it
+# lacks), so this job is the only thing that keeps the feeds fresh. scripts/install-updater.sh runs it daily as the checkout's owner.
 #
 # It does nothing (and says nothing) unless the stack runs with the openvas profile and the Sentinel holds no task, and never while update.sh runs.
 set -eu

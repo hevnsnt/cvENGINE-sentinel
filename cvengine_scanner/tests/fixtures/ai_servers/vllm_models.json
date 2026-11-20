@@ -1,0 +1,20 @@
+{
+ "object": "list",
+ "data": [
+  {
+   "id": "meta-llama/Llama-3.1-8B-Instruct",
+   "object": "model",
+   "created": 1731990000,
+   "owned_by": "vllm",
+   "root": "meta-llama/Llama-3.1-8B-Instruct",
+   "parent": null,
+   "max_model_len": 131072,
+   "permission": [
+    {
+     "id": "modelperm-1",
+     "allow_sampling": true
+    }
+   ]
+  }
+ ]
+}

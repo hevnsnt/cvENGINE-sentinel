@@ -5,42 +5,52 @@
 # itself is NOT in this image: it runs as the separate Greenbone services in docker-compose.yml, which this daemon
 # talks GMP to over a shared unix socket (client/openvas.py), the same way cvENGINE's own server talks to its sidecar.
 # bbot and the tzdata it needs, the same pins as the server repository's web/Dockerfile. Declared once, before the first stage, and used by two.
-ARG BBOT_VERSION=3.0.2
+ARG BBOT_VERSION=3.1.0
 ARG TZDATA_VERSION=2026.6
+# bbot 3.1's own Rust and module dependencies, pinned to the versions bbot 3.1.0 resolves to (its requirements say blastdns>=2.0.4,<2.1 and blasthttp>=0.10.1,<0.11;
+# its baddns and badsecrets modules install baddns~=2.5.0 and badsecrets~=1.3.0 at build time), so a rebuild never picks up a newer one the Sentinel has not been through.
+ARG BLASTDNS_VERSION=2.0.4
+ARG BLASTHTTP_VERSION=0.10.1
+ARG BADDNS_VERSION=2.5.0
+ARG BADSECRETS_VERSION=1.3.0
 # bbot's own virtual environment is built in a stage of its own: one of its dependencies (yara-python) compiles from source on this Python, and
 # the compiler and the headers it needs stay in this stage. The final image copies the finished venv to the same path, on the same base image.
-FROM ubuntu:26.04@sha256:0e73b71479e7bc5f006bca872e25c3cd680dc052a0116f90d63ae363537db0dd AS bbot-builder
+FROM ubuntu:26.04@sha256:065aa8626841f16057b78b027b464cd59c4fac36c204c72dcbf48d66f5fa8a96 AS bbot-builder
 ARG BBOT_VERSION
 ARG TZDATA_VERSION
+ARG BLASTDNS_VERSION
+ARG BLASTHTTP_VERSION
+ARG BADDNS_VERSION
+ARG BADSECRETS_VERSION
 ENV DEBIAN_FRONTEND="noninteractive"
 RUN apt-get update -y && \
     apt-get install -y --no-install-recommends build-essential ca-certificates libssl-dev python3 python3-dev python3-venv && \
     rm -rf /var/lib/apt/lists/*
 # The build tools are the same pins as the client's venv below; yara-python and the other source packages build with them.
 RUN python3 -m venv /opt/bbot-venv && \
-    /opt/bbot-venv/bin/pip install --no-cache-dir pip==25.2 setuptools==80.9.0 wheel==0.45.1 && \
-    /opt/bbot-venv/bin/pip install --no-cache-dir bbot==${BBOT_VERSION} tzdata==${TZDATA_VERSION} && \
+    /opt/bbot-venv/bin/pip install --no-cache-dir pip==26.3 setuptools==84.2.1 wheel==0.48.0 && \
+    /opt/bbot-venv/bin/pip install --no-cache-dir bbot==${BBOT_VERSION} tzdata==${TZDATA_VERSION} blastdns==${BLASTDNS_VERSION} blasthttp==${BLASTHTTP_VERSION} baddns==${BADDNS_VERSION} badsecrets==${BADSECRETS_VERSION} && \
     /opt/bbot-venv/bin/bbot --version
 
 # The Python packages that ship no wheel for this image's Python on every architecture (arc4, a C extension, everywhere; aardwolf, a Rust
 # extension, on arm64) are built here, in a stage that is thrown away: the same toolchain the server repository's web/Dockerfile builds them with
 # (build-essential, python3-dev, rustc, cargo), on the same base image, so the wheels match the image's Python. Only the wheels are copied into the
 # image below, which installs them with --no-index: no Python headers or Rust toolchain ship in it, and nothing is compiled or fetched there.
-FROM ubuntu:26.04@sha256:0e73b71479e7bc5f006bca872e25c3cd680dc052a0116f90d63ae363537db0dd AS wheels
+FROM ubuntu:26.04@sha256:065aa8626841f16057b78b027b464cd59c4fac36c204c72dcbf48d66f5fa8a96 AS wheels
 ENV DEBIAN_FRONTEND="noninteractive" PIP_DISABLE_PIP_VERSION_CHECK=1
 RUN apt-get update -y && \
     apt-get install -y --no-install-recommends build-essential ca-certificates cargo python3 python3-dev python3-venv rustc && \
     rm -rf /var/lib/apt/lists/*
 RUN python3 -m venv /opt/wheelvenv
 COPY requirements.txt /tmp/requirements.txt
-RUN /opt/wheelvenv/bin/pip install --no-cache-dir pip==25.2 setuptools==80.9.0 wheel==0.45.1 && \
+RUN /opt/wheelvenv/bin/pip install --no-cache-dir pip==26.3 setuptools==84.2.1 wheel==0.48.0 && \
     /opt/wheelvenv/bin/pip wheel --no-cache-dir -r /tmp/requirements.txt -w /wheels
 
-FROM ubuntu:26.04@sha256:0e73b71479e7bc5f006bca872e25c3cd680dc052a0116f90d63ae363537db0dd
+FROM ubuntu:26.04@sha256:065aa8626841f16057b78b027b464cd59c4fac36c204c72dcbf48d66f5fa8a96
 
-ARG GOVERSION=1.27.3
-ARG GO_SHA256_AMD64=65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40
-ARG GO_SHA256_ARM64=a06e99309dbcbdca1a8ccd2282c3ee146e55930886e26b4f1193269587165f49
+ARG GOVERSION=1.27.4
+ARG GO_SHA256_AMD64=7226736c2339719cda28fbf3a54d71aa63bcefe376e98cef00034268dab24840
+ARG GO_SHA256_ARM64=3392582988a273a87ab5043ee1b2c9c17a2c3c00580bf9326c47a2e0aaaeac92
 ARG NMAPVERSION=7.993
 ARG NUCLEI_VERSION=3.11.1
 ARG NAABU_VERSION=2.7.0
@@ -56,24 +66,25 @@ ARG WAFW00F_VERSION=2.4.2
 ARG PYSOCKS_VERSION=1.7.1
 # testssl.sh (GPLv2, run as a separate program) audits the TLS configuration of every TLS port, mirroring
 # cveFeed/testssl_scan.py's own invocation. Pinned tarball with its checksum, never a branch.
-ARG TESTSSL_VERSION=3.2.4
-ARG TESTSSL_SHA256=98528f8a0ac07f1e226efaa8ead438247df8efcb8fee4e056a937ab82a305490
-# The nuclei templates baked into the image: a pinned community release with its checksum, used only for a task that names no approved bundle
-# (an older server). Tasks under the server's template policy run on the server's own verified bundle instead (client/templates.py).
+ARG TESTSSL_VERSION=3.2.5
+ARG TESTSSL_SHA256=23bb53d50ae093b89631e9fff547c087f632bf35f7a3d7dc78dd4ffff56cd779
+# The nuclei templates baked into the image: a pinned community release with its checksum. From contract 11 a task's approved set is built from
+# these and the library's template index (cvengine_scanner/data/nuclei_template_index.json, made for this same release: scripts/check_tool_versions.py
+# fails when the two differ); the server keeps no copy of the templates. An older server's task runs on its own verified bundle (client/templates.py).
 # Kingfisher (Apache-2.0, MongoDB; run as a separate program) finds secrets in the pages and scripts of the secrets_scan kind. The release tarball per
 # architecture, pinned by sha256 (its build attestation is verified in CI, .github/workflows/tests.yml); never the PyPI kingfisher-bin. The library's
 # cvengine_scanner/secrets.py KINGFISHER_VERSION is the same pin (a test holds them together), and so is the server's validation allow-list.
-ARG KINGFISHER_VERSION=2.16.0
-ARG KINGFISHER_SHA256_AMD64=97cdbe7706a722ea085d1e83a00a98b0e9432fc58b21c9a3e36f591b5c1446d7
-ARG KINGFISHER_SHA256_ARM64=fece052a018c127f664e96f76c1ad6be39fe3d4df71db91caaa462e92a99aed1
+ARG KINGFISHER_VERSION=2.18.1
+ARG KINGFISHER_SHA256_AMD64=8f29b5ba1818f13bccd0b079c798659cfd2eccf21998003c8aaf75f8a3794529
+ARG KINGFISHER_SHA256_ARM64=37a6341c9899693d6cf2ef18d54bf65395a8ad9b6c6152aea90f8626b4be9d8e
 # sshamble (BSD-2-Clause, runZero; run as a separate program) reads an SSH service's own handshake for the ssh_probe kind: the banner, host keys,
 # algorithms, offered authentication methods and the badkeys blocklist check. Release tarball per architecture, pinned by sha256. The library's
 # cvengine_scanner/probes/ssh_probe.py SSHAMBLE_VERSION is the same pin (a test holds them together). Only the host key check is ever run.
 ARG SSHAMBLE_VERSION=0.5.1
 ARG SSHAMBLE_SHA256_AMD64=38ba26a606ca51c3a974b91dd599717c3e21ac6720dc9bc4f4598d014793410e
 ARG SSHAMBLE_SHA256_ARM64=2335aceee86e860524fdd42decf02b6db12b18ce2f3e4a5be923902bb14d809a
-ARG NUCLEI_TEMPLATES_VERSION=v10.5.1
-ARG NUCLEI_TEMPLATES_SHA256=30fe1cfaced4635f886e4a2673641bba86998dceec28e468274524e789aa56eb
+ARG NUCLEI_TEMPLATES_VERSION=v10.5.2
+ARG NUCLEI_TEMPLATES_SHA256=016b7abbf931d4d1a851a5a568e44510dc61691dc8a5202e3b24e701515ec574
 
 ENV DEBIAN_FRONTEND="noninteractive" \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -147,8 +158,8 @@ RUN export GOROOT=/usr/local/go GOPATH=/root/go PATH="/usr/local/go/bin:${PATH}"
     && go clean -cache -modcache \
     && rm -rf "${GOROOT}" "${GOPATH}/pkg" /root/.cache/go-build
 
-# The fallback templates: a pinned release, checksum verified, in the run-time user's home where nuclei looks by default. They are not refreshed at
-# start (docker-entrypoint.sh); a newer set arrives with a rebuilt image, or, for a task under the server's policy, as the server's own bundle.
+# The templates: a pinned release, checksum verified, in the run-time user's home where nuclei looks by default. They are not refreshed at start
+# (docker-entrypoint.sh); a newer set arrives with a rebuilt image and a regenerated template index. Only a file the index records with its sha256 runs.
 RUN curl -fsSLo /tmp/nuclei-templates.tgz "https://github.com/projectdiscovery/nuclei-templates/archive/refs/tags/${NUCLEI_TEMPLATES_VERSION}.tar.gz" \
     && echo "${NUCLEI_TEMPLATES_SHA256}  /tmp/nuclei-templates.tgz" | sha256sum -c - \
     && mkdir -p /home/sentinel/nuclei-templates \
@@ -183,7 +194,7 @@ RUN apt-get update -y && \
 # that still speaks SSLv2/SSLv3 and export ciphers (arm64 uses the system openssl).
 RUN apt-get update -y && \
     apt-get install -y --no-install-recommends bind9-dnsutils bsdextrautils procps && \
-    curl -fsSL -o /tmp/testssl.tar.gz "https://testssl.sh/testssl.sh-${TESTSSL_VERSION}.tar.gz" && \
+    curl -fsSL -o /tmp/testssl.tar.gz "https://github.com/testssl/testssl.sh/archive/refs/tags/v${TESTSSL_VERSION}.tar.gz" && \
     echo "${TESTSSL_SHA256}  /tmp/testssl.tar.gz" | sha256sum -c - && \
     mkdir -p /opt/testssl && tar -xzf /tmp/testssl.tar.gz -C /opt/testssl --strip-components=1 && \
     ln -s /opt/testssl/testssl.sh /usr/local/bin/testssl.sh && \
@@ -226,7 +237,7 @@ COPY requirements.txt /opt/sentinel/requirements.txt
 # library below without build isolation, so the build tools are these pins and nothing fetched at build time.
 # The client's own packages come from the wheels built in the first stage, and only from there (--no-index).
 COPY --from=wheels /wheels /tmp/wheels
-RUN pip install --no-cache-dir pip==25.2 setuptools==80.9.0 wheel==0.45.1 setuptools-scm==8.3.1 packaging==25.0 && \
+RUN pip install --no-cache-dir pip==26.3 setuptools==84.2.1 wheel==0.48.0 setuptools-scm==10.3.4 packaging==26.3 && \
     pip install --no-cache-dir --no-index --find-links /tmp/wheels -r /opt/sentinel/requirements.txt && \
     rm -rf /tmp/wheels
 
@@ -234,7 +245,7 @@ RUN pip install --no-cache-dir pip==25.2 setuptools==80.9.0 wheel==0.45.1 setupt
 RUN pip install --no-cache-dir wafw00f==${WAFW00F_VERSION} PySocks==${PYSOCKS_VERSION} && wafw00f --version | grep "v${WAFW00F_VERSION}" >/dev/null
 
 # Web screenshots (kind web_screenshot, client/shot.py): Playwright's own headless Chromium, installed with the operating system libraries it needs on this
-# release (Playwright 1.64 knows Ubuntu 26.04 on amd64 and arm64). The browser is fixed by the Playwright pin in requirements.txt: PLAYWRIGHT_CHROMIUM_VERSION
+# release (Playwright 1.65 knows Ubuntu 26.04 on amd64 and arm64). The browser is fixed by the Playwright pin in requirements.txt: PLAYWRIGHT_CHROMIUM_VERSION
 # is the build that release drives, and the build fails if it launches anything else, so a Playwright bump that moves the browser is read before it ships.
 # Only the headless shell is installed (what a screenshot needs, about 100 MB smaller than the full browser), and without Playwright's ffmpeg (it records
 # video; a screenshot never does). Playwright fetches its own pinned revision from its CDN: there is no checksum of the download to pin here, and the version
@@ -243,7 +254,7 @@ RUN pip install --no-cache-dir wafw00f==${WAFW00F_VERSION} PySocks==${PYSOCKS_VE
 # default seccomp profile, which refuses the user namespaces the sandbox needs (so this check launches without it). The running container has Playwright's
 # seccomp profile (docker-compose.yml, vendored in config/seccomp) and proves the sandbox engages at every start (client/daemon.py) and before every task
 # (client/shot_child.py); a browser that cannot prove it takes no picture. A Playwright bump that moves the browser means rebuilding the image.
-ARG PLAYWRIGHT_CHROMIUM_VERSION=156.0.8078.4
+ARG PLAYWRIGHT_CHROMIUM_VERSION=158.0.8127.18
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers
 RUN set -e; playwright install --with-deps --only-shell chromium \
     && rm -rf /var/lib/apt/lists/* /opt/pw-browsers/ffmpeg-* \
@@ -320,11 +331,12 @@ RUN h="$(cat /tmp/gitmeta/HEAD 2>/dev/null || true)"; v=""; \
     printf '%s' "$v" | tr -cd '0-9a-f' | cut -c1-12 > /opt/sentinel/VERSION; rm -rf /tmp/gitmeta
 
 # Raw sockets for an unprivileged user: file capabilities on exactly the two tools that send raw packets (nmap's SYN scan, OS detection and ARP
-# discovery, naabu's SYN scan). They only take effect because the container is given NET_RAW and NET_ADMIN (docker-compose.yml); no other process in
-# the image holds any capability. NMAP_PRIVILEGED tells nmap to use them although it does not run as root.
+# discovery, naabu's SYN scan). They only take effect because the container is given NET_RAW (docker-compose.yml drops every other capability, NET_ADMIN
+# included: a file capability the container's bounding set lacks makes the program fail to start, so the file asks for NET_RAW alone); no other
+# process in the image holds any capability. NMAP_PRIVILEGED tells nmap to use them although it does not run as root.
 RUN apt-get update -y && apt-get install -y --no-install-recommends libcap2-bin && rm -rf /var/lib/apt/lists/* \
-    && setcap cap_net_raw,cap_net_admin+eip /usr/local/bin/nmap \
-    && setcap cap_net_raw,cap_net_admin+eip /usr/local/bin/naabu \
+    && setcap cap_net_raw+eip /usr/local/bin/nmap \
+    && setcap cap_net_raw+eip /usr/local/bin/naabu \
     && getcap /usr/local/bin/nmap /usr/local/bin/naabu
 ENV NMAP_PRIVILEGED=1 \
     HOME=/home/sentinel

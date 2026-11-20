@@ -42,7 +42,7 @@ class ContextThroughATaskTests(unittest.TestCase):
         def fake_kingfisher(argv, register, env=None):
             with open(argv[argv.index('--output') + 1], 'w') as handle:
                 handle.write(kingfisher_report(argv[2]))
-        with mock.patch.object(secrets_scan, '_kingfisher', side_effect=fake_kingfisher), mock.patch.object(secrets_scan, '_version', return_value='2.16.0'):
+        with mock.patch.object(secrets_scan, '_kingfisher', side_effect=fake_kingfisher), mock.patch.object(secrets_scan, '_version', return_value='2.18.1'):
             return secrets_scan.run(target(), fetcher=Site(), sleep=lambda s: None)
 
     def test_each_finding_carries_its_line_and_a_masked_snippet_and_the_canary_is_nowhere(self):
@@ -75,7 +75,7 @@ class ContextThroughATaskTests(unittest.TestCase):
                 record['finding']['line'] = 999  # a line the file does not have
             with open(argv[argv.index('--output') + 1], 'w') as handle:
                 handle.write(json.dumps(report))
-        with mock.patch.object(secrets_scan, '_kingfisher', side_effect=fake_kingfisher), mock.patch.object(secrets_scan, '_version', return_value='2.16.0'):
+        with mock.patch.object(secrets_scan, '_kingfisher', side_effect=fake_kingfisher), mock.patch.object(secrets_scan, '_version', return_value='2.18.1'):
             result = secrets_scan.run(target(), fetcher=Site(), sleep=lambda s: None)
         self.assertEqual(len(result['findings']), 2)
         self.assertTrue(all('context' not in f for f in result['findings']))

@@ -1,11 +1,14 @@
 """scripts/update.sh against a local git origin and a stand-in `docker`: what each self-update setting lets it do, and what every run records.
 
 The stand-in `docker` sends `docker compose exec ... python3 -m client.control` to the real module (against a temporary state directory) and
-records `compose pull`, `build` and `up` (each can be made to fail with SHIM_FAIL_PULL, SHIM_FAIL_BUILD or SHIM_FAIL_UP); after `compose up` it
+records `compose pull`, `build` and `up` (each can be made to fail with SHIM_FAIL_PULL, SHIM_FAIL_BUILD or SHIM_FAIL_UP, and SHIM_FAIL_STACK_UP fails
+only the `up -d` of the whole stack; `compose config --images`
+lists SHIM_IMAGES, `image inspect` fails for those in SHIM_MISSING, and a plain `docker pull` fails with SHIM_FAIL_PULL); after `compose up` it
 writes the daemon status a rebuilt Sentinel would write. It proves the script's decisions, not Docker itself.
 """
 import fcntl
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -20,13 +23,26 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 SHIM = """#!/bin/sh
 # stand-in docker: compose exec -T sentinel <command> runs the command here; pull and up are recorded
 echo "docker $*" >> "$SHIM_LOG"
+if [ "$1" = image ] && [ "$2" = inspect ]; then  # an image is on this machine unless SHIM_MISSING names it
+  case " ${SHIM_MISSING:-} " in *" $3 "*) exit 1 ;; esac
+  exit 0
+fi
+if [ "$1" = pull ]; then  # a plain `docker pull <image>`: SHIM_FAIL_PULL fails it with a registry's error
+  [ -z "${SHIM_FAIL_PULL:-}" ] || { echo 'Error response from daemon: Get "https://registry.example/v2/": net/http: TLS handshake timeout' >&2; exit 1; }
+  exit 0
+fi
 [ "$1" = compose ] || exit 0
 shift
 case "$1" in
   exec) shift; shift; shift; cd "$SENTINEL_SRC" && exec "$@" ;;
-  pull) [ -z "${SHIM_FAIL_PULL:-}" ] ;;
+  pull) [ -z "${SHIM_FAIL_PULL:-}" ] || { echo 'Error response from daemon: Get "https://registry.example/v2/": net/http: TLS handshake timeout' >&2; exit 1; } ;;
+  config) [ -z "${SHIM_FAIL_CONFIG:-}" ] || exit 1; [ -z "${SHIM_IMAGES:-}" ] || printf '%s\n' $SHIM_IMAGES ;;
   build) [ -z "${SHIM_FAIL_BUILD:-}" ] ;;
-  up) [ -z "${SHIM_FAIL_UP:-}" ] || exit 1
+  up) shift
+    [ -z "${SHIM_FAIL_UP:-}" ] || exit 1
+    if [ -n "${SHIM_FAIL_STACK_UP:-}" ] && [ "$*" = "-d" ]; then  # the whole stack: a feed container that is slow to turn healthy
+      echo 'dependency failed to start: container openvas-scap-data is unhealthy' >&2; exit 1
+    fi
     cd "$SENTINEL_SRC" && python3 - <<PY
 from client import control
 import subprocess, os
@@ -62,7 +78,8 @@ class UpdateScriptTests(unittest.TestCase):
         run(git + ['init', '-q', '--bare', '-b', 'main', self.origin], self.tmp)
         run(git + ['clone', '-q', self.origin, self.work], self.tmp)
         os.makedirs(os.path.join(self.work, 'scripts'))
-        shutil.copy(os.path.join(ROOT, 'scripts', 'update.sh'), os.path.join(self.work, 'scripts', 'update.sh'))
+        for name in ('update.sh', 'update-target.sh'):
+            shutil.copy(os.path.join(ROOT, 'scripts', name), os.path.join(self.work, 'scripts', name))
         put(os.path.join(self.work, 'README'), 'one\n')
         run(git + ['checkout', '-q', '-b', 'main'], self.work)
         run(git + ['add', '-A'], self.work)
@@ -90,8 +107,12 @@ class UpdateScriptTests(unittest.TestCase):
     def head(self):
         return run(['git', 'rev-parse', '--short=12', 'HEAD'], self.work).stdout.strip()
 
-    def status(self, setting, requested=False):
-        control.write_status('v0', 0, {'setting': setting, 'mode': 'manual', 'requested': requested})
+    def origin_main(self):
+        return run(['git', '--git-dir', self.origin, 'rev-parse', 'main'], self.work).stdout.strip()
+
+    def status(self, setting, requested=False, target='tip'):
+        target = self.origin_main() if target == 'tip' else target
+        control.write_status('v0', 0, {'setting': setting, 'mode': 'manual', 'requested': requested, **({'target': target} if target else {})})
         self.env['SHIM_SETTING'] = setting
 
     def update(self, *args, **env):
@@ -195,7 +216,7 @@ class UpdateScriptTests(unittest.TestCase):
 
     def test_a_running_openvas_scan_is_not_drained_for(self):
         self.publish()
-        control.write_status('v0', 1, {'setting': 'automatic', 'mode': 'manual', 'requested': False}, kinds=['openvas'])
+        control.write_status('v0', 1, {'setting': 'automatic', 'mode': 'manual', 'requested': False, 'target': self.origin_main()}, kinds=['openvas'])
         out = self.update()
         self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
         self.assertEqual(control.updater_info()['last_result'], 'waiting')
@@ -207,7 +228,7 @@ class UpdateScriptTests(unittest.TestCase):
 
     def test_other_running_tasks_are_still_drained_for(self):
         self.publish()
-        control.write_status('v0', 1, {'setting': 'automatic', 'mode': 'manual', 'requested': False}, kinds=['nmap'])
+        control.write_status('v0', 1, {'setting': 'automatic', 'mode': 'manual', 'requested': False, 'target': self.origin_main()}, kinds=['nmap'])
         out = self.update(CVENGINE_SENTINEL_DRAIN_TIMEOUT='1')
         self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
         self.assertIn('client.control drain', self.calls())
@@ -240,19 +261,110 @@ class UpdateScriptTests(unittest.TestCase):
         self.assertIn("is on 'mine', not main", control.updater_info()['detail'])
         self.assertNotIn('client.control drain', self.calls())
 
-    def test_a_failed_pull_puts_the_checkout_back_and_never_drains(self):
+    FEED = 'registry.example/community/vulnerability-tests:community'
+    PINNED = 'registry.example/community/gvmd:stable@sha256:' + 'a' * 64
+
+    def handover(self, *args):
+        """A run as root of a checkout another user owns: stand-in `id`, `stat` and `sudo` say so, and `sudo` records what it was asked to run."""
+        stubs = os.path.join(self.tmp, 'rootbin')
+        os.makedirs(stubs, exist_ok=True)
+        sudo_log = os.path.join(self.tmp, 'sudo.log')
+        put(os.path.join(stubs, 'id'), '#!/bin/sh\ncase "$1" in -un) echo root ;; -u) echo 0 ;; *) echo root ;; esac\n')
+        put(os.path.join(stubs, 'stat'), '#!/bin/sh\necho sentinel\n')
+        put(os.path.join(stubs, 'sudo'), f'#!/bin/sh\nprintf "%s|" "$@" > {sudo_log}\n')
+        for name in ('id', 'stat', 'sudo'):
+            os.chmod(os.path.join(stubs, name), 0o755)
+        env = {**self.env, 'PATH': f'{stubs}:{self.env["PATH"]}'}
+        out = run(['sh', os.path.join(self.work, 'scripts', 'update.sh'), *args], self.work, env)
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        with open(sudo_log) as handle:
+            return handle.read().rstrip('|').split('|')
+
+    def test_root_hands_over_to_the_owner_with_its_options(self):
+        # a person ran `scripts/update.sh --now` as root on the live Sentinel and the owner's run got no option: the loop had shifted "$@" empty
+        argv = self.handover('--now')
+        self.assertEqual(argv[:3], ['-u', 'sentinel', '--'])
+        self.assertEqual(argv[-1], '--now')
+        self.assertEqual(self.handover('--to', 'abc1234', '--allow-non-descendant')[-3:], ['--to', 'abc1234', '--allow-non-descendant'])
+        self.assertEqual(self.handover('--check')[-1], '--check')
+        self.assertTrue(self.handover()[-1].endswith('update.sh'))  # no option given, none handed over
+
+    def test_an_update_pulls_nothing_when_every_image_is_here(self):
+        # the OpenVAS feed data images follow moving tags and take tens of minutes to pull: an update never re-pulls one it has
+        # (scripts/refresh-feeds.sh refreshes them daily), so a slow or broken registry cannot hold a code update back
+        self.publish()
+        self.status('automatic')
+        out = self.update(SHIM_FAIL_PULL='1', SHIM_IMAGES=f'cvengine-sentinel-local:latest {self.FEED} {self.PINNED}')
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertEqual(self.head(), self.origin_main()[:12])
+        self.assertEqual(control.updater_info()['last_result'], 'updated')
+        self.assertNotIn('docker pull', self.calls())
+        self.assertNotIn('compose pull', self.calls())
+        self.assertNotIn('image inspect cvengine-sentinel-local', self.calls())  # the image this checkout builds is never looked for
+        self.assertIn('nothing to pull', out.stdout)
+
+    def test_an_update_pulls_only_the_images_this_machine_lacks(self):
+        self.publish()
+        self.status('automatic')
+        out = self.update(SHIM_IMAGES=f'cvengine-sentinel-local:latest {self.FEED} {self.PINNED}', SHIM_MISSING=self.PINNED)
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        calls = self.calls()
+        self.assertIn(f'docker pull --quiet {self.PINNED}', calls)  # a changed pin is a new reference, so it is pulled
+        self.assertNotIn(f'docker pull --quiet {self.FEED}', calls)  # the feed data image it has is not
+        self.assertNotIn('compose pull', calls)
+        info = control.updater_info()
+        self.assertEqual(info['last_result'], 'updated')
+        self.assertIn('pulled 1 image(s) this machine did not have', info['detail'])
+
+    def test_a_failed_pull_of_an_image_missing_here_puts_the_checkout_back_and_never_drains(self):
         self.publish()
         before = self.head()
         self.status('automatic')
-        out = self.update(SHIM_FAIL_PULL='1')
+        out = self.update(SHIM_FAIL_PULL='1', SHIM_IMAGES=f'cvengine-sentinel-local:latest {self.FEED}', SHIM_MISSING=self.FEED)
         self.assertNotEqual(out.returncode, 0)
         self.assertEqual(self.head(), before)
         info = control.updater_info()
         self.assertEqual(info['last_result'], 'failed')
         self.assertIn('pull failed', info['detail'])
+        self.assertIn('TLS handshake timeout', info['detail'])  # the registry's own words, not only "pull failed"
+        self.assertIn(f'not on this machine: {self.FEED}', info['detail'])
         self.assertEqual(control.read_update()['status'], 'failed')
         self.assertNotIn('client.control drain', self.calls())
         self.assertFalse(control.is_draining())
+
+    def test_the_sentinel_is_restarted_alone_before_the_rest_of_the_stack(self):
+        self.publish()
+        self.status('automatic')
+        out = self.update()
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        calls = self.calls()
+        self.assertIn('docker compose up -d sentinel-init sentinel', calls)
+        self.assertLess(calls.index('compose up -d sentinel-init sentinel'), calls.index('compose up -d\n'))  # the whole stack only after it
+
+    def test_a_feed_container_slow_to_turn_healthy_does_not_fail_the_update(self):
+        # the 08:07Z update of Nov 20: openvas-scap-data was slow to report healthy, `docker compose up -d` failed, and the update with it,
+        # although the new Sentinel was already running
+        self.publish()
+        self.status('automatic')
+        out = self.update(SHIM_FAIL_STACK_UP='1')
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertEqual(self.head(), self.origin_main()[:12])
+        self.assertEqual(self.marker(), self.head())
+        info = control.updater_info()
+        self.assertEqual(info['last_result'], 'updated')
+        self.assertIn('the rest of the stack (OpenVAS) is still starting', info['detail'])
+        self.assertIn('openvas-scap-data is unhealthy', info['detail'])
+        self.assertFalse(control.is_draining())
+
+    def test_a_compose_that_cannot_list_its_images_pulls_everything_and_stops_if_that_fails(self):
+        self.publish()
+        before = self.head()
+        self.status('automatic')
+        out = self.update(SHIM_FAIL_PULL='1', SHIM_FAIL_CONFIG='1')
+        self.assertNotEqual(out.returncode, 0)
+        self.assertEqual(self.head(), before)
+        self.assertIn('compose pull', self.calls())
+        self.assertIn('not on this machine: unknown', control.updater_info()['detail'])
 
     def test_a_failed_build_puts_the_checkout_back_and_the_next_run_tries_again(self):
         self.publish()
@@ -278,16 +390,259 @@ class UpdateScriptTests(unittest.TestCase):
         out = self.update()
         self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
         self.assertNotIn('up to date', out.stdout)
-        self.assertEqual(self.calls().count('compose up -d'), 2)
+        self.assertEqual(self.calls().count('compose up -d sentinel-init sentinel'), 2)
         self.assertEqual(self.marker(), target)
         self.assertEqual(control.updater_info()['last_result'], 'updated')
         out = self.update()  # and now it is up to date
         self.assertIn('up to date', out.stdout)
-        self.assertEqual(self.calls().count('compose up -d'), 2)
+        self.assertEqual(self.calls().count('compose up -d sentinel-init sentinel'), 2)
+
+    # --- the commit an update moves to is the one cvENGINE named (SN-3) ---------------------------------------------------------------------
+
+    def publish_two(self):
+        """Two new commits on origin/main; returns (first, second) full ids."""
+        self.publish()
+        first = self.origin_main()
+        self.publish()
+        return first, self.origin_main()
+
+    def assert_refused(self, out, words, before):
+        self.assertNotEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertEqual(self.head(), before)  # the checkout is untouched
+        info = control.updater_info()
+        self.assertEqual(info['last_result'], 'failed')
+        self.assertIn('cannot update', info['detail'])
+        self.assertIn(words, info['detail'])
+        self.assertEqual(control.read_update()['status'], 'failed')  # reported back to cvENGINE
+        for call in ('compose pull', 'compose build', 'client.control drain', 'compose up'):
+            self.assertNotIn(call, self.calls())  # nothing was built, drained or restarted: the running Sentinel keeps running
+        self.assertFalse(control.is_draining())
+
+    def test_a_target_older_than_the_fetched_head_moves_to_the_target_not_the_head(self):
+        first, second = self.publish_two()
+        self.status('automatic', target=first)
+        out = self.update()
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertEqual(run(['git', 'rev-parse', 'HEAD'], self.work).stdout.strip(), first)
+        self.assertNotEqual(first, second)
+        self.assertEqual(self.marker(), first[:12])
+        self.assertIn('cvENGINE named it', out.stdout)
+        self.assertEqual(control.updater_info()['last_result'], 'updated')
+
+    def test_a_short_target_is_resolved_and_the_commit_checked_out(self):
+        self.publish()
+        self.status('automatic', target=self.origin_main()[:9])
+        out = self.update()
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertEqual(run(['git', 'rev-parse', 'HEAD'], self.work).stdout.strip(), self.origin_main())
+
+    def assert_waiting_for_a_target(self, out, before):
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertEqual(self.head(), before)  # the checkout is untouched
+        for call in ('compose pull', 'compose build', 'client.control drain', 'compose up'):
+            self.assertNotIn(call, self.calls())
+        info = control.updater_info()
+        self.assertEqual(info['last_result'], 'waiting')  # not "failed": nothing is wrong on this machine
+        self.assertIn('waiting: the server named no target', info['detail'])
+        self.assertIn('--now', info['detail'])
+
+    def test_automatic_without_a_target_waits_and_is_not_a_failure(self):
+        # FB-7: with no target named (the server's "Keep Sentinels on the newest version" off, or no verdict from GitHub) the hourly run used to report "failed" every hour
+        self.publish()
+        before = self.head()
+        self.status('automatic', target=None)
+        self.assert_waiting_for_a_target(self.update(), before)
+        self.assertEqual((control.read_update()['status'], control.read_update()['phase']), ('waiting', 'available'))
+        self.assertIn('waiting: the server named no target', control.read_update()['detail'])
+
+    def test_the_wait_for_a_target_is_reported_to_cvengine_once_a_day(self):
+        self.publish()
+        before = self.head()
+        self.status('automatic', target=None)
+        self.assert_waiting_for_a_target(self.update(), before)
+        os.unlink(control._path('update.json'))
+        self.assert_waiting_for_a_target(self.update(), before)  # the next hourly run: still recorded as the updater's own result, not reported again
+        self.assertEqual(control.read_update(), {})
+        old = time.time() - 25 * 3600
+        os.utime(os.path.join(self.work, '.update-no-target'), (old, old))
+        self.assert_waiting_for_a_target(self.update(), before)
+        self.assertEqual(control.read_update()['status'], 'waiting')  # a day later it is said once more
+
+    def test_a_requested_manual_update_without_a_target_waits_too(self):
+        self.publish()
+        before = self.head()
+        self.status('manual', requested=True, target=None)
+        self.assert_waiting_for_a_target(self.update(), before)
+
+    def test_a_target_that_is_not_a_commit_id_is_refused(self):
+        self.publish()
+        before = self.head()
+        self.status('manual')
+        out = self.update('--to', 'origin/main')
+        self.assert_refused(out, 'is not a commit id', before)
+
+    def test_a_target_that_the_fetched_history_does_not_contain_is_refused(self):
+        self.publish()
+        before = self.head()
+        self.status('automatic', target='0123456789abcdef0123456789abcdef01234567')
+        self.assert_refused(self.update(), 'is not in the history fetched', before)
+
+    def make_commit_on_other_branch(self):
+        other = os.path.join(self.tmp, 'branchy')
+        run(self.git + ['clone', '-q', self.origin, other], self.tmp)
+        run(self.git + ['checkout', '-q', '-b', 'evil'], other)
+        put(os.path.join(other, 'README'), 'evil\n', 'a')
+        run(self.git + ['commit', '-q', '-am', 'evil'], other)
+        run(self.git + ['push', '-q', 'origin', 'evil'], other)
+        return run(['git', 'rev-parse', 'HEAD'], other).stdout.strip()
+
+    def test_a_target_pushed_to_another_branch_is_not_an_update(self):
+        self.publish()
+        evil = self.make_commit_on_other_branch()
+        before = self.head()
+        self.status('automatic', target=evil)
+        self.assert_refused(self.update(), 'is not in the history fetched', before)  # a branch-only fetch never brought it
+        run(self.git + ['fetch', '-q', 'origin', 'evil'], self.work)  # and even with its objects already here it is not reachable from main
+        self.assert_refused(self.update(), 'is not reachable from origin/main', before)
+
+    def test_an_older_target_never_moves_a_sentinel_that_is_on_the_head(self):
+        first, second = self.publish_two()
+        self.status('automatic', target=second)
+        self.assertEqual(self.update().returncode, 0)
+        deployed = self.head()
+        self.assertEqual(deployed, second[:12])
+        self.status('automatic', target=first)  # the server (or whoever answers as it) names an older commit
+        out = self.update()  # already on main's head: there is nothing to do, and certainly no move backwards
+        self.assertIn('up to date', out.stdout)
+        self.assertEqual(self.head(), deployed)
+        self.assertEqual(self.marker(), deployed)
+        self.assertEqual(self.calls().count('compose up -d sentinel-init sentinel'), 1)  # only the first update ever restarted anything
+
+    def test_a_downgrade_is_never_made_and_is_waiting_not_a_failure(self):
+        # FB-7: the server may pin an older commit than the Sentinel runs (a Sentinel that went ahead of its server): nothing moves, and the hourly run is not a failure
+        first, second = self.publish_two()
+        self.status('automatic', target=second)
+        self.assertEqual(self.update().returncode, 0)
+        self.publish()  # main moves on, so the deployed commit is no longer main's head and the early "up to date" exit does not apply
+        self.status('automatic', target=first)
+        out = self.update()
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertEqual(control.updater_info()['last_result'], 'waiting')
+        self.assertIn('older than the one this Sentinel runs', control.updater_info()['detail'])
+        self.assertEqual(self.head(), second[:12])
+        self.assertEqual(self.calls().count('compose up -d sentinel-init sentinel'), 1)  # only the first update ever restarted anything
+
+    def test_a_stale_marker_does_not_turn_an_older_target_into_a_failure(self):
+        # vmi2645654, Nov 20: the stack was brought up by hand on a newer checkout, so the marker still named an old commit while HEAD ran. The server named
+        # a commit older than HEAD but newer than the marker: the run must wait (nothing to update to) and correct the marker, not fail "no downgrade".
+        stale = run(['git', 'rev-parse', 'HEAD'], self.work).stdout.strip()
+        first, second = self.publish_two()
+        run(self.git + ['merge', '-q', '--ff-only', second], self.work) if run(self.git + ['fetch', '-q', 'origin', 'main'], self.work).returncode == 0 else None
+        self.assertEqual(self.head(), second[:12])
+        put(os.path.join(self.work, '.deployed-commit'), stale + '\n', 'w')
+        self.publish()  # main moves on, so HEAD is not main's head
+        control.write_status(second[:12], 0, {'setting': 'automatic', 'mode': 'manual', 'requested': True, 'target': first})  # the running Sentinel reports HEAD
+        self.env['SHIM_SETTING'] = 'automatic'
+        out = self.update()
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertEqual(control.updater_info()['last_result'], 'waiting')
+        self.assertIn('older than the one this Sentinel runs', control.updater_info()['detail'])
+        self.assertEqual(self.marker(), second[:12])
+        self.assertEqual(self.head(), second[:12])
+
+    def test_now_with_a_server_naming_an_older_commit_moves_to_the_head(self):
+        # vmi2645654, Nov 16: the server pins an older build than the Sentinel runs, so it names that as the target. A person's --now must still
+        # update (to the head of main) instead of refusing the downgrade and changing nothing.
+        first, second = self.publish_two()
+        self.status('automatic', target=second)
+        self.assertEqual(self.update().returncode, 0)
+        self.publish()
+        newest = self.origin_main()
+        self.status('automatic', target=first)
+        out = self.update('--now')
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertEqual(self.head(), newest[:12])
+        self.assertEqual(self.marker(), newest[:12])
+        self.assertEqual(self.calls().count('compose up -d sentinel-init sentinel'), 2)
+
+    def test_the_default_drain_outlasts_the_longest_task_budget(self):
+        # a deep nuclei scan may run its full hour: a 30-minute drain gave up on it and the update never happened
+        script = open(os.path.join(ROOT, 'scripts', 'update.sh')).read()
+        default = int(re.search(r'CVENGINE_SENTINEL_DRAIN_TIMEOUT:-(\d+)', script).group(1))
+        self.assertGreater(default, 3600)
+        self.assertLess(default, control.DRAIN_TTL)  # the drain flag must not expire while the updater still waits on it
+
+    def test_a_person_can_roll_back_only_with_the_explicit_flag(self):
+        first, second = self.publish_two()
+        self.status('automatic', target=second)
+        self.assertEqual(self.update().returncode, 0)
+        before = self.head()
+        self.publish()
+        out = self.update('--to', first)
+        self.assertNotEqual(out.returncode, 0)
+        self.assertEqual(self.head(), before)
+        out = self.update('--to', first, '--allow-non-descendant')
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertEqual(run(['git', 'rev-parse', 'HEAD'], self.work).stdout.strip(), first)
+        self.assertEqual(self.marker(), first[:12])
+
+    def test_the_flag_for_a_non_descendant_needs_a_person(self):
+        out = self.update('--allow-non-descendant')
+        self.assertEqual(out.returncode, 2, out.stdout + out.stderr)
+        self.assertEqual(self.calls(), '')
+
+    def test_a_person_with_no_target_moves_to_the_head_and_is_told_what_that_trusts(self):
+        self.publish()
+        self.status('off', target=None)
+        out = self.update('--now')
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertEqual(run(['git', 'rev-parse', 'HEAD'], self.work).stdout.strip(), self.origin_main())
+        self.assertIn('head of origin/main', out.stdout)
+        self.assertIn('trusted only as far as the repository is', out.stdout)
+
+    def test_a_person_naming_a_target_gets_exactly_that_commit(self):
+        first, second = self.publish_two()
+        self.status('manual', target=None)
+        out = self.update('--to', first[:12])
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertEqual(run(['git', 'rev-parse', 'HEAD'], self.work).stdout.strip(), first)
+
+    def test_head_is_verified_before_anything_is_built(self):
+        # A hook that moves HEAD after the merge stands for any way the checkout could end up elsewhere than the approved target.
+        self.publish()
+        before = self.head()
+        hook = os.path.join(self.work, '.git', 'hooks', 'post-merge')
+        put(hook, f'#!/bin/sh\ngit reset --hard --quiet {before}\n')
+        os.chmod(hook, 0o755)
+        self.status('automatic')
+        out = self.update()
+        self.assertNotEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertEqual(self.head(), before)
+        self.assertIn('HEAD is not the target', control.updater_info()['detail'])
+        for call in ('compose pull', 'compose build', 'client.control drain', 'compose up'):
+            self.assertNotIn(call, self.calls())
+        self.assertEqual(control.updater_info()['last_result'], 'failed')
+
+    def test_the_exit_supervisor_follows_the_same_target_rules(self):
+        with open(os.path.join(ROOT, 'scripts', 'pull-on-exit.sh')) as handle:
+            text = handle.read()
+        self.assertIn('. ./scripts/update-target.sh', text)
+        self.assertIn('check_update_target', text)
+        self.assertNotIn('git pull', text.replace('# ', '#'))  # no more "whatever origin/main is": it merges the named commit only
+        self.assertIn('git merge --ff-only', text)
+        self.assertIn('update-exit.json', text)  # where the daemon wrote the target it left for (client/selfupdate.py remember)
+
+    def test_the_docs_say_what_automatic_trusts(self):
+        with open(os.path.join(ROOT, 'README.md')) as handle:
+            readme = handle.read()
+        self.assertIn('What Automatic trusts', readme)
+        self.assertIn('are not signature-checked in 1.4.0', readme)
+        self.assertIn('CVENGINE_SENTINEL_UPDATE=manual', readme)
+
 
     def test_a_task_still_running_at_the_drain_deadline_is_waiting_not_a_failure(self):
         self.publish()
-        control.write_status('v0', 1, {'setting': 'automatic', 'mode': 'manual', 'requested': False})
+        control.write_status('v0', 1, {'setting': 'automatic', 'mode': 'manual', 'requested': False, 'target': self.origin_main()})
         out = self.update(CVENGINE_SENTINEL_DRAIN_TIMEOUT='1')
         self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
         self.assertIn('compose build', self.calls())  # the image is built and ready for the next run
@@ -352,7 +707,7 @@ class UpdateScriptTests(unittest.TestCase):
 
     def test_sigterm_while_draining_undrains_and_records_a_failure(self):
         self.publish()
-        control.write_status('v0', 1, {'setting': 'automatic', 'mode': 'manual', 'requested': False})
+        control.write_status('v0', 1, {'setting': 'automatic', 'mode': 'manual', 'requested': False, 'target': self.origin_main()})
         proc = subprocess.Popen(['sh', os.path.join(self.work, 'scripts', 'update.sh')], cwd=self.work, start_new_session=True,
                                 env={**self.env, 'CVENGINE_SENTINEL_DRAIN_TIMEOUT': '120'}, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         deadline = time.time() + 30

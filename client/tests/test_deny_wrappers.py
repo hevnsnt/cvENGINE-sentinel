@@ -126,6 +126,7 @@ def fixture(kind):
 PAGE_READ = {'reads': [{'id': '1', 'op': 'head', 'host': 'www.example.com', 'url': 'https://www.example.com/'}],
              'scope': {'hosts': ['www.example.com'], 'domains': [], 'excluded': [], 'excluded_trees': [], 'private': False, 'addresses': [], 'blocked': []}}
 TEMPLATE = fixture('nuclei_validate')['template']
+TEMPLATE_SHA = fixture('nuclei_validate')['template_sha256']
 SIGNED_TARGET = {'hosts': [{'host': 'www.example.com', 'urls': ['https://www.example.com/', 'https://www.example.com/account']}], 'scope': PAGE_READ['scope']}
 
 
@@ -171,7 +172,8 @@ CASES = {
     'rdp_shot': lambda: tools.RUNNERS['rdp_shot'](PUBLIC, 3389),
     'db_probe': lambda: tools.RUNNERS['db_probe'](PUBLIC, 6379, 'redis'),
     'path_probe': lambda: tools.RUNNERS['path_probe']([{'ip': PUBLIC, 'port': 81}], pause=0),
-    'nuclei_validate': lambda: tools.RUNNERS['nuclei_validate']('test', TEMPLATE, ['https://www.example.com/']),
+    'nuclei_validate': lambda: tools.RUNNERS['nuclei_validate']('test', TEMPLATE, ['https://www.example.com/'], template_sha256=TEMPLATE_SHA,
+                                                                 approved=(TEMPLATE_SHA, 'test', ['https://www.example.com/'])),  # an approved check (contract 4), so the address is what refuses it
     # the in-process probes take the whole target, scope policy included
     'http_probe': lambda: tools.RUNNERS['http_probe'](fixture('http_probe')),
     'dns_resolve': lambda: tools.RUNNERS['dns_resolve'](fixture('dns_resolve')),
@@ -188,6 +190,10 @@ CASES = {
     'page_read': lambda: tools.RUNNERS['page_read'](PAGE_READ),
     'web_screenshot': lambda: screenshot_connection(fixture('web_screenshot')),
     'ssh_probe': lambda: tools.RUNNERS['ssh_probe'](fixture('ssh_probe')),
+    'java_runtime': lambda: tools.RUNNERS['java_runtime'](fixture('java_runtime')),
+    'version_read': lambda: tools.RUNNERS['version_read'](fixture('version_read')),
+    'version_digest': lambda: tools.RUNNERS['version_digest'](fixture('version_digest')),
+    'version_rows': lambda: tools.RUNNERS['version_rows'](fixture('version_rows')),
     'secrets_scan': lambda: tools.RUNNERS['secrets_scan'](fixture('secrets_scan')),
 }
 # bbot is not a connection of this process: it is a program that connects by itself, held by the blacklist it is started with (BbotTests below).
@@ -267,7 +273,7 @@ class RefusedNotFailedTests(unittest.TestCase):
 
     def test_the_address_tools_raise_refused(self):
         for name, call in {'nmap': lambda: tools.run_nmap([PUBLIC]), 'naabu': lambda: tools.run_naabu(['www.example.com']),
-                           'nuclei': lambda: tools.run_nuclei(['https://www.example.com/']), 'nmap_full': lambda: tools.run_nmap_full(PUBLIC),
+                           'nmap_full': lambda: tools.run_nmap_full(PUBLIC),
                            'testssl': lambda: tools.run_testssl('www.example.com', PUBLIC, 443), 'waf': lambda: tools.run_waf('www.example.com', PUBLIC, 80, 'http'),
                            'wpscan': lambda: tools.run_wpscan('https://www.example.com/'), 'node2shell': lambda: tools.run_node2shell('https://www.example.com/'),
                            'db_probe': lambda: tools.run_db_probe(PUBLIC, 6379, 'redis'), 'rdp_shot': lambda: tools.run_rdp_shot(PUBLIC, 3389),
@@ -275,6 +281,23 @@ class RefusedNotFailedTests(unittest.TestCase):
             with self.subTest(tool=name):
                 with mock.patch.object(config, '_local_internal', return_value=True):
                     self.run_case(call, '93.184.215.0/24,10.0.0.0/24')
+
+    def test_a_nuclei_target_the_deny_list_refuses_is_named_with_the_refusal_and_never_contacted(self):
+        # contract 11: a refused nuclei target is left out of the run and named, so the task's other targets still run
+        rec = Recorder()
+        patches = recording(rec)
+        with mock.patch.dict(os.environ, {'CVENGINE_SENTINEL_DENY_RANGES': '93.184.215.0/24,10.0.0.0/24'}), \
+                mock.patch.object(config, '_local_internal', return_value=True):
+            for patcher in patches:
+                patcher.start()
+            try:
+                out = tools.run_nuclei(['https://www.example.com/'])
+            finally:
+                for patcher in reversed(patches):
+                    patcher.stop()
+        self.assertEqual(rec.contact, [])
+        self.assertEqual(out['unreachable'], ['https://www.example.com/'])
+        self.assertTrue(out['not_checked'][0]['reason'].startswith(tools.flags.NUCLEI_REFUSED_PREFIX + 'refused: '), out)
 
     def test_a_refused_task_is_reported_as_an_error_with_the_refusal_in_its_text(self):
         d = daemon.Daemon.__new__(daemon.Daemon)

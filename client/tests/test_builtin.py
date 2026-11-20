@@ -55,12 +55,12 @@ class ConfigTests(Env):
         with mock.patch('client.control.updater_info', return_value={'installed': False}):
             out = daemon.info()
         self.assertIs(out['builtin'], True)
-        self.assertEqual(out['features'], ['secret_read', 'vantage'])
+        self.assertEqual(out['features'], ['secret_read', 'vantage', 'credential_filter'])
 
-    def test_an_external_sentinel_advertises_bbot_keys_and_nothing_else(self):
+    def test_an_external_sentinel_advertises_bbot_keys_and_the_credential_filter_and_nothing_else(self):
         with mock.patch('client.control.updater_info', return_value={'installed': False}), mock.patch.object(config, 'builtin', return_value=False):
             out = daemon.info()
-        self.assertEqual(out['features'], ['bbot_keys'])
+        self.assertEqual(out['features'], ['bbot_keys', 'credential_filter'])
         self.assertNotIn('builtin', out)
         self.assertEqual(out['contract_version'], config.CONTRACT_VERSION)
 
@@ -243,7 +243,7 @@ class SignedInTests(Env):
         client.call.return_value = {'credential': {'headers': [['Authorization', 'Bearer s3cr3t-token']], 'cookie': 'sid=abcdef123'}}
         seen = {}
 
-        def runner(targets, tags=None, severities=None, register=None, templates=None, secret_file=None):
+        def runner(targets, tags=None, severities=None, register=None, templates=None, secret_file=None, timeout=None, services=None, budget=None):
             seen['path'] = secret_file
             seen['mode'] = stat.S_IMODE(os.stat(secret_file).st_mode)
             seen['dir_mode'] = stat.S_IMODE(os.stat(os.path.dirname(secret_file)).st_mode)
