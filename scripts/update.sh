@@ -69,6 +69,11 @@ ctl() { docker compose exec -T sentinel python3 -m client.control "$@"; }
 OWNER=$(stat -c %U . 2>/dev/null) || { say "cannot tell who owns $(pwd); refusing to run"; exit 1; }
 if [ "$(id -un)" != "$OWNER" ]; then
   if [ "$(id -u)" = 0 ] && command -v sudo >/dev/null 2>&1; then
+    # The option loop above shifted "$@" empty: the options are handed over as parsed, or a root `--now` would reach the owner's run as no option.
+    set --
+    [ "$CHECK" = 1 ] && set -- "$@" --check
+    if [ -n "$TO" ]; then set -- "$@" --to "$TO"; elif [ "$NOW" = 1 ]; then set -- "$@" --now; fi
+    [ "$ALLOW_MOVE" = 1 ] && set -- "$@" --allow-non-descendant
     exec sudo -u "$OWNER" -- env CVENGINE_SENTINEL_DRAIN_TIMEOUT="$DRAIN_TIMEOUT" CVENGINE_SENTINEL_BRANCH="$BRANCH" sh "$SELF" "$@"
   fi
   say "this checkout belongs to $OWNER; run the updater as $OWNER (or as root, which hands over to $OWNER), not as $(id -un)"

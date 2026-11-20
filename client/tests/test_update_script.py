@@ -264,6 +264,31 @@ class UpdateScriptTests(unittest.TestCase):
     FEED = 'registry.example/community/vulnerability-tests:community'
     PINNED = 'registry.example/community/gvmd:stable@sha256:' + 'a' * 64
 
+    def handover(self, *args):
+        """A run as root of a checkout another user owns: stand-in `id`, `stat` and `sudo` say so, and `sudo` records what it was asked to run."""
+        stubs = os.path.join(self.tmp, 'rootbin')
+        os.makedirs(stubs, exist_ok=True)
+        sudo_log = os.path.join(self.tmp, 'sudo.log')
+        put(os.path.join(stubs, 'id'), '#!/bin/sh\ncase "$1" in -un) echo root ;; -u) echo 0 ;; *) echo root ;; esac\n')
+        put(os.path.join(stubs, 'stat'), '#!/bin/sh\necho sentinel\n')
+        put(os.path.join(stubs, 'sudo'), f'#!/bin/sh\nprintf "%s|" "$@" > {sudo_log}\n')
+        for name in ('id', 'stat', 'sudo'):
+            os.chmod(os.path.join(stubs, name), 0o755)
+        env = {**self.env, 'PATH': f'{stubs}:{self.env["PATH"]}'}
+        out = run(['sh', os.path.join(self.work, 'scripts', 'update.sh'), *args], self.work, env)
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        with open(sudo_log) as handle:
+            return handle.read().rstrip('|').split('|')
+
+    def test_root_hands_over_to_the_owner_with_its_options(self):
+        # a person ran `scripts/update.sh --now` as root on the live Sentinel and the owner's run got no option: the loop had shifted "$@" empty
+        argv = self.handover('--now')
+        self.assertEqual(argv[:3], ['-u', 'sentinel', '--'])
+        self.assertEqual(argv[-1], '--now')
+        self.assertEqual(self.handover('--to', 'abc1234', '--allow-non-descendant')[-3:], ['--to', 'abc1234', '--allow-non-descendant'])
+        self.assertEqual(self.handover('--check')[-1], '--check')
+        self.assertTrue(self.handover()[-1].endswith('update.sh'))  # no option given, none handed over
+
     def test_an_update_pulls_nothing_when_every_image_is_here(self):
         # the OpenVAS feed data images follow moving tags and take tens of minutes to pull: an update never re-pulls one it has
         # (scripts/refresh-feeds.sh refreshes them daily), so a slow or broken registry cannot hold a code update back
