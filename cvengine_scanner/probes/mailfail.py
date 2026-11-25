@@ -3,7 +3,8 @@
 
 MailFail is a browser extension that reviews a domain's mail setup for spoofing and takeover risks. Like MailFail these checks only read DNS,
 ask public domain registries (RDAP, ``probes.rdap``) whether a referenced domain is registered, and fetch the domain's own MTA-STS policy over
-HTTPS (under the task's scope policy). Nothing sends mail or opens an SMTP connection.
+HTTPS (under the task's scope policy). One check goes further than MailFail: when the MX is Microsoft 365, ``probes.direct_send`` asks
+the tenant over SMTP whether it accepts Direct Send and stops before DATA, so no message is ever sent; an MX alone is never a finding.
 
 Evaluators are pure functions over fetched records, so every rule is unit tested; the findings keep the server's check names and wording.
 """
@@ -12,7 +13,7 @@ import concurrent.futures
 import logging
 import re
 
-from . import names, rdap, transport
+from . import direct_send, names, rdap, transport
 from .hygiene import HIGH, INFO, LOW, MEDIUM, Finding, _txt_value, dkim_key_bits, parse_tags
 
 logger = logging.getLogger(__name__)
@@ -218,16 +219,18 @@ def evaluate_bimi(domain, records):
     return findings
 
 
-def evaluate_mx(domain, mx_hosts):
-    hosts = [h.rstrip('.').lower() for h in mx_hosts]
-    m365 = [h for h in hosts if h.endswith(DIRECT_SEND_MX)]
-    if not m365:
+def evaluate_direct_send(domain, result):
+    """A finding only when the tenant was asked and accepted Direct Send (``direct_send.test``); a rejection or no clear answer is none."""
+    if not isinstance(result, dict) or result.get('outcome') != 'accepted':
         return []
-    return [_finding('mx_direct_send', MEDIUM, 'Microsoft 365 mail: check that Direct Send is turned off',
-                     'Mail is delivered by Microsoft 365. While Direct Send is allowed, anyone on the internet can send mail to '
-                     "this domain's users that looks like it came from inside the organization. Turn it off with "
-                     'Set-OrganizationConfig -RejectDirectSend $true (Exchange Online). CVEngine reads this from DNS only and '
-                     'never sends mail to test it.', domain, {'mx': m365}, reference=DIRECT_SEND_REFERENCE)]
+    mx, rcpt, reply = result.get('mx', ''), result.get('rcpt', ''), result.get('reply', '')
+    return [_finding('mx_direct_send', MEDIUM, 'Microsoft 365 accepts Direct Send: anyone can send mail as this domain to its users',
+                     f'cvENGINE connected to {mx} from the internet without signing in, offered mail from {result.get("mail_from", "")} to '
+                     f'{rcpt or "a user of this domain"}, and Microsoft 365 accepted it ({reply}). It stopped there, so no message was sent. '
+                     'Anyone can do the same and deliver mail that looks like it came from inside the organization. Move printers and apps '
+                     'that send this way to a partner connector, then turn Direct Send off with Set-OrganizationConfig -RejectDirectSend $true.',
+                     domain, {'tested': True, 'mx': mx, 'mail_from': result.get('mail_from', ''), 'rcpt': rcpt, 'reply': reply,
+                              'transcript': list(result.get('transcript') or [])[:12]}, reference=DIRECT_SEND_REFERENCE)]
 
 
 def evaluate_mailchannels(domain, records):
@@ -440,11 +443,13 @@ def fetch_mta_sts_policy(domain, policy):
         conn.close()
 
 
-def review(domain, has_mx, spf_txt, dmarc_txt, dkim_found, fetch, records, http=False, scope=None, rdap_on=True, rdap_get=None):
+def review(domain, has_mx, spf_txt, dmarc_txt, dkim_found, fetch, records, http=False, scope=None, rdap_on=True, rdap_get=None,
+           direct_test=None):
     """Every MailFail check for one mail domain. ``fetch`` reads TXT records and ``records`` (name, type) any other type, as
     text; ``http`` allows the two outbound kinds of request (RDAP and the MTA-STS policy), off when DNS is injected. ``scope`` is the task's
     ``ScopePolicy``: the MTA-STS policy is fetched only when it lets ``mta-sts.<domain>`` be asked (else that check is not made, never read as a
-    missing policy), and an RDAP query connects only to a public address. ``rdap_on`` is the server's CVENGINE_HYGIENE_RDAP setting."""
+    missing policy), and an RDAP query connects only to a public address. ``rdap_on`` is the server's CVENGINE_HYGIENE_RDAP setting.
+    ``direct_test(domain, mx_host, scope)`` replaces the SMTP Direct Send test (tests)."""
     findings = evaluate_spf(domain, spf_txt) + evaluate_dmarc(domain, dmarc_txt) + evaluate_dkim(domain, dkim_found)
 
     def safe(label, fn):
@@ -469,7 +474,9 @@ def review(domain, has_mx, spf_txt, dmarc_txt, dkim_found, fetch, records, http=
     findings += safe('mta-sts', lambda: evaluate_mta_sts(
         domain, txt['sts'], fetch_mta_sts_policy(domain, scope) if (sts_asked and txt['sts']) else None, has_mx, policy_checked=sts_asked))
     mx_hosts = [r.split()[-1] for r in records(domain, 'MX') if r.split()]
-    findings += safe('mx', lambda: evaluate_mx(domain, mx_hosts))
+    m365 = direct_send.m365_hosts(mx_hosts)
+    if m365 and http and scope is not None:  # a live test only on real DNS, under the task's policy
+        findings += safe('direct-send', lambda: evaluate_direct_send(domain, (direct_test or direct_send.test)(domain, m365[0], scope)))
     findings += safe('dane', lambda: evaluate_dane(domain, {
         mx.rstrip('.'): records(f'_25._tcp.{mx.rstrip(".")}', 'TLSA') for mx in mx_hosts[:MAX_DANE_MX] if mx.rstrip('.')}))
     findings += safe('dnssec', lambda: evaluate_dnssec(domain, records(domain, 'DNSKEY')))

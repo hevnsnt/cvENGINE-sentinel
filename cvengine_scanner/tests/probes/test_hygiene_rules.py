@@ -131,7 +131,7 @@ class DkimCaaTests(TestCase):
 
 class RecordRuleTests(SimpleTestCase):
     def test_every_finding_credits_mailfail(self):
-        finding = mf.evaluate_mx('acme.example', ['acme-example.mail.protection.outlook.com.'])[0]
+        finding = mf.evaluate_mailchannels('acme.example', ['v=mc1 cfid=acme.example.workers.dev'])[0]
         self.assertIn('Black Hills Information Security', finding.evidence['credit'])
         self.assertIn('github.com/ACK-J/MailFail', finding.evidence['credit'])
 
@@ -182,12 +182,24 @@ class RecordRuleTests(SimpleTestCase):
                          {'mailchannels_shared_relay'})
         self.assertEqual(mf.evaluate_mailchannels('acme.example', ['v=mc1 auth=myaccountid']), [])
 
-    def test_microsoft_direct_send_is_read_from_mx_only(self):
-        finding = mf.evaluate_mx('acme.example', ['acme-example.mail.protection.outlook.com.'])[0]
+    def test_direct_send_is_a_finding_only_when_the_tenant_accepted_it(self):
+        accepted = {'outcome': 'accepted', 'mx': 'acme-example.mail.protection.outlook.com', 'mail_from': 'cvengine-direct-send-test@acme.example',
+                    'rcpt': 'postmaster@acme.example', 'reply': '250 2.1.5 Recipient OK', 'transcript': ['220 ready']}
+        finding = mf.evaluate_direct_send('acme.example', accepted)[0]
         self.assertEqual((finding.check, finding.severity), ('mx_direct_send', hy.MEDIUM))
         self.assertIn('RejectDirectSend', finding.detail)
+        self.assertIn('no message was sent', finding.detail)
+        self.assertIs(finding.evidence['tested'], True)
+        self.assertEqual(finding.evidence['reply'], '250 2.1.5 Recipient OK')
         self.assertEqual(finding.evidence['reference'], mf.DIRECT_SEND_REFERENCE)
-        self.assertEqual(mf.evaluate_mx('acme.example', ['mx1.example.com.']), [])
+        for outcome in ('rejected', 'inconclusive', '', None):
+            self.assertEqual(mf.evaluate_direct_send('acme.example', {**accepted, 'outcome': outcome}), [])
+        self.assertEqual(mf.evaluate_direct_send('acme.example', None), [])
+
+    def test_an_mx_at_microsoft_alone_is_never_a_finding(self):
+        self.assertFalse(hasattr(mf, 'evaluate_mx'))
+        from cvengine_scanner.probes import supplier_mailfail as smf
+        self.assertEqual(smf.evaluate_mx('acme.example', ['acme-example.mail.protection.outlook.com.']), [])
 
     def test_mta_sts(self):
         self.assertEqual(checks(mf.evaluate_mta_sts('acme.example', [], None, has_mx=True)), {'mta_sts_missing'})
@@ -259,7 +271,8 @@ class EmailReviewTests(SimpleTestCase):
                     ('_25._tcp.acme-example.mail.protection.outlook.com', 'TLSA'): ['1 1 1 ab12'],
                     ('acme.example', 'DNSKEY'): [dnskey(5)]}.get((name, rtype), [])
         findings, _ = hy.email_findings('acme.example', fetch=lambda n: [], mx=lambda n, t: t == 'MX', records=records)
-        self.assertTrue({'mx_direct_send', 'dane_misconfigured', 'dnssec_weak_algorithm'} <= checks(findings))
+        self.assertTrue({'dane_misconfigured', 'dnssec_weak_algorithm'} <= checks(findings))
+        self.assertNotIn('mx_direct_send', checks(findings))  # injected DNS: the SMTP test never runs, and an MX alone is nothing
 
     def test_a_failing_mailfail_check_never_breaks_the_review(self):
         with mock.patch('cvengine_scanner.probes.mailfail.evaluate_bimi', side_effect=RuntimeError('boom')):
