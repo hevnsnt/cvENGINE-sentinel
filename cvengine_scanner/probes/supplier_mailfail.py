@@ -234,15 +234,9 @@ def evaluate_bimi(domain, records):
 
 
 def evaluate_mx(domain, mx_hosts):
-    hosts = [h.rstrip('.').lower() for h in mx_hosts]
-    m365 = [h for h in hosts if h.endswith(DIRECT_SEND_MX)]
-    if not m365:
-        return []
-    return [_finding('mx_direct_send', MEDIUM, 'Microsoft 365 mail: check that Direct Send is turned off',
-                     'Mail is delivered by Microsoft 365. While Direct Send is allowed, anyone on the internet can send mail to '
-                     "this domain's users that looks like it came from inside the organization. Turn it off with "
-                     'Set-OrganizationConfig -RejectDirectSend $true (Exchange Online). CVEngine reads this from DNS only and '
-                     'never sends mail to test it.', domain, {'mx': m365}, reference=DIRECT_SEND_REFERENCE)]
+    """Nothing: whether Direct Send is open can only be known by asking the tenant over SMTP, and a supplier is never tested, so an MX that
+    points at Microsoft 365 is not a finding."""
+    return []
 
 
 def evaluate_mailchannels(domain, records):
