@@ -558,6 +558,15 @@ def redact(text, secrets):
 
 # --- running bbot ------------------------------------------------------------------------------------------------------------------------
 
+def is_deep(target):
+    """Whether ``target`` is a deep discovery (mode ``deep`` or the kitchen-sink preset). One such run peaks near the whole 2 GB a Sentinel container is
+    given, and three started together were killed by the kernel (-9), so the daemon runs them one at a time (``Daemon._deep_bbot``)."""
+    if not isinstance(target, dict):
+        return False
+    presets = target.get('presets')
+    return target.get('mode') == 'deep' or (isinstance(presets, (list, tuple)) and 'kitchen-sink' in presets)
+
+
 def build_command(target, out_dir, blacklist_file, keys_file=None, keys=None):
     """The bbot command line for ``target`` (``$defs/targets/bbot_discovery``): what the server's own local run of the same mode runs. Every value is
     checked against the contract's enums and patterns: nothing from the task reaches the command line as free text but the target's domain, which

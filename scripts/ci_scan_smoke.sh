@@ -112,7 +112,7 @@ run sshamble 60 sshamble scan --help
 [ "$RC" = 0 ] || fail "sshamble exited $RC"
 run bbot 600 python3 /opt/sentinel/scripts/ci_bbot_start.py
 [ "$RC" = 0 ] || fail "the bbot start check exited $RC"
-run bbot-deep 120 python3 /opt/sentinel/scripts/ci_bbot_deep_start.py  # a real scan of example.com for ten seconds, as the existing CI step runs it
+run bbot-deep 180 python3 /opt/sentinel/scripts/ci_bbot_deep_start.py  # three real scans of example.com, ten seconds each, one after another (deep runs one at a time)
 [ "$RC" = 0 ] || fail "the deep bbot start check exited $RC"
 run control 30 python3 -m client.control status
 [ "$RC" = 0 ] || fail "client.control status exited $RC"
