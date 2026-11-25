@@ -13,6 +13,32 @@ ARG BLASTDNS_VERSION=2.0.4
 ARG BLASTHTTP_VERSION=0.10.1
 ARG BADDNS_VERSION=2.5.0
 ARG BADSECRETS_VERSION=1.3.0
+# The Go tools (nuclei, naabu, sshamble, and gowitness and trajan for bbot's modules of those names) are built from their release source in the gotools
+# stage below, with the checksum-verified Go toolchain pinned here, and only the binaries reach the image. Each source tarball is pinned by sha256.
+ARG GOVERSION=1.27.4
+ARG GO_SHA256_AMD64=7226736c2339719cda28fbf3a54d71aa63bcefe376e98cef00034268dab24840
+ARG GO_SHA256_ARM64=3392582988a273a87ab5043ee1b2c9c17a2c3c00580bf9326c47a2e0aaaeac92
+ARG NUCLEI_VERSION=3.11.1
+ARG NUCLEI_SRC_SHA256=64c6e21eb8cd141d39cbb0241228fb40fd4370dbe39dc9f13e1069c718b711f9
+ARG NAABU_VERSION=2.7.0
+ARG NAABU_SRC_SHA256=6eee1b4b4c9b4b5eb19f175c2ac67e04babc6290f937b9c72fca0b1183e3fe47
+# sshamble (BSD-2-Clause, runZero; run as a separate program) reads an SSH service's own handshake for the ssh_probe kind: the banner, host keys,
+# algorithms, offered authentication methods and the badkeys blocklist check. The library's cvengine_scanner/probes/ssh_probe.py SSHAMBLE_VERSION is
+# the same pin (a test holds them together). Only the host key check is ever run.
+ARG SSHAMBLE_VERSION=0.5.1
+ARG SSHAMBLE_SRC_SHA256=7a007d561e5b5d211bf738c2a290fe873c5af5038abb5e81cf123541263d50a8
+# bbot's gowitness module takes the screenshots of a web-screenshots or kitchen-sink task (client/bbot.py reads them), and its trajan module looks for CI/CD
+# misconfigurations under kitchen-sink. bbot would download older release binaries of both (gowitness 3.1.1 and trajan 1.0.0, built with Go 1.25 and
+# carrying critical and high advisories), so the image builds the current releases itself and puts them where bbot looks (~/.bbot/tools) before bbot
+# installs its module dependencies: bbot keeps a gowitness that is already there, and trajan is left out of that install (see the kitchen-sink step).
+ARG GOWITNESS_VERSION=3.2.2
+ARG GOWITNESS_SRC_SHA256=8c63b547bcafcae2b93246a598fb06124d8794cb8d5d3719c5cfc791a78ad3d2
+ARG TRAJAN_VERSION=1.0.2
+ARG TRAJAN_SRC_SHA256=d2fd0fc58bc9a73c5854014582d53f3cf7711086aef45b7c69058f52f6d402c7
+# The lowest version of each listed Go module a tool may be built with: a release that still requires an older one (each of these had a high or critical
+# advisory fixed at or below the floor when it was set) is raised to the floor before it is built; a tool that does not use the module is left alone.
+# Raise a floor when an advisory names a newer fixed version; drop it once every tool's own go.mod is above it.
+ARG GO_DEPENDENCY_FLOOR="golang.org/x/net@v0.63.0 golang.org/x/crypto@v0.59.0 golang.org/x/text@v0.44.0 golang.org/x/mod@v0.43.0 google.golang.org/grpc@v1.83.2 github.com/getkin/kin-openapi@v0.149.0 github.com/go-git/go-git/v5@v5.19.3 github.com/go-jose/go-jose/v4@v4.1.9 github.com/jackc/pgx/v5@v5.13.0"
 # bbot's own virtual environment is built in a stage of its own: one of its dependencies (yara-python) compiles from source on this Python, and
 # the compiler and the headers it needs stay in this stage. The final image copies the finished venv to the same path, on the same base image.
 FROM ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db AS bbot-builder
@@ -32,6 +58,46 @@ RUN python3 -m venv /opt/bbot-venv && \
     /opt/bbot-venv/bin/pip install --no-cache-dir bbot==${BBOT_VERSION} tzdata==${TZDATA_VERSION} blastdns==${BLASTDNS_VERSION} blasthttp==${BLASTHTTP_VERSION} baddns==${BADDNS_VERSION} badsecrets==${BADSECRETS_VERSION} && \
     /opt/bbot-venv/bin/bbot --version
 
+# The Go tools, built in a stage that is thrown away: the Go toolchain, its module and build caches and the C compiler stay here, and only the binaries
+# (and the licences that ship with them) are copied into the image. nuclei and naabu are built with cgo as their releases are (same base image, so the
+# same glibc); the others are static. docker/gotools/build.sh checks each source tarball and raises the dependencies under GO_DEPENDENCY_FLOOR.
+FROM ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db AS gotools
+ARG GOVERSION
+ARG GO_SHA256_AMD64
+ARG GO_SHA256_ARM64
+ARG NUCLEI_VERSION
+ARG NUCLEI_SRC_SHA256
+ARG NAABU_VERSION
+ARG NAABU_SRC_SHA256
+ARG SSHAMBLE_VERSION
+ARG SSHAMBLE_SRC_SHA256
+ARG GOWITNESS_VERSION
+ARG GOWITNESS_SRC_SHA256
+ARG TRAJAN_VERSION
+ARG TRAJAN_SRC_SHA256
+ARG GO_DEPENDENCY_FLOOR
+ENV DEBIAN_FRONTEND="noninteractive" GOTOOLCHAIN=local GOFLAGS=-mod=mod GOROOT=/usr/local/go GOPATH=/root/go PATH="/usr/local/go/bin:${PATH}"
+RUN apt-get update -y && \
+    apt-get install -y --no-install-recommends build-essential ca-certificates curl && \
+    rm -rf /var/lib/apt/lists/*
+RUN ARCH=$(dpkg --print-architecture) \
+    && if [ "${ARCH}" = "arm64" ]; then GO_SHA="${GO_SHA256_ARM64}"; else GO_SHA="${GO_SHA256_AMD64}"; fi \
+    && curl -fsSLo /tmp/go.tgz "https://go.dev/dl/go${GOVERSION}.linux-${ARCH}.tar.gz" \
+    && echo "${GO_SHA}  /tmp/go.tgz" | sha256sum -c - \
+    && tar -xzC /usr/local -f /tmp/go.tgz \
+    && rm /tmp/go.tgz \
+    && go version
+COPY docker/gotools/build.sh /usr/local/bin/build-go-tool
+RUN set -e; mkdir -p /out; GH=https://github.com; \
+    build-go-tool nuclei "${GH}/projectdiscovery/nuclei/archive/refs/tags/v${NUCLEI_VERSION}.tar.gz" "${NUCLEI_SRC_SHA256}" ./cmd/nuclei 1; \
+    build-go-tool naabu "${GH}/projectdiscovery/naabu/archive/refs/tags/v${NAABU_VERSION}.tar.gz" "${NAABU_SRC_SHA256}" ./cmd/naabu 1; \
+    build-go-tool sshamble "${GH}/runZeroInc/sshamble/archive/refs/tags/v${SSHAMBLE_VERSION}.tar.gz" "${SSHAMBLE_SRC_SHA256}" . 0; \
+    build-go-tool gowitness "${GH}/sensepost/gowitness/archive/refs/tags/${GOWITNESS_VERSION}.tar.gz" "${GOWITNESS_SRC_SHA256}" . 0 \
+        "-X=github.com/sensepost/gowitness/internal/version.GitHash=${GOWITNESS_VERSION} -X=github.com/sensepost/gowitness/internal/version.GoBuildEnv=go${GOVERSION}"; \
+    build-go-tool trajan "${GH}/praetorian-inc/trajan/archive/refs/tags/v${TRAJAN_VERSION}.tar.gz" "${TRAJAN_SRC_SHA256}" ./cmd/trajan 0 \
+        "-X=main.Version=${TRAJAN_VERSION}"; \
+    ls -l /out
+
 # The Python packages that ship no wheel for this image's Python on every architecture (arc4, a C extension, everywhere; aardwolf, a Rust
 # extension, on arm64) are built here, in a stage that is thrown away: the same toolchain the server repository's web/Dockerfile builds them with
 # (build-essential, python3-dev, rustc, cargo), on the same base image, so the wheels match the image's Python. Only the wheels are copied into the
@@ -48,12 +114,7 @@ RUN /opt/wheelvenv/bin/pip install --no-cache-dir pip==26.3 setuptools==84.2.1 w
 
 FROM ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db
 
-ARG GOVERSION=1.27.4
-ARG GO_SHA256_AMD64=7226736c2339719cda28fbf3a54d71aa63bcefe376e98cef00034268dab24840
-ARG GO_SHA256_ARM64=3392582988a273a87ab5043ee1b2c9c17a2c3c00580bf9326c47a2e0aaaeac92
 ARG NMAPVERSION=7.993
-ARG NUCLEI_VERSION=3.11.1
-ARG NAABU_VERSION=2.7.0
 # nmap: amd64 installs the project's own x86_64 release RPM (its libraries are linked in statically), arm64 builds the
 # source tarball, because nmap.org publishes no arm64 binary. Both checksums are published beside the files at
 # nmap.org/dist/sigs/ (identical to the server repository's web/Dockerfile pins).
@@ -77,12 +138,6 @@ ARG TESTSSL_SHA256=23bb53d50ae093b89631e9fff547c087f632bf35f7a3d7dc78dd4ffff56cd
 ARG KINGFISHER_VERSION=2.19.1
 ARG KINGFISHER_SHA256_AMD64=3449ba41007df91e6774a816dd64cc9385900a304ef3cbb58ab61e0a83448e1c
 ARG KINGFISHER_SHA256_ARM64=273744b70304704e46fb980cbe37fc9a94a96f62d65aaf07af1f21ea94b4b09f
-# sshamble (BSD-2-Clause, runZero; run as a separate program) reads an SSH service's own handshake for the ssh_probe kind: the banner, host keys,
-# algorithms, offered authentication methods and the badkeys blocklist check. Release tarball per architecture, pinned by sha256. The library's
-# cvengine_scanner/probes/ssh_probe.py SSHAMBLE_VERSION is the same pin (a test holds them together). Only the host key check is ever run.
-ARG SSHAMBLE_VERSION=0.5.1
-ARG SSHAMBLE_SHA256_AMD64=38ba26a606ca51c3a974b91dd599717c3e21ac6720dc9bc4f4598d014793410e
-ARG SSHAMBLE_SHA256_ARM64=2335aceee86e860524fdd42decf02b6db12b18ce2f3e4a5be923902bb14d809a
 ARG NUCLEI_TEMPLATES_VERSION=v10.5.2
 ARG NUCLEI_TEMPLATES_SHA256=016b7abbf931d4d1a851a5a568e44510dc61691dc8a5202e3b24e701515ec574
 
@@ -141,22 +196,11 @@ RUN set -e; cd /tmp \
 ENV NMAPDIR=/usr/local/share/nmap
 RUN test -s "$NMAPDIR/nmap-service-probes"
 
-# nuclei and naabu, built with a checksum-verified Go toolchain that is removed again in the same layer, with Go's module and build caches
-# (GOPATH is /root/go): nothing at runtime runs go, only the two binaries, installed into /usr/local/bin where the unprivileged user can run them.
-ENV GO111MODULE=on
-RUN export GOROOT=/usr/local/go GOPATH=/root/go PATH="/usr/local/go/bin:${PATH}" \
-    && ARCH=$(dpkg --print-architecture) \
-    && if [ "${ARCH}" = "arm64" ]; then GO_SHA="${GO_SHA256_ARM64}"; else GO_SHA="${GO_SHA256_AMD64}"; fi \
-    && curl -fsSLo /tmp/go.tgz https://go.dev/dl/go${GOVERSION}.linux-${ARCH}.tar.gz \
-    && echo "${GO_SHA}  /tmp/go.tgz" | sha256sum -c - \
-    && tar -xzC /usr/local -f /tmp/go.tgz \
-    && rm /tmp/go.tgz \
-    && printf "\
-    github.com/projectdiscovery/nuclei/v3/cmd/nuclei@v${NUCLEI_VERSION}\n\
-    github.com/projectdiscovery/naabu/v2/cmd/naabu@v${NAABU_VERSION}\n" | \
-    GOBIN=/usr/local/bin xargs -L1 go install -ldflags="-s -w" -v \
-    && go clean -cache -modcache \
-    && rm -rf "${GOROOT}" "${GOPATH}/pkg" /root/.cache/go-build
+# nuclei and naabu, built in the gotools stage above; nothing at runtime runs go, only the binaries, in /usr/local/bin where the unprivileged user can run them.
+ARG NUCLEI_VERSION
+ARG NAABU_VERSION
+COPY --from=gotools /out/nuclei /out/naabu /usr/local/bin/
+RUN nuclei -version 2>&1 | grep -F "v${NUCLEI_VERSION}" && naabu -version 2>&1 | grep -F "${NAABU_VERSION}"
 
 # The templates: a pinned release, checksum verified, in the run-time user's home where nuclei looks by default. They are not refreshed at start
 # (docker-entrypoint.sh); a newer set arrives with a rebuilt image and a regenerated template index. Only a file the index records with its sha256 runs.
@@ -213,21 +257,15 @@ RUN ARCH=$(dpkg --print-architecture) \
     && rm -rf /tmp/kingfisher /tmp/kingfisher.tgz \
     && kingfisher --version | grep -q "${KINGFISHER_VERSION}"
 
-# sshamble: the checksum-verified release tarball; its licence is kept with the binary. The client runs only "sshamble scan" with the one fixed
+# sshamble: built from its release source in the gotools stage; its licence is kept with the binary. The client runs only "sshamble scan" with the one fixed
 # --checks badkeys-blocklist (cvengine_scanner/probes/ssh_probe.py check_argv refuses any other command line). The binary has no version flag, so
 # the build check is that the scan command runs and knows the check. The badkeys blocklist data is not baked in (a rolling download): the daemon
 # refreshes it itself with "sshamble badkeys-update" (client/badkeys.py) into /var/lib/cvengine-sentinel/badkeys, a directory the unprivileged user
 # owns (made above; docker-compose.yml mounts a named volume there so the data survives restarts). The client reports "not checked" while it is absent
 # or when CVENGINE_BADKEYS_REFRESH=0 (air-gapped Sentinels).
-RUN ARCH=$(dpkg --print-architecture) \
-    && if [ "${ARCH}" = "arm64" ]; then SSH_SHA="${SSHAMBLE_SHA256_ARM64}"; else SSH_SHA="${SSHAMBLE_SHA256_AMD64}"; fi \
-    && curl -fsSLo /tmp/sshamble.tgz "https://github.com/runZeroInc/sshamble/releases/download/v${SSHAMBLE_VERSION}/sshamble-v${SSHAMBLE_VERSION}-linux-${ARCH}.tar.gz" \
-    && echo "${SSH_SHA}  /tmp/sshamble.tgz" | sha256sum -c - \
-    && mkdir -p /tmp/sshamble-src && tar -xzf /tmp/sshamble.tgz -C /tmp/sshamble-src \
-    && install -m 0755 /tmp/sshamble-src/sshamble/sshamble /usr/local/bin/sshamble \
-    && mkdir -p /usr/share/doc/sshamble && cp /tmp/sshamble-src/sshamble/LICENSE.md /usr/share/doc/sshamble/LICENSE.md \
-    && rm -rf /tmp/sshamble-src /tmp/sshamble.tgz \
-    && sshamble scan --help 2>&1 | grep -q -- '--checks'
+COPY --from=gotools /out/sshamble /usr/local/bin/sshamble
+COPY --from=gotools /out/doc/sshamble/LICENSE.md /usr/share/doc/sshamble/LICENSE.md
+RUN sshamble scan --help 2>&1 | grep -q -- '--checks'
 
 WORKDIR /opt/sentinel
 
@@ -269,6 +307,15 @@ ARG BBOT_VERSION
 # The venv comes finished from the bbot-builder stage above (no compiler or headers in this image for it).
 COPY --from=bbot-builder /opt/bbot-venv /opt/bbot-venv
 RUN ln -s /opt/bbot-venv/bin/bbot /usr/local/bin/bbot && bbot --version | grep -F "${BBOT_VERSION}"
+# gowitness and trajan for bbot's modules of those names, built in the gotools stage (see GOWITNESS_VERSION above), put where bbot looks for them before
+# bbot installs its module dependencies below: bbot downloads gowitness only when the file is absent, and trajan is left out of that install.
+ARG GOWITNESS_VERSION
+ARG TRAJAN_VERSION
+COPY --from=gotools --chown=sentinel:sentinel /out/gowitness /out/trajan /home/sentinel/.bbot/tools/
+COPY --from=gotools /out/doc/gowitness /usr/share/doc/gowitness
+COPY --from=gotools /out/doc/trajan /usr/share/doc/trajan
+RUN /home/sentinel/.bbot/tools/gowitness version 2>&1 | grep -F "${GOWITNESS_VERSION}" && \
+    /home/sentinel/.bbot/tools/trajan version 2>&1 | grep -F "${TRAJAN_VERSION}"
 # Fail the build when this bbot no longer reads API keys the way client/bbot.py hands them over (a preset file listed after the named presets) or
 # no longer loads gowitness. It runs no scan, but bbot installs the dependencies of the modules it loads before the dry run stops, so this is also
 # what bakes gowitness and its browser into the image instead of fetching them in a running Sentinel. It runs as root (bbot installs system
@@ -288,9 +335,14 @@ RUN printf '{"config": {"modules": {"shodan_dns": {"api_key": "build-check"}}}}\
 # matches in a container (each has its own hostname), and every start would try to install again, which needs root this image does not have (no sudo,
 # no root login: "PermissionError: Permission denied: 'sudo'", found first in dnscommonsrv, whose massdns dependency is installed here). So
 # client/bbot.py starts bbot with --no-deps, and this image has to carry what the modules need: the check below runs bbot the way the client does.
-RUN HOME=/home/sentinel bbot -t example.com -p kitchen-sink --force --dry-run -y --no-color > /tmp/bbot-deps.txt 2>&1; \
+# trajan and jadx are left out of this install: trajan is the build above (bbot would unpack its own older release over it), and jadx never runs here
+# (client/bbot.py holds it out: it needs a Java runtime the image does not carry). The last line proves bbot kept the builds above and installed no jadx.
+RUN HOME=/home/sentinel bbot -t example.com -p kitchen-sink -em trajan jadx --force --dry-run -y --no-color > /tmp/bbot-deps.txt 2>&1; \
     status=$?; tail -n 20 /tmp/bbot-deps.txt; [ "$status" = 0 ] && rm -f /tmp/bbot-deps.txt && rm -rf /var/lib/apt/lists/* /root/.cache && \
-    chown -R sentinel:sentinel /home/sentinel
+    chown -R sentinel:sentinel /home/sentinel && \
+    /home/sentinel/.bbot/tools/gowitness version 2>&1 | grep -F "${GOWITNESS_VERSION}" && \
+    /home/sentinel/.bbot/tools/trajan version 2>&1 | grep -F "${TRAJAN_VERSION}" && \
+    test ! -e /home/sentinel/.bbot/tools/jadx
 # bbot installs git as one of its core dependencies during the checks above, and the image must not carry git. bbot records in its cache
 # (~/.bbot/cache) that its core dependencies were installed and does not look again, so git goes once that is written: then a start as the run-time
 # user, as the client makes it (--no-deps), must neither try to install anything nor fail. The client's own command is checked the same way

@@ -212,8 +212,7 @@ class ArgvTests(unittest.TestCase):
     def test_the_dockerfile_pins_the_same_version(self):
         text = (REPO / 'Dockerfile').read_text(encoding='utf-8')
         self.assertEqual(re.search(r'^ARG SSHAMBLE_VERSION=(\S+)$', text, re.M).group(1), ssh_probe.SSHAMBLE_VERSION)
-        for arch in ('AMD64', 'ARM64'):
-            self.assertRegex(text, rf'(?m)^ARG SSHAMBLE_SHA256_{arch}=[0-9a-f]{{64}}$')
+        self.assertRegex(text, r'(?m)^ARG SSHAMBLE_SRC_SHA256=[0-9a-f]{64}$')  # built from its release source, checksum verified
 
 
 class FixtureTests(unittest.TestCase):

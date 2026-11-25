@@ -137,7 +137,7 @@ services:
       - NET_RAW
       - SYS_CHROOT
     # The root filesystem stays writable in 1.4.0 (read_only: true was tried and does not work yet): bbot's discovery (kitchen-sink, the deep discovery the
-    # server can ask for) creates a working directory inside ~/.bbot/tools, which holds the 907 MB of tools (gowitness, trufflehog, Chromium, jadx) installed
+    # server can ask for) creates a working directory inside ~/.bbot/tools, which holds the 907 MB of tools (gowitness, trajan, trufflehog, Chromium) installed
     # at build, and dies at once when the directory is read-only (CI: image.yml, "Why the root filesystem is not read-only"). A memory-backed directory over
     # it would hide those tools, and a volume would keep a stale copy across updates. Everything else the scans write (~/.config, ~/.cache, ~/.bbot/cache,
     # ~/.bbot/logs, ~/.bbot/temp, /tmp) works read-only; moving the baked tools out of the home directory is the work that remains.

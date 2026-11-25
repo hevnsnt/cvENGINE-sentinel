@@ -36,6 +36,8 @@ ARG BADDNS_VERSION=2.5.0
 ARG BADSECRETS_VERSION=1.3.0
 ARG KINGFISHER_VERSION=2.16.0
 ARG SSHAMBLE_VERSION=0.5.1
+ARG GOWITNESS_VERSION=3.2.2
+ARG TRAJAN_VERSION=1.0.2
 ARG NUCLEI_TEMPLATES_VERSION=v10.5.2
 ARG PLAYWRIGHT_CHROMIUM_VERSION=158.0.8127.18
 ARG KINGFISHER_SHA256_AMD64=%s
@@ -67,6 +69,8 @@ def answers(**override):
         'https://api.github.com/repos/testssl/testssl.sh/tags?per_page=30': [{'name': '3.3dev'}, {'name': 'v3.2.5'}, {'name': 'v3.2.4'}],
         'https://api.github.com/repos/mongodb/kingfisher/releases/latest': {'tag_name': 'v2.16.0'},
         'https://api.github.com/repos/runZeroInc/sshamble/releases/latest': {'tag_name': 'v0.5.1'},
+        'https://api.github.com/repos/sensepost/gowitness/releases/latest': {'tag_name': '3.2.2'},
+        'https://api.github.com/repos/praetorian-inc/trajan/releases/latest': {'tag_name': 'v1.0.2'},
         'https://api.github.com/repos/projectdiscovery/nuclei-templates/releases/latest': {'tag_name': 'v10.5.2'},
         'https://versionhistory.googleapis.com/v1/chrome/platforms/linux/channels/stable/versions': {'versions': [{'version': '158.0.8127.18'}]},
         'https://hub.docker.com/v2/repositories/library/ubuntu/tags/26.04': {'digest': OLD_DIGEST},
