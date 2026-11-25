@@ -19,7 +19,7 @@ CAPABILITIES = ['nmap', 'naabu', 'nuclei_light', 'nuclei_targeted', 'nuclei_deep
                 'version_read',  # contract 7: the GETs of the server's version source catalogue (cvengine_scanner.probes.version_read)
                 'version_digest',  # contract 8: the same with a digest of a static asset instead of its body (an edge appliance's build)
                 'version_rows',  # contract 9: the same with only the named version rows of a status page (Apache server-status, a phpinfo page)
-                'route_probe_signed']  # route_probe_signed: the built-in scanner's alone (runnable_kinds drops it elsewhere); it reads a stored sign-in
+                'route_probe_signed']  # route_probe_signed: reads a stored sign-in (runnable_kinds drops it where signed_in_allowed() is false)
 CONTRACT_VERSION = contract.version()  # the result contract this Sentinel speaks: the packaged sentinel_contract.json's, declared at registration and every heartbeat
 KIND_SINCE = contract.load()['kind_since']  # the contract version that introduced each kind (waf: 2, bbot_discovery, http_probe, dns_resolve, secrets_scan, alive_check, bucket_check, vhost_probe, subdir_probe, route_probe, supplier_check, hygiene_check, dangling_dns_check, identity_check, page_read and ssh_probe: 3)
 PRE_CONTRACT_SERVER = 1  # what a server speaks when its replies name no contract: cvENGINE 1.3 and older, whose kinds are the version 1 kinds
@@ -42,7 +42,12 @@ BUILTIN_FEATURES = ('secret_read', 'vantage', CREDENTIAL_FEATURE)
 # What every other Sentinel reports in ``info.features``: ``bbot_keys`` says this client reads a bbot discovery task's API keys through the single-use
 # secret read, keeps them only in a private file for the run, and masks them in everything it reports. A server sends keys only to a Sentinel that says so
 # (and the owner has not switched it off); an old Sentinel does not say it and never gets them. Optional: a server that does not know it ignores it.
-EXTERNAL_FEATURES = ('bbot_keys', CREDENTIAL_FEATURE)
+# ``secret_read_external`` says the same of a stored sign-in (client/signed_in.py): read once per task through the single-use read, kept for a nuclei run
+# only in a 0600 file in a 0700 temporary directory that is wiped and removed afterwards, masked in every result and error. A server sends a sign-in to a
+# Sentinel that is not its built-in scanner only when it says so AND the sign-in's owner allowed external Sentinels for it. ``signed_in_allowed`` (the
+# operator's own switch, CVENGINE_SENTINEL_SIGNED_IN=0) leaves it out.
+SIGNED_IN_FEATURE = 'secret_read_external'
+EXTERNAL_FEATURES = ('bbot_keys', CREDENTIAL_FEATURE, SIGNED_IN_FEATURE)
 
 logger = logging.getLogger('sentinel.config')
 
@@ -172,6 +177,15 @@ def builtin():
     ``CVENGINE_SENTINEL_BLOB_FILE`` when the server stops accepting its token, and applies the server's vantage settings. Never set on any other Sentinel:
     those settings would then reach a machine the server does not run on."""
     return (_env('CVENGINE_SENTINEL_BUILTIN') or '').strip().lower() in ('1', 'true', 'yes', 'on')
+
+
+def signed_in_allowed():
+    """Whether this Sentinel reads a stored sign-in for a signed-in task: the built-in scanner always; any other Sentinel unless its operator set
+    CVENGINE_SENTINEL_SIGNED_IN=0 (then it neither reports ``secret_read_external`` nor takes ``route_probe_signed``, and refuses a signed-in task
+    without reading anything). The server decides who is sent one; this is only the operator's way to say never here."""
+    if builtin():
+        return True
+    return (_env('CVENGINE_SENTINEL_SIGNED_IN') or '1').strip().lower() not in ('0', 'false', 'no', 'off')
 
 
 def vantage():

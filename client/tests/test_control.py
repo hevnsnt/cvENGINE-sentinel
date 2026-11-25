@@ -157,7 +157,7 @@ class UpdateReportTests(Base):
             info = daemon.info()
             info.pop('openvas', None)  # the GVM readiness has its own test (test_daemon)
             self.assertIsInstance(info.pop('machine'), dict)  # the machine report has its own test (test_machine)
-            self.assertEqual(info, {'contract_version': config.CONTRACT_VERSION, 'features': ['bbot_keys', 'credential_filter'], 'version': 'abc123def456', 'update': control.read_update(),
+            self.assertEqual(info, {'contract_version': config.CONTRACT_VERSION, 'features': ['bbot_keys', 'credential_filter', 'secret_read_external'], 'version': 'abc123def456', 'update': control.read_update(),
                                     'updater': {'installed': False, 'running': False}, 'waiting': []})
             fc = FakeClient()
             with mock.patch('client.tools.detect_tools', return_value=[]):

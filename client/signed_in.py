@@ -1,8 +1,9 @@
-"""Signed-in nuclei on the built-in scanner: the one place a stored credential reaches this client.
+"""Signed-in nuclei and the signed-in route check: the one place a stored credential reaches this client.
 
-A nuclei task the server marks ``signed_in`` names a stored sign-in (its ``secret_ref``, a reference the task row keeps; never the value). Only cvENGINE's
-built-in scanner runs such a task: any other Sentinel refuses it, so it is never run signed out and reported as signed in (the server never offers it one
-either). The built-in scanner reads the credential with ``POST sentinel/tasks/<id>/secret``, which the server answers once per task and audits. The value
+A nuclei task the server marks ``signed_in`` names a stored sign-in (its ``secret_ref``, a reference the task row keeps; never the value). cvENGINE's
+built-in scanner runs such a task, and so does an external Sentinel the server offered it to (the sign-in's owner allowed external Sentinels for it and
+this client reports ``secret_read_external``; ``config.signed_in_allowed``). A Sentinel whose operator set CVENGINE_SENTINEL_SIGNED_IN=0 refuses it, so it
+is never run signed out and reported as signed in. The scanner reads the credential with ``POST sentinel/tasks/<id>/secret``, which the server answers once per task and audits. The value
 lives in this process's memory and, for the run, in a nuclei secrets file (the ``static`` format, the same document the server writes for its own
 signed-in runs) of mode 0600 in a private 0700 directory on a memory file system (``/dev/shm`` when it is writable). The file is overwritten and removed
 when the run ends, however it ends. Nothing of the value is logged, put in an error or sent back: a finding that echoes it has it replaced by ``***``.

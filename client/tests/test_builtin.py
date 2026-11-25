@@ -33,7 +33,7 @@ class Env(unittest.TestCase):
         patch = mock.patch.dict('os.environ', env)
         patch.start()
         self.addCleanup(patch.stop)
-        for name in ('CVENGINE_SENTINEL_BLOB', 'CVENGINE_SENTINEL_NAME', 'CVENGINE_SENTINEL_UPDATE'):
+        for name in ('CVENGINE_SENTINEL_BLOB', 'CVENGINE_SENTINEL_NAME', 'CVENGINE_SENTINEL_UPDATE', 'CVENGINE_SENTINEL_SIGNED_IN'):
             os.environ.pop(name, None)
 
     def write_blob(self, text):
@@ -57,10 +57,11 @@ class ConfigTests(Env):
         self.assertIs(out['builtin'], True)
         self.assertEqual(out['features'], ['secret_read', 'vantage', 'credential_filter'])
 
-    def test_an_external_sentinel_advertises_bbot_keys_and_the_credential_filter_and_nothing_else(self):
+    def test_an_external_sentinel_advertises_bbot_keys_the_credential_filter_and_the_sign_in_read_and_nothing_else(self):
         with mock.patch('client.control.updater_info', return_value={'installed': False}), mock.patch.object(config, 'builtin', return_value=False):
             out = daemon.info()
-        self.assertEqual(out['features'], ['bbot_keys', 'credential_filter'])
+        self.assertEqual(out['features'], ['bbot_keys', 'credential_filter', 'secret_read_external'])
+        self.assertNotIn('secret_read', out['features'])  # the built-in image's word: never said by another Sentinel
         self.assertNotIn('builtin', out)
         self.assertEqual(out['contract_version'], config.CONTRACT_VERSION)
 
@@ -102,7 +103,13 @@ class ExternalTests(Env):
         with mock.patch('client.control.updater_info', return_value={'installed': False}):
             self.assertNotIn('builtin', daemon.info())
 
-    def test_an_external_sentinel_refuses_a_signed_in_task(self):
+    def test_an_external_sentinel_whose_operator_opted_out_reports_no_sign_in_feature(self):
+        os.environ['CVENGINE_SENTINEL_SIGNED_IN'] = '0'
+        with mock.patch('client.control.updater_info', return_value={'installed': False}):
+            self.assertEqual(daemon.info()['features'], ['bbot_keys', 'credential_filter'])
+
+    def test_an_external_sentinel_whose_operator_opted_out_refuses_a_signed_in_task(self):
+        os.environ['CVENGINE_SENTINEL_SIGNED_IN'] = '0'
         engine = daemon.Daemon('https://cve.example.test', 't', client=mock.Mock())
         task = {'id': 7, 'kind': 'nuclei_targeted', 'signed_in': True, 'target': {'targets': ['https://www.example.com']}}
         runner = mock.Mock()
@@ -285,10 +292,76 @@ class SignedInTests(Env):
         self.assertEqual(argv[argv.index('-sf') + 1], path)
         self.assertIn('-dr', argv)
 
+    def test_the_built_in_scanner_ignores_the_operator_opt_out(self):
+        os.environ['CVENGINE_SENTINEL_SIGNED_IN'] = '0'
+        self.assertTrue(config.signed_in_allowed())
+
     def test_the_domains_follow_the_servers_rule(self):
         self.assertEqual(signed_in.domain_of('https://www.example.com:443'), 'www.example.com')
         self.assertEqual(signed_in.domain_of('www.example.com:8443'), 'www.example.com:8443')
         self.assertEqual(signed_in.domain_of('http://[2001:db8::1]:8080'), '[2001:db8::1]:8080')
+
+class ExternalSignedInTests(Env):
+    """An external Sentinel the server offered a signed-in task (the sign-in's owner allowed external Sentinels): the same single read, private file and wipe
+    as on the built-in scanner."""
+    builtin = False
+
+    def run_task(self, client, fail=False):
+        seen = {}
+
+        def runner(targets, tags=None, severities=None, register=None, templates=None, secret_file=None, timeout=None, services=None, budget=None):
+            seen['path'] = secret_file
+            seen['mode'] = stat.S_IMODE(os.stat(secret_file).st_mode)
+            seen['dir_mode'] = stat.S_IMODE(os.stat(os.path.dirname(secret_file)).st_mode)
+            with open(secret_file, encoding='utf-8') as handle:
+                seen['document'] = json.load(handle)
+            if fail:
+                raise RuntimeError('nuclei died')
+            return {'findings': [{'name': 'x', 'matched_at': 'https://www.example.com/?t=ext-t0ken-9a8b7c', 'description': 'sid=extcookie77'}]}
+        engine = daemon.Daemon('https://cve.example.test', 't', client=client)
+        task = {'id': 21, 'kind': 'nuclei_targeted', 'signed_in': True, 'target': {'targets': ['https://www.example.com'], 'tags': ['cve']}}
+        with mock.patch.dict(tools.RUNNERS, {'nuclei_targeted': runner}):
+            try:
+                return seen, engine._execute(task, lambda proc: None)
+            except Exception as exc:  # noqa: BLE001 - handed back with what the runner saw, so the test can check the file is gone
+                return seen, exc
+
+    def client(self):
+        client = mock.Mock()
+        client.call.return_value = {'credential': {'headers': [['Authorization', 'Bearer ext-t0ken-9a8b7c']], 'cookie': 'sid=extcookie77'}}
+        return client
+
+    def test_a_signed_in_run_works_on_an_external_sentinel(self):
+        self.assertFalse(config.builtin())
+        self.assertTrue(config.signed_in_allowed())
+        client = self.client()
+        seen, out = self.run_task(client)
+        client.call.assert_called_once_with('POST', 'sentinel/tasks/21/secret')
+        self.assertEqual(seen['mode'], 0o600)
+        self.assertEqual(seen['dir_mode'], 0o700)
+        self.assertFalse(os.path.exists(seen['path']))
+        self.assertFalse(os.path.exists(os.path.dirname(seen['path'])))  # the private directory is removed too
+        self.assertEqual(seen['document']['static'][0]['domains'], ['www.example.com'])
+        self.assertNotIn('ext-t0ken-9a8b7c', json.dumps(out))
+        self.assertNotIn('extcookie77', json.dumps(out))
+
+    def test_the_file_and_its_directory_are_removed_when_the_run_fails(self):
+        seen, out = self.run_task(self.client(), fail=True)
+        self.assertIsInstance(out, Exception)
+        self.assertNotIn('ext-t0ken-9a8b7c', str(out))
+        self.assertFalse(os.path.exists(seen['path']))
+        self.assertFalse(os.path.exists(os.path.dirname(seen['path'])))
+
+    def test_a_refused_read_runs_nothing(self):
+        client = mock.Mock()
+        client.call.side_effect = httpclient.ApiError(403, 'not allowed')
+        engine = daemon.Daemon('https://cve.example.test', 't', client=client)
+        runner = mock.Mock()
+        task = {'id': 22, 'kind': 'nuclei_targeted', 'signed_in': True, 'target': {'targets': ['https://www.example.com']}}
+        with mock.patch.dict(tools.RUNNERS, {'nuclei_targeted': runner}), self.assertRaises(tools.TargetError):
+            engine._execute(task, lambda proc: None)
+        runner.assert_not_called()
+
 
 
 if __name__ == '__main__':
