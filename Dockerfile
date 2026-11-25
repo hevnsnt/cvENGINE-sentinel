@@ -156,7 +156,6 @@ RUN ARCH=$(dpkg --print-architecture) \
 
 RUN apt-get update -y && \
     apt-get install -y --no-install-recommends \
-    build-essential \
     bzip2 \
     ca-certificates \
     curl \
@@ -185,6 +184,7 @@ RUN set -e; cd /tmp \
     else \
         curl -fsSLO https://nmap.org/dist/nmap-${NMAPVERSION}.tar.bz2 \
         && echo "${NMAP_SHA256}  nmap-${NMAPVERSION}.tar.bz2" | sha256sum -c - \
+        && apt-get update -y && apt-get install -y --no-install-recommends build-essential \
         && tar xjf nmap-${NMAPVERSION}.tar.bz2 \
         && cd nmap-${NMAPVERSION} \
         && ./configure --prefix=/usr/local --without-zenmap --without-ndiff --without-nmap-update \
@@ -220,7 +220,7 @@ ENV CVENGINE_NUCLEI_TEMPLATES_VERSION=${NUCLEI_TEMPLATES_VERSION}
 # is always fetched; `--no-update` is never passed) and keeps it in the run-time user's home.
 COPY docker/wpscan/Gemfile docker/wpscan/Gemfile.lock /tmp/wpscan/
 RUN apt-get update -y && \
-    apt-get install -y --no-install-recommends ruby ruby-dev libcurl4-openssl-dev libxml2-dev libxslt1-dev libffi-dev zlib1g-dev pkg-config && \
+    apt-get install -y --no-install-recommends build-essential ruby ruby-dev libcurl4-openssl-dev libxml2-dev libxslt1-dev libffi-dev zlib1g-dev pkg-config && \
     mkdir -p /tmp/wpscan/gems && cd /tmp/wpscan/gems && \
     awk '/^CHECKSUMS/ {on = 1; next} on && NF == 0 {on = 0} on && $1 != "bundler" {gsub(/[()]/, "", $2); sub(/^sha256=/, "", $3); print $1, $2, $3}' \
         /tmp/wpscan/Gemfile.lock > pins && \
@@ -352,6 +352,16 @@ RUN apt-get purge -y git git-man && rm -rf /var/lib/apt/lists/* && \
     runuser -u sentinel -- env HOME=/home/sentinel bbot -t example.com -p subdomain-enum -rf safe --dry-run -y --no-deps > /tmp/bbot-user.txt 2>&1; \
     status=$?; cat /tmp/bbot-user.txt | tail -n 20; \
     [ "$status" = 0 ] && ! grep -qi 'Installing core BBOT dependencies' /tmp/bbot-user.txt && rm -f /tmp/bbot-user.txt
+
+# No compiler is left in the image: nothing at run time builds anything (client/bbot.py starts bbot with its no-deps flag). The compiler is needed only while the
+# image is built, by the steps above (nmap from source on arm64, WPScan's native gems, bbot's module dependencies), so it is installed there and purged
+# here, after the last of them, with the C library headers (libc6-dev, linux-libc-dev) that a scanner reports as the image's own vulnerable packages.
+# Not autoremoved: the run-time libraries those packages pulled in (libcurl, libxml2, ...) are what WPScan's gems load.
+RUN apt-get purge -y build-essential g++ gcc make dpkg-dev libc6-dev linux-libc-dev && rm -rf /var/lib/apt/lists/* && \
+    ! dpkg -s linux-libc-dev >/dev/null 2>&1 && ! dpkg -s build-essential >/dev/null 2>&1 && \
+    nmap --version | head -1 && wpscan --version | grep -F "${WPSCAN_VERSION}" && \
+    runuser -u sentinel -- env HOME=/home/sentinel bbot -t example.com -p subdomain-enum -rf safe --dry-run -y --no-deps > /tmp/bbot-user.txt 2>&1; \
+    status=$?; tail -n 20 /tmp/bbot-user.txt; [ "$status" = 0 ] && rm -f /tmp/bbot-user.txt
 
 # The scanner library (pyproject.toml, cvengine_scanner/: flags, parsers, scope floor, result contract), installed from a build directory that is
 # removed again so nothing beside the client can shadow it. It has no dependencies. The build context carries no git tag, so its version is the
