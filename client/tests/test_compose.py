@@ -89,7 +89,7 @@ class ComposeTests(unittest.TestCase):
         self.assertNotIn('cap_net_admin', text.replace('NET_ADMIN', ''))  # (the comment may name it)
         self.assertEqual(text.count('setcap'), 2)  # exactly these two: nothing else is given a capability
         self.assertIn('NMAP_PRIVILEGED=1', text)
-        self.assertIn('GOBIN=/usr/local/bin', text)  # the tools are installed where the unprivileged user can run them
+        self.assertIn('COPY --from=gotools /out/nuclei /out/naabu /usr/local/bin/', text)  # the tools are installed where the unprivileged user can run them
         self.assertLess(text.index('RUN useradd'), text.index('USER sentinel'))
         self.assertNotIn('nuclei -update-templates', text)  # templates are pinned, not downloaded at build or start
         self.assertIn('NUCLEI_TEMPLATES_SHA256=', text)
@@ -263,13 +263,44 @@ class PinTests(unittest.TestCase):
             self.assertIn(package, line)
         self.assertNotIn('--upgrade', line)
 
-    def test_the_go_toolchain_and_caches_leave_with_the_layer_that_used_them(self):
+    def test_the_go_toolchain_stays_in_its_own_stage_and_only_the_binaries_reach_the_image(self):
         dockerfile = text('Dockerfile')
-        step = next(block for block in dockerfile.split('\nRUN ') if 'go install' in block)
-        self.assertIn('go.dev/dl/', step)
-        self.assertIn('go clean -cache -modcache', step)
-        self.assertIn('rm -rf "${GOROOT}" "${GOPATH}/pkg"', step)
-        self.assertNotIn('/go/pkg/*', dockerfile)
+        stages = re.split(r'(?m)^FROM ', dockerfile)
+        gotools = next(stage for stage in stages if stage.split('\n', 1)[0].endswith(' AS gotools'))
+        final = stages[-1]
+        self.assertIn('go.dev/dl/', gotools)
+        self.assertIn('sha256sum -c -', gotools)
+        self.assertIn('GOTOOLCHAIN=local', gotools)
+        for tool in ('nuclei', 'naabu', 'sshamble', 'gowitness', 'trajan'):
+            self.assertRegex(gotools, rf'build-go-tool {tool} "\$\{{GH\}}/[^"]+" "\$\{{{tool.upper()}_SRC_SHA256\}}"', tool)
+            self.assertRegex(dockerfile, rf'(?m)^ARG {tool.upper()}_SRC_SHA256=[0-9a-f]{{64}}$', tool)
+            self.assertIn(f'/out/{tool}', final, tool)
+        # nothing in the image runs or carries go
+        self.assertNotIn('go.dev/dl/', final)
+        self.assertNotIn('go install', dockerfile)
+        self.assertNotRegex(final, r'(?m)^\s*(ENV\s+)?GO(PATH|ROOT|TOOLCHAIN)=')
+
+    def test_every_go_tool_is_raised_to_the_dependency_floor(self):
+        """Each Go tool's release is built with the floor of the modules that had a high or critical advisory (gowitness and trajan as bbot would
+        download them carried Go 1.25 and grpc and pgx criticals); the script raises a module the tool uses and never lowers one."""
+        dockerfile, script = text('Dockerfile'), text('docker', 'gotools', 'build.sh')
+        floor = re.search(r'(?m)^ARG GO_DEPENDENCY_FLOOR="([^"]+)"$', dockerfile).group(1).split()
+        modules = {pin.split('@')[0] for pin in floor}
+        for module in ('golang.org/x/net', 'golang.org/x/crypto', 'golang.org/x/text', 'google.golang.org/grpc', 'github.com/jackc/pgx/v5'):
+            self.assertIn(module, modules)
+        for pin in floor:
+            self.assertRegex(pin, r'^[a-z0-9./-]+@v\d+\.\d+\.\d+$')
+        self.assertIn('sort -V', script)
+        self.assertIn('go mod verify', script)
+        self.assertIn('sha256sum -c -', script)
+        self.assertLess(script.index('sha256sum -c -'), script.index('tar -xzf'))
+
+    def test_bbot_keeps_the_built_gowitness_and_trajan_and_installs_no_jadx(self):
+        dockerfile = text('Dockerfile')
+        placed = dockerfile.index('/out/gowitness /out/trajan /home/sentinel/.bbot/tools/')
+        self.assertLess(placed, dockerfile.index('-p subdomain-enum web web-screenshots'))  # before bbot first installs gowitness
+        self.assertIn('-p kitchen-sink -em trajan jadx --force --dry-run', dockerfile)
+        self.assertIn('test ! -e /home/sentinel/.bbot/tools/jadx', dockerfile)
 
     def test_no_root_only_directory_is_on_the_path_of_the_run_time_user(self):
         # /root is mode 0700: a PATH entry under it makes a lookup of a program that is not found fail with EACCES (PermissionError) instead of
@@ -283,7 +314,7 @@ class PinTests(unittest.TestCase):
 
     def test_every_bbot_module_dependency_is_installed_at_build_and_the_client_start_is_checked(self):
         dockerfile = text('Dockerfile')
-        self.assertIn('-p kitchen-sink --force --dry-run', dockerfile)
+        self.assertIn('-p kitchen-sink -em trajan jadx --force --dry-run', dockerfile)
         self.assertIn('scripts/ci_bbot_start.py', dockerfile)
         self.assertIn('--no-deps', dockerfile)
         self.assertLess(dockerfile.index('-p kitchen-sink'), dockerfile.index('apt-get purge -y git'))

@@ -147,6 +147,8 @@ DOCKERFILE_ARGS = {
     'BADSECRETS_VERSION': ('badsecrets', PYPI.format('badsecrets'), latest_pypi, True, False),
     'KINGFISHER_VERSION': ('kingfisher', GITHUB_LATEST.format('mongodb/kingfisher'), latest_github_release, True, False),
     'SSHAMBLE_VERSION': ('sshamble', GITHUB_LATEST.format('runZeroInc/sshamble'), latest_github_release, True, False),
+    'GOWITNESS_VERSION': ('gowitness (bbot module)', GITHUB_LATEST.format('sensepost/gowitness'), latest_github_release, True, False),
+    'TRAJAN_VERSION': ('trajan (bbot module)', GITHUB_LATEST.format('praetorian-inc/trajan'), latest_github_release, True, False),
     'NUCLEI_TEMPLATES_VERSION': ('nuclei-templates', GITHUB_LATEST.format('projectdiscovery/nuclei-templates'), latest_github_release, True, False),
     'PLAYWRIGHT_CHROMIUM_VERSION': ('chromium (Playwright build)', CHROME, latest_chrome_stable, False, True),
 }

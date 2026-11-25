@@ -77,7 +77,9 @@ _EXCLUDE = re.compile(r'^[a-z0-9_]{1,40}$')
 #    skip WAF hosts as 3.0.2 did, and nowafpls never runs (neither is part of the presets a task may name, so this is a guard against a future preset);
 #  - js_unpacker (new, in the web flag) requests every source map a script names: not run, 3.0.2 sent nothing of the kind;
 #  - dnsdumpster and otilabs (a keyed RapidAPI) now need an API key and soft-fail without one: left out unless the project stored a key for them.
-_HELD_OUT = ('nowafpls', 'js_unpacker')
+# jadx (kitchen-sink, decompiles downloaded APKs) is held out too: it needs a Java runtime, which this image has never carried, so it could not run here, and
+# the image no longer carries the jadx release bbot would install (its bundled libraries had high advisories).
+_HELD_OUT = ('nowafpls', 'js_unpacker', 'jadx')
 _NEEDS_KEY = ('dnsdumpster', 'otilabs')
 # DNS. 3.0.2 ran dns.threads 25 under subdomain-enum (its preset set it) and 10 otherwise, per resolver; 3.1.0 raised the default to 50, added a 256 ceiling over
 # all resolvers and brute force through up to 600 resolvers with no rate limit and 20 retries a name. dns.max_concurrency is the same number as threads, so the
@@ -555,6 +557,15 @@ def redact(text, secrets):
 
 
 # --- running bbot ------------------------------------------------------------------------------------------------------------------------
+
+def is_deep(target):
+    """Whether ``target`` is a deep discovery (mode ``deep`` or the kitchen-sink preset). One such run peaks near the whole 2 GB a Sentinel container is
+    given, and three started together were killed by the kernel (-9), so the daemon runs them one at a time (``Daemon._deep_bbot``)."""
+    if not isinstance(target, dict):
+        return False
+    presets = target.get('presets')
+    return target.get('mode') == 'deep' or (isinstance(presets, (list, tuple)) and 'kitchen-sink' in presets)
+
 
 def build_command(target, out_dir, blacklist_file, keys_file=None, keys=None):
     """The bbot command line for ``target`` (``$defs/targets/bbot_discovery``): what the server's own local run of the same mode runs. Every value is

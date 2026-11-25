@@ -13,6 +13,7 @@ stops the daemon with a non-zero exit. SIGTERM stops new polling and gives in-fl
 ``config.SHUTDOWN_GRACE_SECONDS`` to finish; whichever have not are marked dropped, killed and released exactly once,
 and never report the killed run's output as a result.
 """
+import contextlib
 import json
 import logging
 import math
@@ -400,6 +401,7 @@ class Daemon:
         self.stop_event = threading.Event()  # set by SIGTERM: take no new work
         self._halted = threading.Event()  # set when the shutdown grace period is over: stop retrying, kill what is left
         self._lock = threading.Lock()
+        self._deep_bbot = threading.Lock()  # deep bbot discoveries run one at a time on this Sentinel: a second one waits here (light ones never take it)
         self._in_flight = {}  # task_id -> {'proc', 'done', 'started', 'dropped', 'finishing', 'kind', 'runnable'}
         self._polling = False  # a long poll is outstanding: it may return a task, so the updater must not see this Sentinel idle
         self._backoff = MIN_BACKOFF
@@ -1089,6 +1091,24 @@ class Daemon:
             self._write_control()
             self.stop_event.wait(THREAD_FAILURE_PAUSE)
 
+    DEEP_WAIT_STEP = 1.0  # seconds between looks at the deep bbot slot while a task waits for it
+
+    @contextlib.contextmanager
+    def _deep_slot(self, task_id, state):
+        """Hold this Sentinel's one deep bbot slot for the run. A deep discovery that finds another one running waits for it to end instead of starting
+        beside it (three at once were killed for memory under the 2 GB container limit) and instead of failing; its clock starts when it gets the slot,
+        so the watchdog's deadline never counts the wait. Shutting down while it waits ends the wait: the shutdown releases the task to the server."""
+        if not self._deep_bbot.acquire(blocking=False):
+            logger.info('task %s waits: a deep bbot discovery already runs on this Sentinel, deep ones run one at a time', task_id)
+            while not self._deep_bbot.acquire(timeout=self.DEEP_WAIT_STEP):
+                if self._halted.is_set() or self.stop_event.is_set():
+                    raise tools.TargetError('the Sentinel stopped while this deep discovery waited for the one before it')
+            state['started'] = time.monotonic()
+        try:
+            yield
+        finally:
+            self._deep_bbot.release()
+
     ACCEPT_TRIES = 4
 
     def _accept(self, task_id):
@@ -1214,7 +1234,11 @@ class Daemon:
         try:
             if not state.get('runnable'):
                 raise tools.TargetError(f'this Sentinel does not run {_clip(kind)} work')
-            result = self._execute(task, self._register_proc(state))
+            if kind == 'bbot_discovery' and bbot.is_deep(task.get('target')):
+                with self._deep_slot(task_id, state):
+                    result = self._execute(task, self._register_proc(state))
+            else:
+                result = self._execute(task, self._register_proc(state))
             outcome = result.get('outcome', 'done')
             self._report_unless_dropped(task_id, state, result)
         except bbot.Stopped as exc:  # the server ended a streamed task (cancelled, expired, its scan stopped): nothing more is sent

@@ -181,6 +181,14 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(self.excluded(dup).count('otilabs'), 1)
         self.assertEqual(self.excluded(dup).count('dnsdumpster'), 1)
 
+    def test_jadx_never_runs_because_the_image_carries_neither_it_nor_java(self):
+        """kitchen-sink names jadx, which needs a Java runtime the image does not have; the image does not carry jadx either, so it is always left out."""
+        for presets in (['kitchen-sink'], ['subdomain-enum'], ['web', 'web-screenshots']):
+            cmd = bbot.build_command({**TARGET, 'presets': presets, 'require_flags': []}, '/o', '/b')
+            self.assertIn('jadx', self.excluded(cmd), presets)
+        self.assertIn('jadx', self.excluded(bbot.build_command({**TARGET, 'presets': ['kitchen-sink'], 'exclude_modules': ['jadx']}, '/o', '/b')))
+        self.assertEqual(self.excluded(bbot.build_command({**TARGET, 'exclude_modules': ['jadx']}, '/o', '/b')).count('jadx'), 1)
+
     def test_the_settings_never_come_from_the_task(self):
         odd = {**TARGET, 'config': {'dns': {'threads': 500}}, 'dns_threads': 500, 'exclude_modules': ['x=1']}
         cmd = bbot.build_command(odd, '/o', '/b')
