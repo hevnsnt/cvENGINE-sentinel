@@ -42,13 +42,29 @@ class ApiError(Exception):
     the server chose to show (or one this client wrote), never a raw response body (which could be arbitrarily large or
     not be JSON at all)."""
 
-    def __init__(self, status, message, retry_after=None, code=None, reason=None):
+    def __init__(self, status, message, retry_after=None, code=None, reason=None, refusal=None, json_error=None, excerpt=None):
         super().__init__(f'{status}: {message}')
         self.status = status
         self.message = message
         self.retry_after = retry_after  # seconds the server asked to wait (Retry-After on a 429 or 503), or None
         self.code = code  # the machine-readable ``code`` of the error body (``agent_blocked``, ``token_revoked``, ...), or None from an older server
         self.reason = reason  # the error body's human ``reason`` next to that code, or None
+        self.refusal = refusal  # ``X-CVEngine-Refusal``: the server refused this ADDRESS (``banned``, ``not_allowlisted``), never the token; None when absent
+        self.json_error = json_error  # True when the body was the server's JSON error (``{"error": ...}``), False when it was not, None when unknown
+        self.excerpt = excerpt  # the first printable characters of a body that was not a JSON error (a ban or proxy page), for the log, or None
+
+
+REFUSAL_HEADER = 'X-CVEngine-Refusal'  # the server marks a 403 that refuses this Sentinel's ADDRESS (a ban, its IP allowlist) with it
+EXCERPT_MAX = 200
+
+
+def body_excerpt(raw):
+    """The first ``EXCERPT_MAX`` printable characters of a reply body (markup tags dropped, runs of space folded), for one log line; '' when empty."""
+    import re
+    text = raw[:4096].decode('utf-8', 'replace') if isinstance(raw, (bytes, bytearray)) else str(raw or '')[:4096]
+    text = re.sub(r'<[^>]{0,200}>', ' ', text)
+    text = ''.join(c if c.isprintable() else ' ' for c in text)
+    return ' '.join(text.split())[:EXCERPT_MAX]
 
 
 class ServerURLError(ValueError):
@@ -131,8 +147,11 @@ class Client:
             body = payload if isinstance(payload, dict) else {}
             message = body.get('error') or f'HTTP {response.status_code}'
             code, reason = body.get('code'), body.get('reason')
+            refusal = str((response.headers or {}).get(REFUSAL_HEADER) or '').strip()[:32] or None
+            json_error = bool(body.get('error'))
             raise ApiError(response.status_code, str(message)[:300], retry_after=parse_retry_after(response.headers.get('Retry-After')),
-                           code=code[:64] if isinstance(code, str) and code else None, reason=reason[:300] if isinstance(reason, str) and reason else None)
+                           code=code[:64] if isinstance(code, str) and code else None, reason=reason[:300] if isinstance(reason, str) and reason else None,
+                           refusal=refusal, json_error=json_error, excerpt=None if json_error else body_excerpt(raw))
         return payload if isinstance(payload, dict) else {}
 
     def download(self, path, destination, max_bytes, timeout=None):
