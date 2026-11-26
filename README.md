@@ -316,6 +316,7 @@ container. "Not passed by compose" below means a value in `.env` has no effect; 
 | `CVENGINE_SENTINEL_BUILTIN` | No | unset | `1` only on cvENGINE's own built-in scanner, which cvENGINE's compose file runs. Never set it on another Sentinel. See [The built-in scanner](#the-built-in-scanner). | daemon (`client/config.py`) |
 | `CVENGINE_SENTINEL_NAME`                                                                                        | No               | the container's host name                             | The name on the Sentinels page. Reported to cvENGINE only when set, so a rename made in cvENGINE sticks across container recreates unless this is set.                                            | daemon                                                                    |
 | `COMPOSE_PROFILES`                                                                                              | No               | unset: light (no OpenVAS containers)                  | `openvas` starts the OpenVAS/GVM stack (full). `setup.sh` and `.env.example` set it to `openvas`.                                                                                                 | Docker Compose                                                            |
+| `CVENGINE_SENTINEL_APPARMOR` | No | unset: `docker-default` | The AppArmor profile the `sentinel` container runs under. `sudo scripts/apparmor.sh install` sets it to `cvengine-sentinel` on a host that needs it ([Screenshots and AppArmor](#screenshots-and-apparmor)); do not set it by hand to a profile that is not loaded, or Docker refuses to start the container. | Docker Compose (`security_opt`) |
 | `CVENGINE_SENTINEL_PROFILE`                                                                                     | No               | unset                                                 | `full` or `light`. `light` never runs OpenVAS. Keep it in step with `COMPOSE_PROFILES`; `setup.sh` writes both.                                                                                   | daemon                                                                    |
 | `CVENGINE_SENTINEL_NETWORK`                                                                                     | No               | `external`                                            | `internal` lets this Sentinel scan private addresses and run `discover`. Anything else means external. A ceiling: cvENGINE can lower it to external, never raise it.                              | daemon                                                                    |
 | `CVENGINE_SENTINEL_DENY_RANGES`                                                                                | No               | none                                                  | Comma-separated CIDRs (a bare address is one host) this Sentinel never connects to, in every kind: a task whose target, or any address its name resolves to, is inside one is refused here with `refused:` in its error text, before anything is sent. Joins the ranges the task itself carries. A list with an entry that is not a network refuses every task until it is fixed. | daemon       |
@@ -394,6 +395,48 @@ mode: nmap's OS detection, naabu's SYN scan and the UDP sweep use the `NET_RAW` 
 `docker-compose.yml` already grants (with every other capability dropped, `NET_ADMIN` included, the set is the same as on the bridge network). Host networking in this form is a Linux feature; Docker Desktop on macOS and
 Windows handles it differently.
 
+### Screenshots and AppArmor
+
+The screenshot browser (Chromium) runs with its sandbox, which is built on user namespaces. Docker's seccomp profile refuses them, which is why
+`docker-compose.yml` gives the Sentinel Playwright's seccomp profile. With **AppArmor 4** (Ubuntu 24.04 and later, recent Debian and Kali) Docker's own
+`docker-default` AppArmor profile refuses them as well, and the browser dies at launch. Ubuntu's kernels show the restriction as
+`kernel.apparmor_restrict_unprivileged_userns = 1`; other kernels refuse it with no such setting (a Kali kernel logged
+`apparmor="DENIED" operation="userns_create" profile="docker-default"` without it), so the test is AppArmor enabled with a parser of version 4 or newer.
+
+What you see: the Sentinel's log says `screenshots stay off on this Sentinel until its sandbox can start: the host's AppArmor profile blocks Chromium's
+sandbox`, and it stops declaring `web_screenshot`. Everything else works.
+
+The fix is a profile that is `docker-default` plus one line, `userns,` (`config/apparmor/cvengine-sentinel`), and one root step in the checkout:
+
+```bash
+cd /opt/cvengine-sentinel
+sudo scripts/apparmor.sh install                       # load the profile, keep it loaded at boot, name it in .env
+sudo -u cvengine docker compose up -d sentinel         # recreate the Sentinel under it
+scripts/apparmor.sh status                             # what this host needs and what is in place (no root needed)
+```
+
+`install.sh` runs that step itself on a new install, before the first `docker compose up`. On a host that does not need it (no AppArmor, or an older
+AppArmor) it changes nothing. What it leaves, all owned by root:
+
+- `/etc/apparmor.d/cvengine-sentinel`, a copy of the profile, loaded with `apparmor_parser -r -W` (AppArmor's own boot service loads that directory too);
+- `/usr/local/sbin/cvengine-sentinel-apparmor`, a copy of the script, and `cvengine-sentinel-apparmor.service`, a oneshot that loads the profile again
+  before `docker.service` starts, so the container never starts before its profile exists. Root never runs or parses a file the `cvengine` user can
+  change: the copies are taken when you run the step;
+- `CVENGINE_SENTINEL_APPARMOR=cvengine-sentinel` in `.env` (written in place, so `.env` keeps its owner and mode 600). `docker-compose.yml` reads it into the
+  Sentinel's `security_opt` (`apparmor=${CVENGINE_SENTINEL_APPARMOR:-docker-default}`). Docker ignores that entry on a host without AppArmor.
+
+Failure is never worse than no screenshots. The step checks the profile with the parser before it changes anything. When the boot unit cannot load the
+profile, it takes the line out of `.env`, so the Sentinel starts under Docker's default profile instead of not starting. The updater
+(`scripts/update.sh`) runs as `cvengine` with `NoNewPrivileges` and cannot load a profile: it starts the Sentinel under Docker's default profile when
+`.env` names a profile that is not loaded, says the root step when the host needs it and has none, and says when an update changed
+`config/apparmor/cvengine-sentinel` (run the step again to load the new copy). `sudo scripts/apparmor.sh remove` undoes it all; the Sentinel goes back to
+Docker's default profile at its next `docker compose up -d`.
+
+The fallback, if you cannot load a profile, is `CVENGINE_SENTINEL_APPARMOR=unconfined` in `.env`. It works, and it removes the container's AppArmor
+confinement altogether (its capabilities, unprivileged user and seccomp limits remain), so use it only to prove the diagnosis. cvENGINE's built-in
+scanner, which runs this same image on the server, has its own profile and steps in the cvENGINE repository (`config/apparmor/cvengine-scanner`,
+`docs/DEPLOYMENT.md`).
+
 ### What docker-compose.yml sets
 
 | Setting                     | Value                                                                                           | Why                                                                                                        |
@@ -401,6 +444,7 @@ Windows handles it differently.
 | `image`                     | `cvengine-sentinel-local:latest`, `pull_policy: build`                                          | Built locally, never pulled from a registry. A plain `docker compose pull` does not ask Docker Hub for it. |
 | `cap_drop`, `cap_add`       | `ALL`, then `NET_RAW` and `SYS_CHROOT` (no `--privileged`, no `NET_ADMIN`)                      | `NET_RAW`: raw sockets for nmap (SYN scan, OS detection, UDP sweep) and naabu; the Sentinel runs as an unprivileged user (uid 10001) and only nmap and naabu carry a file capability (`cap_net_raw`); no other process in the image holds one. `SYS_CHROOT`: Chromium's sandbox (screenshots). Every one is proven by the scan smoke run in CI (`scripts/ci_scan_smoke.sh`). |
 | `no-new-privileges`, `read_only` | not set | `no-new-privileges` makes the kernel ignore file capabilities, so nmap and naabu keep raw sockets only on a container engine that passes the added `NET_RAW` on as an ambient capability (CI's does; an older engine on your host may not, and an update would silently end the raw-socket scans); add `security_opt: [no-new-privileges:true]` in `docker-compose.override.yml` if you have checked yours. The root filesystem stays writable: with `read_only: true` and memory-backed home subdirectories every scan works except bbot's discovery, which needs a writable `~/.bbot/tools` (907 MB of tools baked into the image). |
+| `security_opt`              | `seccomp=./config/seccomp/playwright-chromium.json`, `apparmor=${CVENGINE_SENTINEL_APPARMOR:-docker-default}` | Chromium's sandbox needs user namespaces: Playwright's seccomp profile allows them, and on a host with AppArmor 4 the `cvengine-sentinel` profile does ([Screenshots and AppArmor](#screenshots-and-apparmor)). |
 | `init`, `stop_grace_period` | `true`, `75s`                                                                                   | See [Shutdown](#shutdown).                                                                                 |
 | `pids_limit`, `mem_limit`   | `512`, `2g`                                                                                     | Bounds a runaway tool.                                                                                     |
 | `healthcheck`               | `python3 -m client.control health` every 60 s                                                   | See [Health check](#health-check).                                                                         |
@@ -476,7 +520,8 @@ calls to 75% of that, honours `Retry-After` on a 429 (for the poll, the accept, 
 releases a task it could not accept.
 
 **Screenshots and AppArmor.** If the browser's sandbox cannot start (Docker's AppArmor profile refusing user namespaces says so in plain words), `web_screenshot` is
-no longer declared, so the work stays due or goes to another Sentinel; the proof is tried again every ten minutes.
+no longer declared, so the work stays due or goes to another Sentinel; the proof is tried again every ten minutes. The fix for the host is one root
+step, in [Screenshots and AppArmor](#screenshots-and-apparmor).
 
 ### Limits on output
 

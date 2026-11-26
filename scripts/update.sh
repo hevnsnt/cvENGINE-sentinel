@@ -339,6 +339,18 @@ elif [ "$rc" != 0 ]; then
   exit 0
 fi
 
+# AppArmor (scripts/apparmor.sh, README.md "Screenshots and AppArmor"): this run cannot load a profile (it is the checkout's owner, under
+# NoNewPrivileges), so it only reads the state. A .env that names the profile while it is not loaded would make Docker refuse to start the Sentinel:
+# this run then starts it under Docker's default profile instead (no screenshots) and says so; a host that needs the profile and has none is told
+# the one root step. Guarded: an older checkout has no such file.
+if [ -f scripts/apparmor.sh ]; then
+  CVENGINE_APPARMOR_LIB_ONLY=1
+  # shellcheck source=scripts/apparmor.sh
+  . ./scripts/apparmor.sh
+  aa_update_note .env config/apparmor/cvengine-sentinel
+  [ -z "$AA_NOTE" ] || say "$AA_NOTE"
+fi
+
 # Only the Sentinel is restarted before the update counts: it depends on nothing but sentinel-init. The rest of the stack (OpenVAS) is brought up
 # after the update is recorded, because its services wait on the feed data containers turning healthy, which can take a long time after a feed
 # refresh (scap-data at the 08:07Z update of Nov 20): a slow one there failed the whole update although the new Sentinel was already running.

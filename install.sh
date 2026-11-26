@@ -213,6 +213,21 @@ main() {
     fi
   fi
 
+  # Screenshots on a host whose AppArmor refuses Chromium's user namespace (Ubuntu 24.04 and later, recent Debian and Kali): load the Sentinel's
+  # profile, keep it loaded at boot and name it in .env, before the first `docker compose up`. A host that does not need it is left as it is, and a
+  # failure here costs only the screenshots (README.md, "Screenshots and AppArmor").
+  local apparmor="not needed"
+  if [ -f "$dir/scripts/apparmor.sh" ]; then
+    if sh "$dir/scripts/apparmor.sh" install --dir "$dir"; then
+      if [ "$(sed -n 's/^CVENGINE_SENTINEL_APPARMOR=//p' "$dir/.env" 2>/dev/null | tail -n 1)" = cvengine-sentinel ]; then
+        apparmor="profile cvengine-sentinel loaded, and loaded again at boot"
+      fi
+    else
+      apparmor="NOT set up (see above), so no screenshots; later: sudo $dir/scripts/apparmor.sh install"
+      say "The AppArmor profile was NOT set up (see above); the Sentinel runs without screenshots. Later: sudo $dir/scripts/apparmor.sh install" >&2
+    fi
+  fi
+
   # The Greenbone images follow moving tags (`stable` for the programs, Greenbone's latest release): pull them first, so a machine that already
   # has an older copy (a reinstall) starts on the current one. A failed pull is not fatal: `up` pulls whatever is still missing and says why it cannot.
   svc_run "$dir" docker compose pull --quiet --ignore-buildable || say "Pulling the images failed (see above); starting with the images this machine has."
@@ -227,6 +242,7 @@ main() {
     no) say "  Updater:    not installed (--no-updater); later: sudo $dir/scripts/install-updater.sh" ;;
     *) say "  Updater:    NOT installed; later: sudo $dir/scripts/install-updater.sh" ;;
   esac
+  say "  AppArmor:   $apparmor"
   say "  Privilege:  the checkout, git, setup.sh, the updater and the Sentinel's container (uid 10001) run unprivileged. $SERVICE_USER is in the"
   say "              docker group, which is equivalent to root on this machine; that is the one privilege it has."
   say "Check it:     cd $dir && sudo -u $SERVICE_USER docker compose ps"

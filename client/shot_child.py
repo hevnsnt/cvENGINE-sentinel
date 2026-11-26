@@ -167,8 +167,11 @@ def verify_sandbox(browser, inspect=lib.browser_processes):
         _quietly(context.close)
 
 
+# The same image is cvENGINE's built-in scanner, so the words name both fixes: this repository's root step for a Sentinel host, the server's
+# profile for the built-in scanner.
 APPARMOR = ("the host's AppArmor profile blocks Chromium's sandbox: run the scanner with an AppArmor profile that allows user namespaces "
-            "(config/apparmor/cvengine-scanner in the cvENGINE repository, docs/DEPLOYMENT.md \"Screenshots and AppArmor\")")
+            "(on a Sentinel host, once as root in its checkout: sudo scripts/apparmor.sh install, then docker compose up -d; README.md "
+            "\"Screenshots and AppArmor\". For cvENGINE's built-in scanner: config/apparmor/cvengine-scanner, docs/DEPLOYMENT.md)")
 
 
 def apparmor_words(message):

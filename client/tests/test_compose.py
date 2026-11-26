@@ -16,7 +16,7 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-def compose_config(profiles, host_network=False):
+def compose_config(profiles, host_network=False, apparmor=None):
     # Run against a copy, so a developer's own .env or docker-compose.override.yml cannot change the answer.
     with tempfile.TemporaryDirectory(prefix='sentinel-compose-') as tmp:
         shutil.copy(os.path.join(ROOT, 'docker-compose.yml'), tmp)
@@ -25,6 +25,8 @@ def compose_config(profiles, host_network=False):
             shutil.copy(os.path.join(ROOT, 'docker-compose.override.yml.example'), os.path.join(tmp, 'docker-compose.override.yml'))
         env = {k: v for k, v in os.environ.items() if not k.startswith(('COMPOSE_', 'CVENGINE_', 'OPENVAS_'))}
         env['COMPOSE_PROFILES'] = profiles
+        if apparmor is not None:  # what scripts/apparmor.sh install writes to .env
+            env['CVENGINE_SENTINEL_APPARMOR'] = apparmor
         out = subprocess.run(['docker', 'compose', 'config', '--format', 'json'], cwd=tmp, env=env, capture_output=True, text=True, timeout=60)
     if out.returncode != 0:
         raise AssertionError(out.stderr)
@@ -158,12 +160,24 @@ class ComposeTests(unittest.TestCase):
         self.assertTrue({'clone', 'setns', 'unshare'} <= allowed)
         for config in (self.light, self.full):
             options = config['services']['sentinel'].get('security_opt') or []
-            self.assertEqual(len(options), 1, options)
+            self.assertEqual(len(options), 2, options)
             self.assertTrue(options[0].startswith('seccomp='), options)
             self.assertTrue(options[0].endswith('config/seccomp/playwright-chromium.json'), options)  # the file, whatever way compose spells its path
             for name, service in config['services'].items():
                 if name != 'sentinel':
                     self.assertFalse([o for o in service.get('security_opt', []) if 'playwright' in o or 'chromium' in o], name)
+
+    def test_the_apparmor_entry_is_dockers_own_default_unless_env_names_the_sentinels_profile(self):
+        # docker-default is what every container gets with no entry at all, and Docker ignores the entry on a host without AppArmor; the seccomp profile
+        # stays first and unchanged either way (scripts/apparmor.sh, README.md "Screenshots and AppArmor")
+        for config in (self.light, self.full, self.host):
+            self.assertEqual(config['services']['sentinel']['security_opt'][1], 'apparmor=docker-default')
+        named = compose_config('', apparmor='cvengine-sentinel')['services']['sentinel']['security_opt']
+        self.assertEqual(named[1], 'apparmor=cvengine-sentinel')
+        self.assertTrue(named[0].startswith('seccomp=') and named[0].endswith('config/seccomp/playwright-chromium.json'), named)
+        for name, service in self.full['services'].items():
+            if name != 'sentinel':
+                self.assertFalse([o for o in service.get('security_opt', []) if 'cvengine-sentinel' in o or 'docker-default' in o], name)
 
     def test_the_image_carries_the_browser_as_the_screenshot_kind_needs_it(self):
         dockerfile, requirements = text('Dockerfile'), text('requirements.txt')

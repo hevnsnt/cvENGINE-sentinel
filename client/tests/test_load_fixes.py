@@ -237,6 +237,8 @@ class AppArmorTests(unittest.TestCase):
         self.assertIn('AppArmor', words)
         self.assertIn('user namespaces', words)
         self.assertNotIn('Target page', words)
+        self.assertIn('sudo scripts/apparmor.sh install', words)  # this repository's fix for a Sentinel host, not only the server's file
+        self.assertIn('README.md', words)
         self.assertEqual(shot_child.apparmor_words('net::ERR_CONNECTION_REFUSED'), '')
 
     def test_a_launch_that_dies_of_it_raises_the_plain_sandbox_error(self):
