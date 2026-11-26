@@ -247,8 +247,8 @@ class FetchTests(SimpleTestCase):
         connection.return_value.close.assert_called_once()
 
     def fetch_encoded(self, body, encoding):
-        from cvengine_scanner.tests.probes.test_transport import FakeResponse
-        response = FakeResponse(body, encoding)
+        from cvengine_scanner.tests.probes.test_read_body import Reply
+        response = Reply(body, encoding)
         response.status = 200
         with mock.patch('cvengine_scanner.probes.transport.resolve', return_value=((2, ('203.0.113.9', 443)),)), \
                 mock.patch('cvengine_scanner.probes.transport.HTTPConnection') as connection:

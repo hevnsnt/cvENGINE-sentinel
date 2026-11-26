@@ -157,52 +157,77 @@ class HTTPConnection(http.client.HTTPConnection):
         return response
 
 
-COMPRESSED_SLACK = 4096  # compressed bytes read beyond the decoded cap (headers and framing of a small page, never a larger allowance)
+COMPRESSED_SLACK = 4096  # compressed bytes the reader may consume beyond the decoded cap
+WIRE_HEAD = 16  # leading body bytes, as received before decoding, reported in ``wire['head']`` (a version digest reads a gzip header)
+
+# Size of one read from the response on the compressed path.
+_PIECE = 4096
 
 
-WIRE_HEAD = 16  # the bytes of a body ``read_body`` hands back as they came over the wire (``wire``)
+def _pick_wbits(encoding, first):
+    """Choose zlib window bits from the encoding and the first piece."""
+    if encoding == 'gzip':
+        return 16 + zlib.MAX_WBITS
+    # Deflate: zlib-wrapped when the two byte header looks valid, else bare.
+    if (
+        len(first) >= 2
+        and (first[0] & 0x0F) == 8
+        and ((first[0] << 8) | first[1]) % 31 == 0
+    ):
+        return zlib.MAX_WBITS
+    return -zlib.MAX_WBITS
 
 
 def read_body(response, max_bytes, wire=None):
-    """At most ``max_bytes`` of a response body, decoded. ``wire``, a dict when given, receives ``head``: the first ``WIRE_HEAD`` bytes as
-    they came over the connection, before any content decoding (a gzip file's own header, whose timestamp a version digest reads). Every in-process reader asks for ``Accept-Encoding: identity`` (``http.client`` adds
-    it by itself) and some embedded servers (printers, relays, cameras) answer gzip or deflate anyway, so a body with that
-    ``Content-Encoding`` is decompressed here instead of the page being dropped or read as binary. The cap is on the DECOMPRESSED output (a
-    compressed bomb stops at it: ``decompress`` is asked for no more than what is left) and the compressed input is bounded too, so neither
-    side can be made to grow. ``deflate`` is a zlib stream per the RFC, but some devices send a raw deflate stream with no header; both are
-    read. Raises ``ValueError`` for another content encoding, for a stream that does not decode and for one that ends early."""
-    max_bytes = max(0, int(max_bytes))
-    encoding = (response.getheader('Content-Encoding') or 'identity').strip().lower()
+    """Read a response body, decoding gzip or deflate, capped at max_bytes.
+
+    The probes ask for an uncompressed answer, but some embedded servers (printers, relays, cameras) compress anyway, so a gzip or
+    deflate body (zlib wrapped or bare) is decoded here. The cap applies to the decoded output and the compressed input is bounded by
+    ``max_bytes + COMPRESSED_SLACK``, so a decompression bomb stops at the cap. ``wire``, a dict when given, receives ``head``: the first
+    ``WIRE_HEAD`` bytes as they came over the connection. Raises ``ValueError`` for another encoding, a stream that does not decode, and
+    a stream that ends before its end marker while the cap is not reached.
+    """
+    max_bytes = max(int(max_bytes), 0)
+
+    header = response.getheader('Content-Encoding')
+    encoding = (header or '').strip().lower()
+
     if encoding in ('', 'identity'):
-        body = response.read(max_bytes) or b''
+        data = response.read(max_bytes)
+        if data is None:
+            data = b''
         if wire is not None:
-            wire['head'] = body[:WIRE_HEAD]
-        return body
+            wire['head'] = data[:WIRE_HEAD]
+        return data
+
     if encoding not in ('gzip', 'deflate'):
         raise ValueError('unsupported probe content encoding')
-    decoder, parts, remaining = None, [], max_bytes
-    compressed_budget = max_bytes + COMPRESSED_SLACK
-    while remaining and compressed_budget and not (decoder and decoder.eof):
-        chunk = response.read(min(4096, compressed_budget))
-        if not chunk:
+
+    out_left = max_bytes
+    in_left = max_bytes + COMPRESSED_SLACK
+    decoder = None
+    parts = []
+
+    while out_left > 0 and in_left > 0 and not (decoder is not None and decoder.eof):
+        piece = response.read(min(_PIECE, in_left))
+        if not piece:
             break
-        compressed_budget -= len(chunk)
-        if wire is not None and 'head' not in wire:
-            wire['head'] = chunk[:WIRE_HEAD]
+        in_left -= len(piece)
+
         if decoder is None:
-            if encoding == 'gzip':
-                wbits = 16 + zlib.MAX_WBITS
-            elif len(chunk) >= 2 and chunk[0] & 0x0F == 8 and ((chunk[0] << 8) | chunk[1]) % 31 == 0:
-                wbits = zlib.MAX_WBITS
-            else:
-                wbits = -zlib.MAX_WBITS
-            decoder = zlib.decompressobj(wbits)
+            # First non-empty piece: report its head and pick the decoder.
+            if wire is not None:
+                wire['head'] = piece[:WIRE_HEAD]
+            decoder = zlib.decompressobj(_pick_wbits(encoding, piece))
+
         try:
-            decoded = decoder.decompress(chunk, remaining)
+            chunk = decoder.decompress(piece, out_left)
         except zlib.error as exc:
             raise ValueError('invalid compressed probe response') from exc
-        parts.append(decoded)
-        remaining -= len(decoded)
-    if remaining and decoder is not None and not decoder.eof:
+        out_left -= len(chunk)
+        parts.append(chunk)
+
+    if out_left > 0 and decoder is not None and not decoder.eof:
         raise ValueError('incomplete compressed probe response')
+
     return b''.join(parts)
