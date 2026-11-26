@@ -96,6 +96,7 @@ RUN set -e; mkdir -p /out; GH=https://github.com; \
         "-X=github.com/sensepost/gowitness/internal/version.GitHash=${GOWITNESS_VERSION} -X=github.com/sensepost/gowitness/internal/version.GoBuildEnv=go${GOVERSION}"; \
     build-go-tool trajan "${GH}/praetorian-inc/trajan/archive/refs/tags/v${TRAJAN_VERSION}.tar.gz" "${TRAJAN_SRC_SHA256}" ./cmd/trajan 0 \
         "-X=main.Version=${TRAJAN_VERSION}"; \
+    mkdir -p /out/doc/go && cp /usr/local/go/LICENSE /usr/local/go/PATENTS /out/doc/go/; \
     ls -l /out
 
 # The Python packages that ship no wheel for this image's Python on every architecture (arc4, a C extension, everywhere; aardwolf, a Rust
@@ -213,7 +214,7 @@ RUN curl -fsSLo /tmp/nuclei-templates.tgz "https://github.com/projectdiscovery/n
 # The release of those baked templates, reported with every nuclei run that uses them (client.tools.IMAGE_TEMPLATES_VERSION).
 ENV CVENGINE_NUCLEI_TEMPLATES_VERSION=${NUCLEI_TEMPLATES_VERSION}
 
-# WPScan (GPLv3, run as a separate program, never linked): mirrors cveFeed/wpscan_scan.py's own invocation. Reproducible: WPScan and every gem it
+# WPScan (WPScan Public Source License: commercial use needs WPScan's commercial licence; run as a separate program, never linked): mirrors cveFeed/wpscan_scan.py's own invocation. Reproducible: WPScan and every gem it
 # needs are installed at the exact versions of docker/wpscan/Gemfile.lock, each downloaded .gem checked against the lock's sha256 before anything is
 # installed (nothing is resolved at build time, so two builds of one commit get the same gems). Its vulnerability database is NOT fetched here: it
 # changes daily, so a build that fetched it could never be repeated. WPScan downloads it itself on the first run that needs it (a missing database
@@ -301,7 +302,7 @@ RUN set -e; playwright install --with-deps --only-shell chromium \
     && python3 -c "$CHECK" \
     && runuser -u sentinel -- env HOME=/tmp python3 -c "$CHECK"
 
-# bbot (GPLv3, run as a separate program, never imported) for a bbot_discovery task (client/bbot.py), in its own venv so its pins cannot clash with the
+# bbot (AGPL-3.0, run unmodified as a separate program, never imported) for a bbot_discovery task (client/bbot.py), in its own venv so its pins cannot clash with the
 # client's. The same pins as the server repository's web/Dockerfile (BBOT_VERSION, TZDATA_VERSION: without zone data bbot cannot find "UTC").
 ARG BBOT_VERSION
 # The venv comes finished from the bbot-builder stage above (no compiler or headers in this image for it).
@@ -381,6 +382,19 @@ RUN h="$(cat /tmp/gitmeta/HEAD 2>/dev/null || true)"; v=""; \
       *) v="$h" ;; \
     esac; \
     printf '%s' "$v" | tr -cd '0-9a-f' | cut -c1-12 > /opt/sentinel/VERSION; rm -rf /tmp/gitmeta
+
+# The licence texts and notices (/usr/share/licenses/cvengine-sentinel): the Sentinel's own GPL-3.0 text, THIRD-PARTY-NOTICES.txt, SOURCE-OFFER.txt
+# (where the source of every copyleft component is), nmap's NPSL and node2shell's MIT text (docker/licenses), the Go tools' licences with the
+# go.mod, go.sum and module licences each was built from (gotools stage), and, gathered by docker/licenses/collect.py from what is installed, WPScan's
+# and its gems', testssl.sh's, the templates', Kingfisher's, every Python package's, Chromium's and the Ubuntu package list. collect.py fails the
+# build when a text the notices promise is missing; the image workflow checks the same files in the built image.
+COPY LICENSE /usr/share/licenses/cvengine-sentinel/LICENSE
+COPY docker/licenses/THIRD-PARTY-NOTICES.txt docker/licenses/SOURCE-OFFER.txt /usr/share/licenses/cvengine-sentinel/
+COPY docker/licenses/nmap /usr/share/licenses/cvengine-sentinel/nmap
+COPY docker/licenses/node2shell-scanner /usr/share/licenses/cvengine-sentinel/node2shell-scanner
+COPY --from=gotools /out/doc /usr/share/licenses/cvengine-sentinel/
+COPY docker/licenses/collect.py /tmp/collect-licenses.py
+RUN python3 /tmp/collect-licenses.py && rm -f /tmp/collect-licenses.py
 
 # Raw sockets for an unprivileged user: file capabilities on exactly the two tools that send raw packets (nmap's SYN scan, OS detection and ARP
 # discovery, naabu's SYN scan). They only take effect because the container is given NET_RAW (docker-compose.yml drops every other capability, NET_ADMIN

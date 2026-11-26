@@ -1,0 +1,67 @@
+CVENGINE SENTINEL IMAGE: WHERE TO GET THE SOURCE
+
+This image contains programs licensed under the GNU General Public License (versions 2 and 3), the GNU Affero
+General Public License version 3, the Nmap Public Source License 0.95 and other licenses that require the
+corresponding source to be available to anyone who receives the image. This file says where that source is.
+
+1. Online, from the places below (GPL-3.0 section 6(d), AGPL-3.0 section 6(d)). They stay available for as long
+   as this image is offered. Each tarball is pinned by sha256 in the Dockerfile at the commit the image reports.
+
+   The Sentinel itself (GPL-3.0-only)
+     https://github.com/hevnsnt/cvENGINE-sentinel at the commit in /opt/sentinel/VERSION. That commit's
+     Dockerfile and docker/ directory are the complete build instructions for this image.
+
+   nmap 7.993 (NPSL 0.95)
+     https://nmap.org/dist/nmap-7.993.tar.bz2
+     sha256 270e55f04915bfcecb5db8feb959d4c5ba86a48c094520a4f1c07571e1c79c59
+     (the amd64 image carries the binary of https://nmap.org/dist/nmap-7.993-1.x86_64.rpm, built by Nmap from
+     that same release)
+
+   gowitness 3.2.2 (GPL-3.0), MODIFIED
+     Upstream: https://github.com/sensepost/gowitness/archive/refs/tags/3.2.2.tar.gz
+     sha256 8c63b547bcafcae2b93246a598fb06124d8794cb8d5d3719c5cfc791a78ad3d2
+     The modification: docker/gotools/build.sh raises the Go modules named in the Dockerfile's
+     GO_DEPENDENCY_FLOOR to those versions and runs go mod tidy before building. The resulting go.mod and go.sum
+     and the list of raised modules are shipped in gowitness/ beside this file. The Go modules themselves are
+     fetched from proxy.golang.org at the versions go.sum records.
+
+   testssl.sh 3.2.5 (GPL-2.0)
+     Shipped as its own source in /opt/testssl; also
+     https://github.com/testssl/testssl.sh/archive/refs/tags/v3.2.5.tar.gz
+
+   bbot 3.1.0 and its venv (AGPL-3.0, GPL-3.0, GPL-2.0 and permissive)
+     The Python source is in the image (/opt/bbot-venv). The source of every package, including those with
+     compiled extensions (blastdns, blasthttp, cloudcheck, radixtarget, asndb, yara-python), is the source
+     distribution on PyPI at the version python/bbot-venv/INDEX.txt lists: https://pypi.org/project/<name>/<version>/
+     and the project repository the package metadata names.
+
+   python-gvm and the other packages of the client venv
+     https://pypi.org/project/<name>/<version>/ at the versions python/venv/INDEX.txt lists.
+
+   WPScan 4.2.1 and its gems
+     https://rubygems.org/downloads/<gem>-<version>.gem for each gem and version in docker/wpscan/Gemfile.lock
+     (a .gem file is the gem's source); WPScan: https://github.com/wpscanteam/wpscan/tree/v4.2.1
+
+   nuclei 3.11.1, naabu 2.7.0, sshamble 0.5.1, trajan 1.0.2, Kingfisher 2.19.1, nuclei-templates v10.5.2,
+   Go 1.27.4
+     https://github.com/projectdiscovery/nuclei/archive/refs/tags/v3.11.1.tar.gz
+     https://github.com/projectdiscovery/naabu/archive/refs/tags/v2.7.0.tar.gz
+     https://github.com/runZeroInc/sshamble/archive/refs/tags/v0.5.1.tar.gz
+     https://github.com/praetorian-inc/trajan/archive/refs/tags/v1.0.2.tar.gz
+     https://github.com/mongodb/kingfisher/tree/v2.19.1
+     https://github.com/projectdiscovery/nuclei-templates/archive/refs/tags/v10.5.2.tar.gz
+     https://go.dev/dl/go1.27.4.src.tar.gz
+
+   Chromium headless shell 159.0.8154.6
+     https://chromium.googlesource.com/chromium/src/+/refs/tags/159.0.8154.6
+
+   Ubuntu 26.04 packages
+     The Ubuntu archive, at the source package and version ubuntu-packages.txt lists for each installed package:
+     https://launchpad.net/ubuntu/+source/<source package>, or `apt-get source <source package>=<version>`.
+
+2. Written offer. For at least three years after we last distribute this image, and for as long as we offer
+   spare parts or support for it, anyone who has a copy of it may ask for the complete corresponding source of
+   every GPL, AGPL or NPSL component in it, on a medium customarily used for software interchange, for no more
+   than our reasonable cost of physically performing that distribution. Ask by opening an issue titled "Source
+   request" at https://github.com/hevnsnt/cvENGINE-sentinel/issues, naming the image digest or the version in
+   /opt/sentinel/VERSION.
