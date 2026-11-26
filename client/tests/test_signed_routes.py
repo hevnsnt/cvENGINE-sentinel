@@ -153,7 +153,12 @@ class RunTests(Base):
 
 
 class GateTests(Base):
+    """An external Sentinel whose operator keeps stored sign-ins off it (CVENGINE_SENTINEL_SIGNED_IN=0)."""
     builtin = False
+
+    def setUp(self):
+        super().setUp()
+        os.environ['CVENGINE_SENTINEL_SIGNED_IN'] = '0'
 
     def test_an_external_sentinel_refuses_the_task_and_never_reads_the_credential(self):
         engine = self.engine()
@@ -167,6 +172,32 @@ class GateTests(Base):
         self.assertIn('route_probe_signed', config.CAPABILITIES)
         with mock.patch.object(config, 'server_knows', return_value=True), mock.patch.object(daemon, 'detected_tools', return_value=[]):
             self.assertNotIn('route_probe_signed', daemon.runnable_kinds())
+
+
+class ExternalTests(Base):
+    """An external Sentinel the server offered the task (the sign-in's owner allowed external Sentinels): it declares the kind and runs it like the
+    built-in scanner, reading the sign-in once."""
+    builtin = False
+
+    def test_an_external_sentinel_declares_the_kind(self):
+        with mock.patch.object(config, 'server_knows', return_value=True), mock.patch.object(daemon, 'detected_tools', return_value=[]):
+            self.assertIn('route_probe_signed', daemon.runnable_kinds())
+
+    def test_an_external_sentinel_runs_it_with_one_read(self):
+        engine = self.engine()
+        runner = mock.Mock(return_value={'routes': []})
+        with mock.patch.dict(tools.RUNNERS, {'route_probe_signed': runner}):
+            engine._execute(TASK, lambda proc: None)
+        engine.client.call.assert_called_once_with('POST', 'sentinel/tasks/11/secret')
+        runner.assert_called_once()
+
+    def test_a_task_that_does_not_name_a_stored_sign_in_never_runs_signed_out(self):
+        engine = self.engine()
+        runner = mock.Mock()
+        with mock.patch.dict(tools.RUNNERS, {'route_probe_signed': runner}), self.assertRaises(tools.TargetError):
+            engine._execute({**TASK, 'signed_in': False}, lambda proc: None)
+        runner.assert_not_called()
+        engine.client.call.assert_not_called()
 
 
 class BuiltinDeclaresTests(Base):

@@ -154,7 +154,8 @@ class RegisterTests(unittest.TestCase):
         self.assertEqual(body['name'], 'my-sentinel')
         self.assertEqual(body['max_concurrent'], 5)
         self.assertEqual(body['tools'], ['nmap', 'naabu', 'bbot'])
-        self.assertEqual(sorted(body['capabilities']), sorted(k for k in config.CAPABILITIES if k != 'route_probe_signed'))  # the built-in scanner's kind: no other Sentinel declares it
+        # an external Sentinel declares the signed-in route check too: the server offers it one only when a sign-in's owner allowed external Sentinels
+        self.assertEqual(sorted(body['capabilities']), sorted(config.CAPABILITIES))
         self.assertNotIn('scope', body)
 
     def test_ssh_probe_is_declared_only_with_the_sshamble_binary(self):

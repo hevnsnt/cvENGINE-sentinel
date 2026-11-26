@@ -217,7 +217,7 @@ def runnable_kinds():
         kinds.remove('web_screenshot')
     if 'web_screenshot' in kinds and not shot.available():  # an image built without the browser (or a source checkout) never takes screenshot work
         kinds.remove('web_screenshot')
-    if 'route_probe_signed' in kinds and not config.builtin():  # the stored sign-in is read by cvENGINE's own scanner only; no other Sentinel declares or takes the kind
+    if 'route_probe_signed' in kinds and not config.signed_in_allowed():  # an operator who said never here: the kind is not declared or taken
         kinds.remove('route_probe_signed')
     if 'secrets_scan' in kinds and not tools.kingfisher_ready():  # the binary is in the image; a source checkout may have none
         kinds.remove('secrets_scan')
@@ -327,7 +327,7 @@ def info():
         out['builtin'] = True
         out['features'] = list(config.BUILTIN_FEATURES)
     else:
-        out['features'] = list(config.EXTERNAL_FEATURES)
+        out['features'] = [f for f in config.EXTERNAL_FEATURES if f != config.SIGNED_IN_FEATURE or config.signed_in_allowed()]
     if config.version():
         out['version'] = config.version()
     update = control.read_update()
@@ -1342,9 +1342,9 @@ class Daemon:
                               # contract 10: the light pass as the network detection pass (network/detection templates on the non-web ports only)
                               **({'network_detection': True} if kind == 'nuclei_light' and target.get('network_detection') is True else {}))
             if task.get('signed_in'):
-                # a signed-in pass names a stored sign-in: only the built-in scanner reads it (signed_in.py), and nothing ever runs it signed out
-                if not config.builtin():
-                    raise tools.TargetError('signed-in work runs only on the built-in scanner; this Sentinel does not take it')
+                # a signed-in pass names a stored sign-in: read once (signed_in.py) where the server sent it, and nothing ever runs it signed out
+                if not config.signed_in_allowed():
+                    raise tools.TargetError('this Sentinel does not take signed-in work (CVENGINE_SENTINEL_SIGNED_IN=0)')
                 try:
                     out = signed_in.run(self.client, task['id'], targets, lambda path: nuclei(secret_file=path))
                 except signed_in.SignedInError as exc:
@@ -1366,9 +1366,9 @@ class Daemon:
         elif kind == 'bbot_discovery':  # streamed: it posts its batches itself and returns the result that closes the run
             return runner(target, self.client, task['id'], register=register, internal=config.is_internal(), halted=self._halted)
         elif kind == 'route_probe_signed':
-            # a signed-in route check names a stored sign-in (task['signed_in']): only the built-in scanner reads it, and nothing ever runs it signed out
-            if not config.builtin() or not task.get('signed_in'):
-                raise tools.TargetError('the signed-in route check runs only on the built-in scanner, for a task that names a stored sign-in')
+            # a signed-in route check names a stored sign-in (task['signed_in']): read once where the server sent it, and nothing ever runs it signed out
+            if not config.signed_in_allowed() or not task.get('signed_in'):
+                raise tools.TargetError('the signed-in route check runs only for a task that names a stored sign-in, on a Sentinel that takes signed-in work')
             try:
                 out = signed_in.run_sign_in(self.client, task['id'], lambda sign_in: runner(target, sign_in, register=register))
             except signed_in.SignedInError as exc:
