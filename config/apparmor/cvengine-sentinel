@@ -1,0 +1,52 @@
+# AppArmor profile for the Sentinel container (README.md, "Screenshots and AppArmor"). Ported from the cvENGINE server's
+# config/apparmor/cvengine-scanner, the same profile under this name.
+#
+# Why: with AppArmor 4 (Ubuntu 24.04 and later, recent Debian and Kali) Docker's own `docker-default` profile refuses the user namespace Chromium's
+# sandbox is built on, and the screenshot browser dies at launch ("FATAL credentials.cc ... Permission denied (13)"; the kernel log says
+# apparmor="DENIED" operation="userns_create" profile="docker-default"). The seccomp profile docker-compose.yml already sets is not enough on its own.
+# This is `docker-default` (what Docker generates for every container) under another name, plus one allowance: `userns,`. Nothing else is loosened,
+# and nothing outside this container is affected.
+#
+# Load it and run the Sentinel under it with one root step from the checkout (it keeps it loaded across reboots too):
+#     sudo scripts/apparmor.sh install
+# then, as the checkout's owner: docker compose up -d sentinel. It needs AppArmor 4.0 or newer (the `abi <abi/4.0>` line), which is also the
+# version that brought the restriction; an older AppArmor does not block Chromium and needs nothing.
+
+abi <abi/4.0>,
+#include <tunables/global>
+
+profile cvengine-sentinel flags=(attach_disconnected,mediate_deleted) {
+  #include <abstractions/base>
+
+  network,
+  capability,
+  file,
+  umount,
+
+  # Host processes may signal container processes (docker kill, stop); processes of this container may signal each other.
+  signal (receive) peer=unconfined,
+  signal (receive) peer=docker-default,
+  signal (send,receive) peer=cvengine-sentinel,
+  ptrace (trace,read,tracedby,readby) peer=cvengine-sentinel,
+
+  # The one addition to docker-default: Chromium's sandbox creates user namespaces.
+  userns,
+
+  deny @{PROC}/* w,
+  deny @{PROC}/{[^1-9],[^1-9][^0-9],[^1-9s][^0-9y][^0-9s],[^1-9][^0-9][^0-9][^0-9/]*}/** w,
+  deny @{PROC}/sys/[^k]** w,
+  deny @{PROC}/sys/kernel/{?,??,[^s][^h][^m]**} w,
+  deny @{PROC}/sysrq-trigger rwklx,
+  deny @{PROC}/kcore rwklx,
+
+  deny mount,
+
+  deny /sys/[^f]*/** wklx,
+  deny /sys/f[^s]*/** wklx,
+  deny /sys/fs/[^c]*/** wklx,
+  deny /sys/fs/c[^g]*/** wklx,
+  deny /sys/fs/cg[^r]*/** wklx,
+  deny /sys/firmware/** rwklx,
+  deny /sys/devices/virtual/powercap/** rwklx,
+  deny /sys/kernel/security/** rwklx,
+}

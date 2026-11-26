@@ -138,6 +138,31 @@ jobs:
           status=0; probe > "$RUNNER_TEMP/sandbox-off.json" || status=$?  # no pipe: the probe's own exit status is what counts
           cat "$RUNNER_TEMP/sandbox-off.json"
           [ "$status" = 1 ] && grep -q '"engaged":false' "$RUNNER_TEMP/sandbox-off.json" || { echo "::error::without the profile the browser did not fail closed (status $status)"; exit 1; }
+      # AppArmor 4 (Ubuntu 24.04 and later, recent Debian and Kali): Docker's docker-default profile refuses the user namespace, so the seccomp profile alone
+      # is not enough. The runner is Ubuntu 24.04 with the restriction switched off; switch it on, then the real root step (scripts/apparmor.sh install:
+      # the parser check, the load, the boot unit, the .env line) must make the sandbox engage under config/apparmor/cvengine-sentinel. Undone at the end so
+      # the later steps run as before.
+      - name: Chromium's sandbox under AppArmor's user namespace restriction, with the Sentinel's profile
+        run: |
+          probe() { docker run --rm --security-opt seccomp=config/seccomp/playwright-chromium.json "$@" --entrypoint python3 cvengine-sentinel-local:ci -m client.shot_child --probe; }
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=1
+          sh scripts/apparmor.sh status
+          status=0; probe > "$RUNNER_TEMP/aa-default.json" || status=$?
+          cat "$RUNNER_TEMP/aa-default.json"
+          [ "$status" = 1 ] && grep -q '"engaged":false' "$RUNNER_TEMP/aa-default.json" || echo "::warning::under docker-default with the restriction on the sandbox did not fail closed here (status $status)"
+          sudo sh scripts/apparmor.sh install
+          grep -qx 'CVENGINE_SENTINEL_APPARMOR=cvengine-sentinel' .env
+          systemctl is-enabled cvengine-sentinel-apparmor.service
+          grep -q 'Before=docker.service' /etc/systemd/system/cvengine-sentinel-apparmor.service
+          sh scripts/apparmor.sh status | tee "$RUNNER_TEMP/aa-status.txt"
+          grep -q 'profile cvengine-sentinel: loaded' "$RUNNER_TEMP/aa-status.txt"
+          docker compose config --format json | python3 -c "import json, sys; o = json.load(sys.stdin)['services']['sentinel']['security_opt']; print(o); assert 'apparmor=cvengine-sentinel' in o"
+          probe --security-opt apparmor=cvengine-sentinel | tee "$RUNNER_TEMP/aa-profile.json"
+          grep -q '"engaged":true' "$RUNNER_TEMP/aa-profile.json" || { echo "::error::Chromium's sandbox did not engage under the cvengine-sentinel AppArmor profile"; exit 1; }
+          sudo systemctl start cvengine-sentinel-apparmor.service && systemctl is-active cvengine-sentinel-apparmor.service
+          sudo sh scripts/apparmor.sh remove
+          if grep -q '^CVENGINE_SENTINEL_APPARMOR=' .env; then echo "::error::remove left the line in .env"; exit 1; fi
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: The browser takes a picture of a page, inside its sandbox, through the vetting proxy
         run: |
           docker run --rm --security-opt seccomp=config/seccomp/playwright-chromium.json -v "$PWD/client/tests:/opt/sentinel/client/tests:ro" --entrypoint python3 cvengine-sentinel-local:ci -m unittest client.tests.test_shot_browser -v 2>&1 | tee "$RUNNER_TEMP/browser-tests.txt"

@@ -67,8 +67,13 @@ services:
     # microsoft/playwright v1.65.1, the driver that Playwright for Python v1.65.2 bundles (the file is identical on its release-1.65 branch and unchanged since v1.64.1; SHA-256 cc3e61cabda6bbc1e53e54d27ba4d55a9d3be829b6dd1a596f4a7b31b1cc7849). Without it the sandbox cannot start and this
     # Sentinel takes no screenshot (its log and the result say why); every other kind is unaffected. A host that refuses unprivileged user namespaces
     # (a kernel setting or an AppArmor rule) needs that allowed as well. `docker compose up -d` recreates the container, so an update applies it.
+    # The AppArmor entry: Docker's own default profile (docker-default, what every container gets anyway) unless .env names another. With AppArmor 4
+    # that default refuses Chromium's user namespace, and `sudo scripts/apparmor.sh install` loads config/apparmor/cvengine-sentinel (docker-default
+    # plus `userns,`) and writes CVENGINE_SENTINEL_APPARMOR=cvengine-sentinel to .env (README.md, "Screenshots and AppArmor"). Docker ignores the entry
+    # on a host without AppArmor, so nothing changes there.
     security_opt:
       - seccomp=./config/seccomp/playwright-chromium.json
+      - apparmor=${CVENGINE_SENTINEL_APPARMOR:-docker-default}
     # Healthy while the daemon keeps writing a fresh status (client/control.py health).
     healthcheck:
       test: ["CMD", "python3", "-m", "client.control", "health"]

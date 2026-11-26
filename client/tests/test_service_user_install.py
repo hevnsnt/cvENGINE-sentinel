@@ -11,7 +11,7 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 BASH = shutil.which('bash') or 'bash'
 SHARED = ('install.sh', 'setup.sh', 'docker-compose.yml', '.env.example', 'docker-compose.override.yml.example')
-SCRIPTS = ('install-updater.sh', 'migrate-to-service-user.sh', 'update.sh', 'refresh-feeds.sh')
+SCRIPTS = ('install-updater.sh', 'migrate-to-service-user.sh', 'update.sh', 'refresh-feeds.sh', 'apparmor.sh')
 
 
 def put(path, text, mode=0o755):
@@ -33,6 +33,7 @@ def copy_repo(dest):
         shutil.copy(os.path.join(ROOT, name), dest)
     for name in SCRIPTS:
         shutil.copy(os.path.join(ROOT, 'scripts', name), os.path.join(dest, 'scripts'))
+    shutil.copytree(os.path.join(ROOT, 'config', 'apparmor'), os.path.join(dest, 'config', 'apparmor'), dirs_exist_ok=True)
     return dest
 
 
@@ -172,6 +173,30 @@ class InstallTests(ServiceUserBase):
         self.assertIn('User:       cvengine', out.stdout)
         self.assertIn(f'Directory:  {self.dest}', out.stdout)
         self.assertIn('equivalent to root', out.stdout)
+
+    def test_on_a_host_with_apparmor_4_the_profile_is_loaded_and_named_before_the_first_compose_up(self):
+        # Docker's default AppArmor profile refuses Chromium's user namespace there (a Kali 7.1 kernel with no restrict sysctl did, as do Ubuntu 24.04+ kernels)
+        put(os.path.join(self.prefix, 'sys/module/apparmor/parameters/enabled'), 'Y\n', 0o644)
+        put(os.path.join(self.bin, 'apparmor_parser'), '#!/bin/sh\necho "apparmor_parser $*" >> "$STUB_LOG"\n'
+            '[ "$1" = --version ] && echo "AppArmor parser version 4.1.8"\nexit 0\n')
+        out = self.install('--light', '--external', '--yes', '--blob', '-')
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        calls = self.calls()
+        etc_profile = os.path.join(self.prefix, 'etc/apparmor.d/cvengine-sentinel')
+        self.assertIn(f'apparmor_parser -r -W {etc_profile}', calls)
+        self.assertLess(calls.index('apparmor_parser -r -W'), calls.index('docker compose up -d'))
+        self.assertIn('CVENGINE_SENTINEL_APPARMOR=cvengine-sentinel\n', read(os.path.join(self.dest, '.env')))
+        self.assertEqual(os.stat(os.path.join(self.dest, '.env')).st_mode & 0o777, 0o600)
+        self.assertIn('Before=docker.service', self.unit('cvengine-sentinel-apparmor.service'))
+        self.assertIn('AppArmor:   profile cvengine-sentinel loaded', out.stdout)
+
+    def test_a_host_without_apparmor_gets_no_profile_and_no_unit(self):
+        out = self.install('--light', '--external', '--yes', '--blob', '-')
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertNotIn('apparmor_parser', self.calls())
+        self.assertNotIn('CVENGINE_SENTINEL_APPARMOR', read(os.path.join(self.dest, '.env')))
+        self.assertFalse(os.path.exists(os.path.join(self.prefix, 'etc/systemd/system/cvengine-sentinel-apparmor.service')))
+        self.assertIn('AppArmor:   not needed', out.stdout)
 
     def test_the_blob_can_come_from_the_environment_and_still_goes_through_stdin(self):
         out = self.install('--light', '--external', '--yes', stdin='', CVENGINE_SENTINEL_BLOB=self.BLOB)
