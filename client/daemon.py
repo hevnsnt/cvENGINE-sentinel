@@ -109,6 +109,19 @@ BLOCKED_CODE = 'agent_blocked'  # 403 ``code``: an active agent whose user or to
 REVOKED_CODE = 'token_revoked'  # 403 ``code``: the token itself is revoked or invalid
 BLOCKED_TEXT = 'no work can be assigned'  # what a server that sends no ``code`` yet says for such a refusal
 _REVOKED_TEXT = re.compile(r'\b(revoked|invalid)\b', re.IGNORECASE)
+REFUSED_MIN_BACKOFF = 30.0  # seconds a Sentinel whose address the server refuses (a ban) waits before asking again, doubling to ...
+REFUSED_MAX_BACKOFF = 600.0  # ... this: a ban lasts hours, and asking every second would only keep it in the server's log
+
+
+def _address_refused(exc):
+    """Whether ``exc`` is a 403 that refuses this Sentinel's ADDRESS, not its token: the server marks such an answer with ``X-CVEngine-Refusal``
+    (an input-guard ban, its IP allowlist). An older server sends no mark, but every refusal of a token or a right it sends is a JSON error, while its
+    ban and allowlist answers (and a proxy's 403 page in front of it) are not: a 403 whose body is not a JSON error is read as an address refusal too."""
+    if getattr(exc, 'status', None) != 403:
+        return False
+    if getattr(exc, 'refusal', None):
+        return True
+    return getattr(exc, 'json_error', None) is False and getattr(exc, 'code', None) is None
 
 
 def _retryable(exc):
@@ -405,6 +418,7 @@ class Daemon:
         self._in_flight = {}  # task_id -> {'proc', 'done', 'started', 'dropped', 'finishing', 'kind', 'runnable'}
         self._polling = False  # a long poll is outstanding: it may return a task, so the updater must not see this Sentinel idle
         self._backoff = MIN_BACKOFF
+        self._refused_backoff = REFUSED_MIN_BACKOFF  # the wait after the server refused this Sentinel's address, doubling to REFUSED_MAX_BACKOFF
         self.admission = admission.Admission()
         self._blocked_since = {}  # heavy kind -> when it first did not fit the memory budget (monotonic), cleared when it fits
         self._reserve = None  # (kind, since): the room that frees up next is kept for this kind
@@ -539,6 +553,9 @@ class Daemon:
         """Stop for good when the server says this Sentinel's token is no longer valid: backing off and polling forever would hide it. The built-in
         scanner stops with ``REENROLL`` instead, and its entry point enrols it again with the next blob the server writes (no person is involved)."""
         if getattr(exc, 'status', None) not in AUTH_STATUSES:
+            return False
+        if _address_refused(exc):  # a ban of this address, not the token: never stop, never ask for a re-enrollment
+            self._note_refused(exc)
             return False
         blocked = None if judged else _blocked_reason(exc)  # ``judged``: ``_wait_while_held`` already found it is neither held nor blocked
         if blocked is not None:  # the agent is active and its token good, but its user or token cannot be given work now: wait, never re-enrol
@@ -959,6 +976,8 @@ class Daemon:
                 self._reserve = None
                 self._blocked_since.pop(reserved, None)
         self._backoff = MIN_BACKOFF
+        self._refused_backoff = REFUSED_MIN_BACKOFF
+        self._quiet_recovered('refused', 'the server accepts this address again')
         self._quiet_recovered('poll', 'cvENGINE answers polls again')
         if self._held_logged is not None:
             logger.info('cvENGINE no longer holds this Sentinel; taking work again')
@@ -993,6 +1012,9 @@ class Daemon:
 
         An active Sentinel whose user or token cannot be given work (``exc`` is a 403 with ``code`` ``agent_blocked``, or "no work can be assigned"
         without a ``code``: ``_blocked_reason``) is held the same way, unless ``GET sentinel`` says its token or the agent is revoked."""
+        if _address_refused(exc):  # the server refuses this address (banned or blocked): back off, the token is fine
+            self._wait_refused(exc)
+            return True
         blocked = _blocked_reason(exc)
         if getattr(exc, 'code', None) == BLOCKED_CODE:
             return self._hold_blocked(blocked)
@@ -1021,6 +1043,21 @@ class Daemon:
                            'takes work again once an administrator approves or reinstates it in cvENGINE', what, f' ({note})' if note else '')
         self.stop_event.wait(self.heartbeat_seconds)
         return True
+
+    def _note_refused(self, exc):
+        """Say (once, then every ``QUIET_LOG_SECONDS``) that the server refuses this Sentinel's address. Never a request to re-enroll: the token is fine."""
+        excerpt = _clip(getattr(exc, 'excerpt', None) or getattr(exc, 'message', '') or '', 200)
+        mark = getattr(exc, 'refusal', None)
+        self._quiet_warning('refused', 'the server refused this address (banned or blocked): %s', f'{excerpt}{f" [{mark}]" if mark else ""}. The token '
+                            'is fine: do not re-enroll. An App Admin can lift the ban in cvENGINE (Settings, IP allowlist and bans); this Sentinel keeps '
+                            'asking, less and less often')
+
+    def _wait_refused(self, exc):
+        """The poll was refused because of this Sentinel's address: say so and wait, doubling from ``REFUSED_MIN_BACKOFF`` to ``REFUSED_MAX_BACKOFF``."""
+        self._note_refused(exc)
+        wait = self._refused_backoff
+        self._refused_backoff = min(REFUSED_MAX_BACKOFF, self._refused_backoff * 2)
+        self.stop_event.wait(wait * random.uniform(0.8, 1.0))
 
     def _hold_blocked(self, reason):
         self._note_blocked(reason)
