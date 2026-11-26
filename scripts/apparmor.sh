@@ -157,8 +157,12 @@ status() {
   _rc=0; aa_loaded || _rc=$?
   case "$_rc" in 0) say "profile $AA_PROFILE: loaded" ;; 1) say "profile $AA_PROFILE: not loaded" ;; *) say "profile $AA_PROFILE: cannot tell from this user" ;; esac
   if [ -f "$AA_UNITS/$AA_UNIT" ]; then say "boot unit: $AA_UNIT installed"; else say "boot unit: not installed"; fi
-  _v=""; [ -n "$DIR" ] && _v=$(aa_env_value "$ENVFILE")
-  say "the Sentinel runs under: ${_v:-docker-default} ($AA_ENV_KEY in .env)"
+  if [ -n "$DIR" ] && [ -e "$ENVFILE" ] && [ ! -r "$ENVFILE" ]; then
+    say "the Sentinel runs under: cannot tell, $ENVFILE is not readable by $(id -un) (run status as its owner or root)"
+  else
+    _v=""; [ -n "$DIR" ] && _v=$(aa_env_value "$ENVFILE")
+    say "the Sentinel runs under: ${_v:-docker-default} ($AA_ENV_KEY in .env)"
+  fi
 }
 
 install_profile() {
