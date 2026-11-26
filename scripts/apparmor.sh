@@ -97,6 +97,7 @@ aa_env_write() { # aa_env_write ENVFILE OWNER [VALUE]: set or (no VALUE) delete 
   rm -f "$_t"
 }
 
+# shellcheck disable=SC2034 # AA_NOTE is read by scripts/update.sh, which sources this file
 aa_update_note() { # aa_update_note ENVFILE PROFILEFILE: for scripts/update.sh. Sets AA_NOTE (what to say, empty when all is well) and exports the fallback.
   AA_NOTE=""
   _set=$(aa_env_value "$1")
