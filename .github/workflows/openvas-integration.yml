@@ -1,10 +1,10 @@
 name: OpenVAS integration
 
-# Brings up the pinned Greenbone gvmd and runs the Sentinel's login bootstrap and readiness check against it, because a mock cannot catch gvmd
+# Brings up Greenbone's current gvmd (its `stable` tag) and runs the Sentinel's login bootstrap and readiness check against it, because a mock cannot catch gvmd
 # refusing a request python-gvm builds (the default user changing its own password answered "Failed to find user", 404, and shipped untested).
 # It does NOT run a scan: a scan needs the vulnerability-test feeds, which take hours and tens of GB to sync; see README.md, "Testing OpenVAS".
-# Runs when the OpenVAS client, the compose pins, the image or the pinned python-gvm change, daily (Greenbone replaces what its images point
-# to, so a pin can vanish from the registry), and on demand.
+# Runs when the OpenVAS client, the compose file, the image or the pinned python-gvm change, daily (Greenbone moves `stable` to each new
+# release, and a Sentinel follows it: the daily run proves the current release still works with this client), and on demand.
 on:
   pull_request:
     paths:
@@ -14,7 +14,7 @@ on:
       - Dockerfile
       - requirements.txt
       - scripts/ci_openvas_bootstrap.py
-      - scripts/greenbone-digests.sh
+      - scripts/greenbone-tags.sh
       - .github/workflows/openvas-integration.yml
   push:
     branches: [main]
@@ -25,7 +25,7 @@ on:
       - Dockerfile
       - requirements.txt
       - scripts/ci_openvas_bootstrap.py
-      - scripts/greenbone-digests.sh
+      - scripts/greenbone-tags.sh
       - .github/workflows/openvas-integration.yml
   schedule:
     - cron: "23 5 * * *"
@@ -49,13 +49,10 @@ jobs:
       COMPOSE_PROFILES: openvas
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - name: Pinned digests still exist in the registry (drift from stable is only reported)
+      - name: Every Greenbone tag the compose file names exists in the registry (the digests it points to now go to the summary)
         run: |
-          ./scripts/greenbone-digests.sh | tee digests.txt
-          if grep -q '^CHANGED' digests.txt; then
-            echo "::warning::a Greenbone stable tag has moved since its pin; refresh the pins with scripts/greenbone-digests.sh"
-            grep '^CHANGED' digests.txt >> "$GITHUB_STEP_SUMMARY"
-          fi
+          ./scripts/greenbone-tags.sh | tee tags.txt
+          { echo '```'; cat tags.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: Start gvmd and its database only (no feeds, which the bootstrap does not use)
         run: |
           docker compose up -d --no-deps openvas-pg-gvm-migrator
@@ -68,7 +65,7 @@ jobs:
             sleep 15
           done
           docker compose ps; docker compose logs --tail=80 openvas-gvmd; exit 1
-      - name: Bootstrap the login with the pinned python-gvm against the pinned gvmd
+      - name: Bootstrap the login with the pinned python-gvm against the current gvmd
         run: |
           PYGVM=$(grep -o 'python-gvm==[0-9.]*' requirements.txt)
           docker run --rm -v "$PWD":/app -w /app -v sentinelci_openvas_gvmd_socket_vol:/run/gvmd \

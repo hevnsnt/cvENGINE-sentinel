@@ -156,10 +156,12 @@ services:
   # community containers (greenbone.github.io/docs, "Greenbone Community Containers"): without the web interface
   # (gsa, gsad, nginx), the certificate generator and the gvm-tools shell. On its own network, not reachable from
   # outside this compose project, and publishing no ports. Greenbone publishes no version tags, only the moving tags
-  # stable and community, so the program images are pinned by tag AND digest (to update, pick the new digests from
-  # registry.community.greenbone.net), while the feed data images (vulnerability tests, scap, cert and gvmd data)
-  # follow their moving tag on purpose: they are data, refreshed daily and checked against Greenbone's GPG signing
-  # keys, and a pinned feed would be a stale one.
+  # stable and community, so the program images follow `stable`, Greenbone's latest release, and are not pinned by
+  # digest: Greenbone deletes the old images behind `stable`, so a digest pin kept stopping a fresh install from
+  # pulling. scripts/update.sh pulls them at every update and install.sh before the first start
+  # (scripts/greenbone-tags.sh checks that every tag exists). The feed data images (vulnerability tests,
+  # scap, cert and gvmd data) follow their moving tag too: they are data, refreshed daily by scripts/refresh-feeds.sh
+  # and checked against Greenbone's GPG signing keys.
   openvas-vulnerability-tests:
     profiles: ["openvas"]
     logging: *logging
@@ -256,7 +258,7 @@ services:
   openvas-gpg-data:
     profiles: ["openvas"]
     logging: *logging
-    image: "registry.community.greenbone.net/community/gpg-data:stable@sha256:c18618252f7d874cd1fe09413b043cfc40b57e6464d8c5973d4a93b074d5d91a"
+    image: "registry.community.greenbone.net/community/gpg-data:stable"
     volumes:
       - openvas_gpg_data_vol:/mnt
     networks:
@@ -266,7 +268,7 @@ services:
     profiles: ["openvas"]
     logging: *logging
     restart: always
-    image: "registry.community.greenbone.net/community/redis-server:stable@sha256:83227e34b276bf7c7453a91bbfc070341af58f7ff40eb707ed6724965fe3846c"
+    image: "registry.community.greenbone.net/community/redis-server:stable"
     volumes:
       - openvas_redis_socket_vol:/run/redis/
     networks:
@@ -276,7 +278,7 @@ services:
     profiles: ["openvas"]
     logging: *logging
     restart: "no"
-    image: "registry.community.greenbone.net/community/pg-gvm-migrator:stable@sha256:8fc1cc11cac0481674527e01ec7610a8195110cf117d700bd47fe3af7012b34d"
+    image: "registry.community.greenbone.net/community/pg-gvm-migrator:stable"
     volumes:
       - openvas_psql_data_vol:/var/lib/postgresql
       - openvas_psql_socket_vol:/var/run/postgresql
@@ -287,7 +289,7 @@ services:
     profiles: ["openvas"]
     logging: *logging
     restart: always
-    image: "registry.community.greenbone.net/community/pg-gvm:stable@sha256:a18d9e2f0cbba7839e65547a2331ce8f984500e8c4fbe91d08f9a48036d03fa2"
+    image: "registry.community.greenbone.net/community/pg-gvm:stable"
     volumes:
       - openvas_psql_data_vol:/var/lib/postgresql
       - openvas_psql_socket_vol:/var/run/postgresql
@@ -301,7 +303,7 @@ services:
     profiles: ["openvas"]
     logging: *logging
     restart: always
-    image: "registry.community.greenbone.net/community/gvmd:stable@sha256:e59a6a684b112ea77fe4ddd7e5ca35e6a07d36bf854f1b411d11d12f9b0c608a"
+    image: "registry.community.greenbone.net/community/gvmd:stable"
     volumes:
       - openvas_gvmd_data_vol:/var/lib/gvm
       - openvas_scap_data_vol:/var/lib/gvm/scap-data/
@@ -335,7 +337,7 @@ services:
   openvas-configure:
     profiles: ["openvas"]
     logging: *logging
-    image: "registry.community.greenbone.net/community/openvas-scanner:stable@sha256:4bdb0b37e720e9009cf3c09aa1064893357b045aa4c3effa8da5069b807f5ab6"
+    image: "registry.community.greenbone.net/community/openvas-scanner:stable"
     volumes:
       - openvas_data_vol:/mnt
       - openvas_log_data_vol:/var/log/openvas
@@ -358,7 +360,7 @@ services:
     profiles: ["openvas"]
     logging: *logging
     restart: always
-    image: "registry.community.greenbone.net/community/openvas-scanner:stable@sha256:4bdb0b37e720e9009cf3c09aa1064893357b045aa4c3effa8da5069b807f5ab6"
+    image: "registry.community.greenbone.net/community/openvas-scanner:stable"
     environment:
       OPENVASD_MODE: service_notus
       GNUPGHOME: /etc/openvas/gnupg
@@ -389,7 +391,7 @@ services:
     profiles: ["openvas"]
     logging: *logging
     restart: always
-    image: "registry.community.greenbone.net/community/ospd-openvas:stable@sha256:31a85272abc77521c98451ce6834ed7d2f887e98ff1b26ff3fd94f00d000b169"
+    image: "registry.community.greenbone.net/community/ospd-openvas:stable"
     hostname: ospd-openvas.local
     cap_add:
       - NET_ADMIN

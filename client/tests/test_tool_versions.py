@@ -1,4 +1,4 @@
-"""scripts/check_tool_versions.py: every pin in the Dockerfile, requirements.txt and docker-compose.yml is compared with its upstream's newest release.
+"""scripts/check_tool_versions.py: every pin in the Dockerfile and requirements.txt is compared with its upstream's newest release.
 The upstream answers here are recorded shapes (never the network); the module is loaded from the script, which is not a package."""
 import importlib.util
 import io
@@ -50,10 +50,10 @@ playwright==1.65.1
 '''
 COMPOSE = '''services:
   gvmd:
-    image: "registry.community.greenbone.net/community/gvmd:stable@%s"
+    image: "registry.community.greenbone.net/community/gvmd:stable"
   data:
     image: "registry.community.greenbone.net/community/vulnerability-tests:community"
-''' % OLD_DIGEST
+'''
 
 PYPI = {'PySocks': '1.7.1', 'tzdata': '2025.2', 'Pillow': '13.0.0', 'xmltodict': '1.0.4', 'playwright': '1.65.1', 'pip': '25.2', 'setuptools': '80.9.0', 'wheel': '0.45.1', 'wafw00f': '2.4.2',
         'bbot': '3.1.0', 'blastdns': '2.0.4', 'blasthttp': '0.10.1', 'baddns': '2.5.0', 'badsecrets': '1.3.0'}
@@ -74,7 +74,6 @@ def answers(**override):
         'https://api.github.com/repos/projectdiscovery/nuclei-templates/releases/latest': {'tag_name': 'v10.5.2'},
         'https://versionhistory.googleapis.com/v1/chrome/platforms/linux/channels/stable/versions': {'versions': [{'version': '158.0.8127.18'}]},
         'https://hub.docker.com/v2/repositories/library/ubuntu/tags/26.04': {'digest': OLD_DIGEST},
-        'https://registry.community.greenbone.net/v2/community/gvmd/manifests/stable': {'digest': OLD_DIGEST},
     }
     for name, version in PYPI.items():
         table['https://pypi.org/pypi/%s/json' % name] = {'info': {'version': version}}
@@ -167,11 +166,11 @@ class ComparisonTests(unittest.TestCase):
         self.assertTrue(moved['behind'])
         self.assertEqual(moved['latest'], NEW_DIGEST[:19])
 
-    def test_a_greenbone_image_pinned_by_digest_is_compared_and_a_moving_tag_is_not(self):
+    def test_the_greenbone_images_are_not_pins(self):
+        # they follow `stable` (Greenbone's latest), which scripts/update.sh pulls at every update: nothing to compare, and the registry is never asked
         with Checkout() as c:
-            rows = rows_of(answers(**{'gvmd/manifests': {'digest': NEW_DIGEST}}), c)
-        self.assertTrue(rows['greenbone gvmd']['behind'])
-        self.assertNotIn('greenbone vulnerability-tests', rows)
+            rows = rows_of(answers(), c)
+        self.assertFalse([name for name in rows if 'greenbone' in name])
 
     def test_the_chromium_build_is_advisory_and_never_behind(self):
         with Checkout() as c:

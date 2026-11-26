@@ -1,4 +1,4 @@
-"""Run against a real, pinned gvmd (see .github/workflows/openvas-integration.yml): take over the default login the way a first-start Sentinel does,
+"""Run against a real gvmd, Greenbone's current `stable` (see .github/workflows/openvas-integration.yml): take over the default login the way a first-start Sentinel does,
 prove the new login works, and ask whether GVM can scan yet. Prints what happened, never a password. Exits non-zero when the bootstrap fails."""
 import os
 import sys
