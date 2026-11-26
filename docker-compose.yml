@@ -335,7 +335,7 @@ services:
   openvas-configure:
     profiles: ["openvas"]
     logging: *logging
-    image: "registry.community.greenbone.net/community/openvas-scanner:stable@sha256:f5e4e447d440f66a3215d46e190405a34956514b6ed6b3a5de69acf136cf24b6"
+    image: "registry.community.greenbone.net/community/openvas-scanner:stable@sha256:4bdb0b37e720e9009cf3c09aa1064893357b045aa4c3effa8da5069b807f5ab6"
     volumes:
       - openvas_data_vol:/mnt
       - openvas_log_data_vol:/var/log/openvas
@@ -358,7 +358,7 @@ services:
     profiles: ["openvas"]
     logging: *logging
     restart: always
-    image: "registry.community.greenbone.net/community/openvas-scanner:stable@sha256:f5e4e447d440f66a3215d46e190405a34956514b6ed6b3a5de69acf136cf24b6"
+    image: "registry.community.greenbone.net/community/openvas-scanner:stable@sha256:4bdb0b37e720e9009cf3c09aa1064893357b045aa4c3effa8da5069b807f5ab6"
     environment:
       OPENVASD_MODE: service_notus
       GNUPGHOME: /etc/openvas/gnupg
