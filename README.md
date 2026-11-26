@@ -35,6 +35,7 @@ takes only the provisioning blob from the server.
 - [The built-in scanner](#the-built-in-scanner)
 - [Testing](#testing)
 - [Security model](#security-model)
+- [License](#license)
 
 ## Prerequisites
 
@@ -409,7 +410,7 @@ Windows handles it differently.
 
 ## What a Sentinel runs
 
-A Sentinel runs only these task kinds, each with its own tool built into the image. The tools, their pinned versions and their licenses are listed on the About page of the cvENGINE server and in its `THIRD-PARTY.md`; the pins themselves are in this repository's `Dockerfile` and `requirements.txt`. Every tool call is a fixed
+A Sentinel runs only these task kinds, each with its own tool built into the image. The tools, their pinned versions and their licenses are listed under [License](#license) below, in the image's `/usr/share/licenses/cvengine-sentinel/`, on the About page of the cvENGINE server and in its `THIRD-PARTY.md`; the pins themselves are in this repository's `Dockerfile` and `requirements.txt`. Every tool call is a fixed
 argument list plus the task's validated targets: no shell, and no server text is ever read as a flag or a command.
 
 | Kind                                             | Tool                                                                             | Target the task names                                                         | Notes                                                                                                                                                                                                           |
@@ -895,7 +896,8 @@ builds its own image from this checkout.
 The build is reproducible from the commit: the base image is pinned by digest, every tool by version and checksum, and WPScan with every gem it
 needs at the versions and checksums in `docker/wpscan/Gemfile.lock` (regenerate it with `BUNDLE_FORCE_RUBY_PLATFORM=true bundle lock` in
 `docker/wpscan` when `WPSCAN_VERSION` changes). Nothing is updated at build time: WPScan fetches its vulnerability database on the first run that
-needs it, and the nuclei templates are the pinned release. The image has no git, no Go toolchain, no GVM stack and no docker socket; the image
+needs it, and the nuclei templates are the pinned release. Every licence text, the third-party notices and the source offer are in
+`/usr/share/licenses/cvengine-sentinel/` (see [License](#license)). The image has no git, no Go toolchain, no GVM stack and no docker socket; the image
 workflow checks that on every pull request and the publish workflow on what it pushed.
 
 ### Checking that the tools are the newest
@@ -1138,3 +1140,40 @@ again when they run, so a DNS answer that changes in between is not caught (nmap
 | WPScan API token  | Sent by cvENGINE with each `wpscan` task; passed to WPScan in its environment only | One task.                                                                             |
 | Stored sign-in | Read once per signed-in task from cvENGINE (only if this Sentinel reports `secret_read_external`, or is the built-in scanner, and the sign-in's owner allowed it); for nuclei a secrets file, mode 600, in a private 700 temp directory (on `/dev/shm` when it is writable); in memory only for the route check; masked in every result and error | One task; the file is overwritten and the directory removed when the run ends, however it ends. |
 | bbot discovery API keys | Read once per `bbot_discovery` task from cvENGINE (only if this Sentinel reports `bbot_keys` and is not opted out); `keys.yml`, mode 600, in a private temp directory; masked in every batch and result | One task; the directory is removed when the run ends, and any left by a crash at the next start. |
+
+## License
+
+Copyright (C) 2026 Bill Swearingen and contributors.
+
+The Sentinel (the client in `client/` and the `cvengine_scanner` library) is free software: you can redistribute it and/or modify it under the
+terms of the GNU General Public License version 3 only, as published by the Free Software Foundation ([LICENSE](LICENSE)). It is distributed in
+the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR
+PURPOSE. See the GNU General Public License for more details.
+
+This product uses the Nmap Security Scanner (https://nmap.org/) to perform its tasks.
+
+The image carries the third-party tools below. Each is a separate program under its own license, run as a subprocess and never linked into
+the Sentinel. Their license texts, the third-party notices (`THIRD-PARTY-NOTICES.txt`) and the written source offer (`SOURCE-OFFER.txt`, where
+to get the corresponding source of every GPL, AGPL and NPSL component, including the gowitness build this image modifies) are in
+`/usr/share/licenses/cvengine-sentinel/` in the image, and in [docker/licenses](docker/licenses) here. The build gathers them
+(`docker/licenses/collect.py`) and fails when one is missing, and the image workflow checks the built image (`scripts/ci_image_licenses.py`).
+
+| Tool                                    | Version                 | License                                                              | In the image (under `/usr/share/licenses/cvengine-sentinel/`) |
+| :- | :- | :- | :- |
+| nmap                                    | 7.993                   | Nmap Public Source License 0.95                                      | `nmap/LICENSE`                                                |
+| nuclei                                  | 3.11.1                  | MIT                                                                  | `nuclei/`, with its Go modules' licenses                      |
+| nuclei-templates                        | v10.5.2                 | MIT                                                                  | `nuclei-templates/`                                           |
+| naabu                                   | 2.7.0                   | MIT                                                                  | `naabu/`, with its Go modules' licenses                       |
+| testssl.sh                              | 3.2.5                   | GPL-2.0                                                              | `testssl.sh/`                                                 |
+| WPScan and its gems                     | 4.2.1                   | WPScan Public Source License (commercial use needs WPScan's commercial license); gems MIT, BSD, Apache-2.0, Ruby | `wpscan/LICENSE`, `ruby-gems/` |
+| wafw00f                                 | 2.4.2                   | BSD-3-Clause                                                         | `python/venv/`                                                |
+| bbot and its venv                       | 3.1.0                   | AGPL-3.0 (blastdns, blasthttp, baddns, badsecrets, asndb, radixtarget, cloudcheck AGPL-3.0; ansible-core GPL-3.0+; others permissive) | `python/bbot-venv/` (`INDEX.txt`), `bbot-tools/` |
+| gowitness (built with raised Go module floors) | 3.2.2            | GPL-3.0                                                              | `gowitness/` (`go.mod`, `go.sum`, `MODIFICATIONS`)            |
+| trajan                                  | 1.0.2                   | Apache-2.0                                                           | `trajan/`                                                     |
+| sshamble                                | 0.5.1                   | BSD-2-Clause                                                         | `sshamble/`                                                   |
+| Kingfisher                              | 2.19.1                  | Apache-2.0                                                           | `kingfisher/`                                                 |
+| Go runtime (linked into the Go tools)   | 1.27.4                  | BSD-3-Clause                                                         | `go/`                                                         |
+| Playwright and Chromium headless shell  | 159.0.8154.6            | Apache-2.0; BSD-3-Clause and bundled licenses                        | `python/venv/`, `chromium/`                                   |
+| aardwolf, python-gvm and the client's other Python packages | `requirements.txt` | MIT, GPL-3.0+ (python-gvm), Apache-2.0, BSD and others  | `python/venv/` (`INDEX.txt`)                                  |
+| node2shell-scanner (vendored in `client/vendor`) | bf2dc38        | MIT, Copyright (c) 2026 Assetnote                                    | `node2shell-scanner/LICENSE`                                  |
+| Ubuntu 26.04 packages                   | base image digest       | per package                                                          | `ubuntu-packages.txt`; `/usr/share/doc/<package>/copyright`   |
