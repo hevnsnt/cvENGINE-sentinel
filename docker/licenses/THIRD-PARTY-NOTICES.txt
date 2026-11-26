@@ -1,0 +1,83 @@
+CVENGINE SENTINEL: THIRD-PARTY NOTICES
+
+The cvENGINE Sentinel (the client daemon in /opt/sentinel and the cvengine-scanner library in /opt/venv) is
+Copyright (C) 2026 Bill Swearingen and contributors, and is licensed under the GNU General Public License
+version 3 only (the file LICENSE in this directory). Its source is https://github.com/hevnsnt/cvENGINE-sentinel
+at the commit this image reports (/opt/sentinel/VERSION).
+
+This image also carries the third-party programs, libraries and data listed below. Each one is a separate work
+under its own license, and none of them is relicensed by being included here. The scan tools are separate
+programs that the Sentinel starts as subprocesses; it does not link them. The full license texts are in this
+directory (/usr/share/licenses/cvengine-sentinel/), in the subdirectory named in each entry. Where and how to get
+the corresponding source of each copyleft component is in SOURCE-OFFER.txt.
+
+Each pinned version below is the value of the Dockerfile ARG named beside it (client/tests/test_licenses.py
+checks they agree).
+
+NMAP NOTICE
+This product uses the Nmap Security Scanner (https://nmap.org/) to perform its tasks. Nmap is Copyright (C)
+Nmap Software LLC and is distributed under the Nmap Public Source License version 0.95 (nmap/LICENSE), not under
+the GNU General Public License version 3 that covers the Sentinel's own code.
+
+SCAN TOOLS
+nmap 7.993 (ARG NMAPVERSION)
+  License: Nmap Public Source License 0.95. Text: nmap/LICENSE.
+  amd64: the binary and data files of nmap.org's nmap-7.993-1.x86_64.rpm; arm64: built from nmap-7.993.tar.bz2.
+nuclei 3.11.1 (ARG NUCLEI_VERSION)
+  License: MIT, Copyright (c) ProjectDiscovery. Text: nuclei/.
+naabu 2.7.0 (ARG NAABU_VERSION)
+  License: MIT, Copyright (c) ProjectDiscovery. Text: naabu/.
+nuclei-templates v10.5.2 (ARG NUCLEI_TEMPLATES_VERSION)
+  License: MIT. Text: nuclei-templates/.
+testssl.sh 3.2.5 (ARG TESTSSL_VERSION)
+  License: GPL-2.0. Text: testssl.sh/. Shipped as its own source in /opt/testssl.
+WPScan 4.2.1 (ARG WPSCAN_VERSION)
+  License: WPScan Public Source License. Text: wpscan/LICENSE. Commercial use (including managed or
+  Software-as-a-Service use, and distribution as part of a commercial product) requires a commercial license
+  from WPScan; read that license before running the wpscan kinds.
+  The Ruby gems WPScan needs (docker/wpscan/Gemfile.lock) carry their own licenses (MIT, BSD-2-Clause,
+  BSD-3-Clause, Apache-2.0, Ruby): ruby-gems/<gem>-<version>/.
+wafw00f 2.4.2 (ARG WAFW00F_VERSION)
+  License: BSD-3-Clause. Text: python/venv/wafw00f-2.4.2/.
+PySocks 1.7.1 (ARG PYSOCKS_VERSION)
+  License: BSD-3-Clause. Text: python/venv/.
+bbot 3.1.0 (ARG BBOT_VERSION)
+  License: AGPL-3.0. Text: python/bbot-venv/. Runs unmodified, as a separate program, in its own venv.
+  Its pinned dependencies blastdns 2.0.4 (ARG BLASTDNS_VERSION) and blasthttp 0.10.1 (ARG BLASTHTTP_VERSION) are
+  AGPL-3.0; baddns 2.5.0 (ARG BADDNS_VERSION) and badsecrets 1.3.0 (ARG BADSECRETS_VERSION) declare GPL-3.0 and
+  ship the AGPL-3.0 text, and are treated as AGPL-3.0; asndb, radixtarget and cloudcheck are AGPL-3.0; ansible-core
+  is GPL-3.0-or-later; Unidecode is GPL-2.0-or-later; tzdata 2026.6 (ARG TZDATA_VERSION) is Apache-2.0. Every
+  package of bbot's venv, with its version and declared license, is listed in python/bbot-venv/INDEX.txt, and
+  its license files are beside it. Tools bbot installs for its modules are listed in bbot-tools/INDEX.txt.
+gowitness 3.2.2 (ARG GOWITNESS_VERSION)
+  License: GPL-3.0. Text: gowitness/. MODIFIED: built from the release source with the Go module versions
+  raised to the floors in the Dockerfile's GO_DEPENDENCY_FLOOR by docker/gotools/build.sh. The go.mod and go.sum
+  it was built from, and the list of raised modules (MODIFICATIONS), are in gowitness/.
+trajan 1.0.2 (ARG TRAJAN_VERSION)
+  License: Apache-2.0. Text: trajan/. Built the same way as gowitness (trajan/MODIFICATIONS).
+sshamble 0.5.1 (ARG SSHAMBLE_VERSION)
+  License: BSD-2-Clause, Copyright (c) 2024 runZero. Text: sshamble/.
+Kingfisher 2.19.1 (ARG KINGFISHER_VERSION)
+  License: Apache-2.0, with the NOTICE files of its bundled components. Text: kingfisher/.
+Go 1.27.4 (ARG GOVERSION)
+  License: BSD-3-Clause, with the Go patent grant. Text: go/. The Go runtime and standard library are linked
+  into nuclei, naabu, gowitness, trajan and sshamble. The license of every Go module linked into each of those
+  binaries is under <tool>/modules/<module>@<version>/.
+Chromium headless shell 159.0.8154.6 (ARG PLAYWRIGHT_CHROMIUM_VERSION)
+  License: BSD-3-Clause and the licenses of its bundled third-party code. Fetched by Playwright; whatever license
+  and credits files the download carries are copied to chromium/.
+
+LIBRARIES AND VENDORED CODE
+Python packages of the client venv (/opt/venv), pinned in requirements.txt: requests, xmltodict, PyYAML, h11,
+  Pillow, redis, PyMySQL, pymongo, dnspython, cryptography, tldextract, aardwolf, Playwright, python-gvm
+  (GPL-3.0-or-later) and their dependencies. Each package with its version and declared license is listed in
+  python/venv/INDEX.txt, and its license files are beside it.
+node2shell-scanner, commit bf2dc38797f262d11e8c630b3fcc6a013a70da97 (vendored, trimmed, in client/vendor/node2shell.py)
+  License: MIT, Copyright (c) 2026 Assetnote. Text: node2shell-scanner/LICENSE.
+MailFail (Black Hills Information Security, AGPL-3.0): the email checks in cvengine_scanner/probes/mailfail.py
+  are credited to it, as the file's header says.
+
+OPERATING SYSTEM
+The base image is Ubuntu 26.04, pinned by digest. Its packages carry many licenses, the GPL among them. Each
+package's copyright and license file is /usr/share/doc/<package>/copyright, and every installed package with its
+source package and version is listed in ubuntu-packages.txt.

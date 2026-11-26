@@ -1,7 +1,7 @@
 """docker-compose.yml as compose itself reads it (`docker compose config`, which validates and starts nothing), with and without the openvas
 profile: every container's log is capped, and the sentinel service stops gracefully, reaps its children and reports its health. Also what
-.dockerignore keeps out of the build context, the pins in the Dockerfile and the CI workflows, and scripts/greenbone-digests.sh against a
-stand-in registry."""
+.dockerignore keeps out of the build context, the pins in the Dockerfile and the CI workflows, the Greenbone images following their tags (never a digest), and
+scripts/greenbone-tags.sh against a stand-in registry."""
 import fnmatch
 import glob
 import hashlib
@@ -355,59 +355,95 @@ class PinTests(unittest.TestCase):
             for image in re.findall(r'\b((?:python|alpine):[0-9][\w.-]*\S*)', text(path)):
                 self.assertIn('@sha256:', image, path)
 
-    def test_the_digest_check_fails_its_step(self):
+    def test_the_tag_check_fails_its_step(self):
         workflow = text('.github', 'workflows', 'openvas-integration.yml')
         self.assertRegex(workflow, r'defaults:\s+run:\s+shell: bash\n')  # explicit bash runs with pipefail
-        for trigger_path in ('Dockerfile', 'scripts/greenbone-digests.sh', '.github/workflows/openvas-integration.yml'):
+        for trigger_path in ('Dockerfile', 'scripts/greenbone-tags.sh', '.github/workflows/openvas-integration.yml'):
             self.assertEqual(workflow.count(f'- {trigger_path}\n'), 2, trigger_path)  # pull requests and pushes to main
 
 
 REGISTRY_SHIM = """#!/bin/sh
-# stand-in curl: a token for any image, the manifest of a digest exists unless it is listed in GONE, stable points to STABLE_<image>
+# stand-in curl: a token for any image; the manifest of image:tag exists, with digest DIGEST, unless image:tag is listed in GONE
 url=""
 for arg in "$@"; do case "$arg" in https://*) url="$arg" ;; esac; done
 case "$url" in
   */service/token*) echo '{"token": "t"}' ;;
-  */manifests/stable) image=${url%/manifests/stable}; image=${image##*/}; image=$(echo "$image" | tr - _)
-    eval "digest=\\${STABLE_$image:-}"; printf 'HTTP/1.1 200 OK\\r\\ndocker-content-digest: %s\\r\\n' "$digest" ;;
-  */manifests/*) case " $GONE " in *" ${url##*/} "*) exit 22 ;; esac; printf 'HTTP/1.1 200 OK\\r\\n' ;;
+  */manifests/*) tag=${url##*/}; image=${url%/manifests/*}; image=${image##*/}
+    case " $GONE " in *" $image:$tag "*) exit 22 ;; esac
+    printf 'HTTP/1.1 200 OK\\r\\ndocker-content-digest: %s\\r\\n' "$DIGEST" ;;
 esac
 """
 
 
+class GreenboneImageTests(unittest.TestCase):
+    """Greenbone publishes no version tags and deletes the old images behind `stable`: a digest pin broke fresh installs three times, so every
+    Greenbone image follows its tag and scripts/update.sh pulls the program images at every update."""
+
+    def test_every_greenbone_image_follows_its_tag_and_none_is_pinned_by_digest(self):
+        images = re.findall(r'(?m)^\s*image:\s*"?(registry\.community\.greenbone\.net/\S+?)"?$', text('docker-compose.yml'))
+        self.assertGreaterEqual(len(images), 15)
+        for image in images:
+            self.assertNotIn('@', image)
+            self.assertRegex(image, r':(stable|community)$')
+        programs = [i for i in images if i.endswith(':stable')]
+        for name in ('gvmd', 'openvas-scanner', 'ospd-openvas', 'pg-gvm', 'pg-gvm-migrator', 'redis-server', 'gpg-data'):
+            self.assertIn(f'registry.community.greenbone.net/community/{name}:stable', programs)
+        self.assertEqual(programs.count('registry.community.greenbone.net/community/openvas-scanner:stable'), 2)  # both scanner services
+
+    def test_the_updater_pulls_every_program_service_the_compose_file_runs_from_stable(self):
+        compose, update = text('docker-compose.yml'), text('scripts', 'update.sh')
+        listed = re.search(r'(?m)^GREENBONE_PROGRAMS="([^"]+)"$', update).group(1).split()
+        programs = re.findall(r'(?ms)^  (openvas-[a-z-]+):\n(?:    [^\n]*\n)*?    image: "[^"]+/community/([a-z0-9-]+):stable"', compose)
+        self.assertEqual(len(programs), 8)
+        for service, image in programs:
+            if image != 'gpg-data':  # GPG keys are feed data: scripts/refresh-feeds.sh pulls it daily
+                self.assertIn(service, listed)
+        self.assertIn('openvas-gpg-data', text('scripts', 'refresh-feeds.sh'))
+
+
 @unittest.skipUnless(shutil.which('sh') and shutil.which('python3'), 'needs sh and python3')
-class GreenboneDigestTests(unittest.TestCase):
+class GreenboneTagTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix='sentinel-digests-')
+        self.tmp = tempfile.mkdtemp(prefix='sentinel-tags-')
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         os.makedirs(os.path.join(self.tmp, 'scripts'))
         os.makedirs(os.path.join(self.tmp, 'bin'))
-        shutil.copy(os.path.join(ROOT, 'scripts', 'greenbone-digests.sh'), os.path.join(self.tmp, 'scripts'))
+        shutil.copy(os.path.join(ROOT, 'scripts', 'greenbone-tags.sh'), os.path.join(self.tmp, 'scripts'))
         with open(os.path.join(self.tmp, 'bin', 'curl'), 'w') as handle:
             handle.write(REGISTRY_SHIM)
         os.chmod(os.path.join(self.tmp, 'bin', 'curl'), 0o755)
-        self.a, self.b, self.c = ('sha256:' + ch * 64 for ch in 'abc')
-        compose = (f'image: "registry.community.greenbone.net/community/gvmd:stable@{self.a}"\n'
-                   f'image: "registry.community.greenbone.net/community/openvas-scanner:stable@{self.a}"\n'
-                   f'image: "registry.community.greenbone.net/community/openvas-scanner:stable@{self.b}"\n')
+        self.digest = 'sha256:' + 'a' * 64
+        self.compose('image: "registry.community.greenbone.net/community/gvmd:stable"\n'
+                     'image: "registry.community.greenbone.net/community/openvas-scanner:stable"\n'
+                     'image: "registry.community.greenbone.net/community/openvas-scanner:stable"\n'
+                     'image: "registry.community.greenbone.net/community/vulnerability-tests:community"\n')
+
+    def compose(self, body):
         with open(os.path.join(self.tmp, 'docker-compose.yml'), 'w') as handle:
-            handle.write(compose)
+            handle.write(body)
 
-    def check(self, gone='', **stable):
-        env = {**os.environ, 'PATH': f'{self.tmp}/bin:{os.environ["PATH"]}', 'GONE': gone}
-        env.update({f'STABLE_{k}': v for k, v in stable.items()})
-        return subprocess.run(['sh', os.path.join(self.tmp, 'scripts', 'greenbone-digests.sh')], env=env, capture_output=True, text=True)
+    def check(self, gone=''):
+        env = {**os.environ, 'PATH': f'{self.tmp}/bin:{os.environ["PATH"]}', 'GONE': gone, 'DIGEST': self.digest}
+        return subprocess.run(['sh', os.path.join(self.tmp, 'scripts', 'greenbone-tags.sh')], env=env, capture_output=True, text=True)
 
-    def test_drift_is_reported_but_does_not_fail(self):
-        out = self.check(gvmd=self.a, openvas_scanner=self.a)
+    def test_every_tag_that_exists_is_ok_and_each_image_is_checked_once(self):
+        out = self.check()
         self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
-        self.assertIn(f'ok       gvmd {self.a}', out.stdout)
-        self.assertIn(f'CHANGED  openvas-scanner pinned={self.b} now={self.a}', out.stdout)  # the second pin of the same image is checked too
+        self.assertIn(f'ok       gvmd:stable {self.digest}', out.stdout)
+        self.assertIn(f'ok       vulnerability-tests:community {self.digest}', out.stdout)
+        self.assertEqual(out.stdout.count('openvas-scanner:stable'), 1)
 
-    def test_a_pin_gone_from_the_registry_fails(self):
-        out = self.check(gone=self.b, gvmd=self.a, openvas_scanner=self.a)
+    def test_a_tag_gone_from_the_registry_fails(self):
+        out = self.check(gone='openvas-scanner:stable')
         self.assertEqual(out.returncode, 1)
-        self.assertIn(f'MISSING  openvas-scanner {self.b}', out.stdout)
+        self.assertIn('MISSING  openvas-scanner:stable', out.stdout)
+        self.assertIn('ok       gvmd:stable', out.stdout)
+
+    def test_a_digest_pin_is_refused(self):
+        self.compose(f'image: "registry.community.greenbone.net/community/gvmd:stable@{self.digest}"\n')
+        out = self.check()
+        self.assertEqual(out.returncode, 1)
+        self.assertIn('pinned by digest', out.stderr)
 
 
 if __name__ == '__main__':

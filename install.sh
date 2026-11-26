@@ -219,13 +219,18 @@ main() {
   local apparmor="not needed"
   if [ -f "$dir/scripts/apparmor.sh" ]; then
     if sh "$dir/scripts/apparmor.sh" install --dir "$dir"; then
-      [ "$(sed -n 's/^CVENGINE_SENTINEL_APPARMOR=//p' "$dir/.env" 2>/dev/null | tail -n 1)" = cvengine-sentinel ] && apparmor="profile cvengine-sentinel loaded, and loaded again at boot"
+      if [ "$(sed -n 's/^CVENGINE_SENTINEL_APPARMOR=//p' "$dir/.env" 2>/dev/null | tail -n 1)" = cvengine-sentinel ]; then
+        apparmor="profile cvengine-sentinel loaded, and loaded again at boot"
+      fi
     else
       apparmor="NOT set up (see above), so no screenshots; later: sudo $dir/scripts/apparmor.sh install"
       say "The AppArmor profile was NOT set up (see above); the Sentinel runs without screenshots. Later: sudo $dir/scripts/apparmor.sh install" >&2
     fi
   fi
 
+  # The Greenbone images follow moving tags (`stable` for the programs, Greenbone's latest release): pull them first, so a machine that already
+  # has an older copy (a reinstall) starts on the current one. A failed pull is not fatal: `up` pulls whatever is still missing and says why it cannot.
+  svc_run "$dir" docker compose pull --quiet --ignore-buildable || say "Pulling the images failed (see above); starting with the images this machine has."
   svc_run "$dir" docker compose up -d
 
   say ""

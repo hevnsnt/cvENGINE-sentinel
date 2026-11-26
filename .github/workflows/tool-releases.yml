@@ -1,7 +1,7 @@
 name: Tool releases
 
-# Compares every pin of the Sentinel image (the Dockerfile ARGs, requirements.txt, the pip bootstrap pins, the Ubuntu base image digest and the Greenbone
-# image digests in docker-compose.yml) with the newest upstream release, by scripts/check_tool_versions.py.
+# Compares every pin of the Sentinel image (the Dockerfile ARGs, requirements.txt, the pip bootstrap pins and the Ubuntu base image digest)
+# with the newest upstream release, by scripts/check_tool_versions.py.
 #   weekly (and by hand): keeps one open issue listing what is behind, and closes it once nothing is.
 #   pull requests: a warning on the run for each tool that is behind, never a failure.
 # The release gate is a job of tag-release.yml: the same script with --fail-if-behind.

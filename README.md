@@ -35,6 +35,7 @@ takes only the provisioning blob from the server.
 - [The built-in scanner](#the-built-in-scanner)
 - [Testing](#testing)
 - [Security model](#security-model)
+- [License](#license)
 
 ## Prerequisites
 
@@ -453,7 +454,7 @@ scanner, which runs this same image on the server, has its own profile and steps
 
 ## What a Sentinel runs
 
-A Sentinel runs only these task kinds, each with its own tool built into the image. The tools, their pinned versions and their licenses are listed on the About page of the cvENGINE server and in its `THIRD-PARTY.md`; the pins themselves are in this repository's `Dockerfile` and `requirements.txt`. Every tool call is a fixed
+A Sentinel runs only these task kinds, each with its own tool built into the image. The tools, their pinned versions and their licenses are listed under [License](#license) below, in the image's `/usr/share/licenses/cvengine-sentinel/`, on the About page of the cvENGINE server and in its `THIRD-PARTY.md`; the pins themselves are in this repository's `Dockerfile` and `requirements.txt`. Every tool call is a fixed
 argument list plus the task's validated targets: no shell, and no server text is ever read as a flag or a command.
 
 | Kind                                             | Tool                                                                             | Target the task names                                                         | Notes                                                                                                                                                                                                           |
@@ -660,11 +661,14 @@ compose file.
   (`scripts/refresh-feeds.sh`, installed with the updater) pulls them and recreates the ones that changed, so feeds
   stay fresh without a code update. It runs only when `openvas-gvmd` is running, no task is in flight and no update is
   running.
-- The program images are pinned by digest. Greenbone publishes no version tags and replaces what `stable` points to,
-  so an old pin can vanish from the registry (`artifact ... not found` on `docker compose up`).
-  `./scripts/greenbone-digests.sh` checks every pin: `ok`, `CHANGED` (still exists, `stable` moved on) or `MISSING`
-  (gone; exit 1). Replace the `sha256` of each `CHANGED` or `MISSING` image in `docker-compose.yml` with the digest it
-  prints after `now=`.
+- The program images (gvmd, the scanner, ospd-openvas, Postgres, Redis) follow Greenbone's `stable` tag, which is
+  Greenbone's latest release; they are not pinned by digest. Greenbone publishes no version tags and deletes the old
+  images behind `stable`, so a digest pin kept vanishing from the registry and a fresh install could not pull it
+  (`artifact ... not found`). Every update (`scripts/update.sh`) pulls the program images from `stable` and recreates
+  the ones that changed, and `install.sh` pulls before the first start. A registry that does not answer during an
+  update leaves the images this machine has and does not fail the update. To move a stack to the current `stable` by
+  hand: `docker compose pull && docker compose up -d`. `./scripts/greenbone-tags.sh` checks that every tag
+  `docker-compose.yml` names exists in the registry (`ok` with the digest it points to now, or `MISSING`; exit 1).
 
 ## Updates
 
@@ -757,8 +761,8 @@ The updater never gets the Docker socket inside a container: it talks to the dae
 6. **Target, then build while the Sentinel keeps working.** It settles which commit to move to (the one cvENGINE named; refusals as in
    [What Automatic trusts](#what-automatic-trusts): "cannot update: ...", result `failed`, nothing changed), fast-forwards the checkout to exactly that
    commit and checks `HEAD` equals it before going on, pulls the images
-   (`docker compose pull --ignore-buildable`, so a moved Greenbone pin reaches the stack) and builds the new Sentinel
-   image. A failed pull or build puts the checkout back on the commit it had (`git reset --hard`) and records
+   (the images this machine lacks, then the Greenbone program images from `stable`, Greenbone's latest; a failure of
+   that last pull only keeps the Greenbone images it has) and builds the new Sentinel image. A failed pull or build puts the checkout back on the commit it had (`git reset --hard`) and records
    `failed`; the Sentinel never stopped taking work. It also deletes any `CVENGINE_SENTINEL_VERSION` line from `.env`.
 7. **Drain.** It asks the Sentinel to stop taking tasks and waits up to `CVENGINE_SENTINEL_DRAIN_TIMEOUT` (default 4200
    seconds, longer than any task's one-hour budget, so a deep nuclei scan is waited out) for running tasks to finish. If one is still running at the deadline, it un-drains, records `waiting`
@@ -937,15 +941,14 @@ builds its own image from this checkout.
 The build is reproducible from the commit: the base image is pinned by digest, every tool by version and checksum, and WPScan with every gem it
 needs at the versions and checksums in `docker/wpscan/Gemfile.lock` (regenerate it with `BUNDLE_FORCE_RUBY_PLATFORM=true bundle lock` in
 `docker/wpscan` when `WPSCAN_VERSION` changes). Nothing is updated at build time: WPScan fetches its vulnerability database on the first run that
-needs it, and the nuclei templates are the pinned release. The image has no git, no Go toolchain, no GVM stack and no docker socket; the image
+needs it, and the nuclei templates are the pinned release. Every licence text, the third-party notices and the source offer are in
+`/usr/share/licenses/cvengine-sentinel/` (see [License](#license)). The image has no git, no Go toolchain, no GVM stack and no docker socket; the image
 workflow checks that on every pull request and the publish workflow on what it pushed.
 
 ### Checking that the tools are the newest
 
 `python3 scripts/check_tool_versions.py` reads every pin of the image (the `ARG ..._VERSION` lines of the Dockerfile, the `name==version` lines of
-`requirements.txt` and the test extra of `pyproject.toml`, the pip bootstrap pins, the Ubuntu base image digest and the Greenbone image digests in
-`docker-compose.yml`), asks each upstream for its newest release (GitHub, PyPI, proxy.golang.org, go.dev, rubygems.org, nmap.org, Docker Hub, the
-Greenbone registry) and prints a table: tool, pinned, latest, and whether it is current or behind. `--json` prints the rows as JSON, `--root DIR`
+`requirements.txt` and the test extra of `pyproject.toml`, the pip bootstrap pins and the Ubuntu base image digest), asks each upstream for its newest release (GitHub, PyPI, proxy.golang.org, go.dev, rubygems.org, nmap.org, Docker Hub) and prints a table: tool, pinned, latest, and whether it is current or behind. `--json` prints the rows as JSON, `--root DIR`
 reads another checkout, and `--fail-if-behind` exits 1 when a tool is behind, a pin cannot be found, a version `ARG` has no known upstream or a
 newest version cannot be read (it fails closed: a renamed pin or an unreachable site must not pass a release). The Chromium build of Playwright
 is shown as a warning only, because it moves with the Playwright pin.
@@ -1080,9 +1083,10 @@ library change to the server, merge it here, then bump that sha on the server in
 
 ### Testing OpenVAS
 
-`.github/workflows/openvas-integration.yml` checks the Greenbone pins, brings up the pinned gvmd (without feeds) and
-runs the login bootstrap and readiness check against it with the pinned `python-gvm`. It runs when the OpenVAS client,
-the compose pins, the image or `requirements.txt` change, weekly, and on demand. GitHub disables scheduled workflows
+`.github/workflows/openvas-integration.yml` checks that every Greenbone tag exists, brings up the current gvmd (its
+`stable` tag, without feeds) and runs the login bootstrap and readiness check against it with the pinned `python-gvm`.
+It runs when the OpenVAS client, the compose file, the image or `requirements.txt` change, daily (so a new Greenbone
+release that breaks the client is caught), and on demand. GitHub disables scheduled workflows
 after 60 days without repository activity, so re-enable it from the Actions tab on a quiet repository. It does not run
 a scan: that needs the feeds.
 
@@ -1162,7 +1166,7 @@ again when they run, so a DNS answer that changes in between is not caught (nmap
   `https://github.com/hevnsnt/cvengine-sentinel.git` (or a fork you control), protect that repository, and use Manual
   or Off (`CVENGINE_SENTINEL_UPDATE=manual`) where that is not enough.
 - **Mind other unpinned inputs.** The nuclei templates in the image are a pinned release (checksum-verified at build) and are not
-  refreshed at start (`CVENGINE_SENTINEL_UPDATE_TEMPLATES=1` opts in); the Greenbone feed images follow moving tags; Python packages
+  refreshed at start (`CVENGINE_SENTINEL_UPDATE_TEMPLATES=1` opts in); the Greenbone images (programs and feeds) follow moving tags; Python packages
   are pinned by version, not hash.
 - **Set `CVENGINE_SENTINEL_NETWORK=internal` only on machines meant to scan private space.** An internal Sentinel may
   scan any private address, which includes this Docker host's bridge gateway and, with host networking, the
@@ -1181,3 +1185,40 @@ again when they run, so a DNS answer that changes in between is not caught (nmap
 | WPScan API token  | Sent by cvENGINE with each `wpscan` task; passed to WPScan in its environment only | One task.                                                                             |
 | Stored sign-in | Read once per signed-in task from cvENGINE (only if this Sentinel reports `secret_read_external`, or is the built-in scanner, and the sign-in's owner allowed it); for nuclei a secrets file, mode 600, in a private 700 temp directory (on `/dev/shm` when it is writable); in memory only for the route check; masked in every result and error | One task; the file is overwritten and the directory removed when the run ends, however it ends. |
 | bbot discovery API keys | Read once per `bbot_discovery` task from cvENGINE (only if this Sentinel reports `bbot_keys` and is not opted out); `keys.yml`, mode 600, in a private temp directory; masked in every batch and result | One task; the directory is removed when the run ends, and any left by a crash at the next start. |
+
+## License
+
+Copyright (C) 2026 Bill Swearingen and contributors.
+
+The Sentinel (the client in `client/` and the `cvengine_scanner` library) is free software: you can redistribute it and/or modify it under the
+terms of the GNU General Public License version 3 only, as published by the Free Software Foundation ([LICENSE](LICENSE)). It is distributed in
+the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR
+PURPOSE. See the GNU General Public License for more details.
+
+This product uses the Nmap Security Scanner (https://nmap.org/) to perform its tasks.
+
+The image carries the third-party tools below. Each is a separate program under its own license, run as a subprocess and never linked into
+the Sentinel. Their license texts, the third-party notices (`THIRD-PARTY-NOTICES.txt`) and the written source offer (`SOURCE-OFFER.txt`, where
+to get the corresponding source of every GPL, AGPL and NPSL component, including the gowitness build this image modifies) are in
+`/usr/share/licenses/cvengine-sentinel/` in the image, and in [docker/licenses](docker/licenses) here. The build gathers them
+(`docker/licenses/collect.py`) and fails when one is missing, and the image workflow checks the built image (`scripts/ci_image_licenses.py`).
+
+| Tool                                    | Version                 | License                                                              | In the image (under `/usr/share/licenses/cvengine-sentinel/`) |
+| :- | :- | :- | :- |
+| nmap                                    | 7.993                   | Nmap Public Source License 0.95                                      | `nmap/LICENSE`                                                |
+| nuclei                                  | 3.11.1                  | MIT                                                                  | `nuclei/`, with its Go modules' licenses                      |
+| nuclei-templates                        | v10.5.2                 | MIT                                                                  | `nuclei-templates/`                                           |
+| naabu                                   | 2.7.0                   | MIT                                                                  | `naabu/`, with its Go modules' licenses                       |
+| testssl.sh                              | 3.2.5                   | GPL-2.0                                                              | `testssl.sh/`                                                 |
+| WPScan and its gems                     | 4.2.1                   | WPScan Public Source License (commercial use needs WPScan's commercial license); gems MIT, BSD, Apache-2.0, Ruby | `wpscan/LICENSE`, `ruby-gems/` |
+| wafw00f                                 | 2.4.2                   | BSD-3-Clause                                                         | `python/venv/`                                                |
+| bbot and its venv                       | 3.1.0                   | AGPL-3.0 (blastdns, blasthttp, baddns, badsecrets, asndb, radixtarget, cloudcheck AGPL-3.0; ansible-core GPL-3.0+; others permissive) | `python/bbot-venv/` (`INDEX.txt`), `bbot-tools/` |
+| gowitness (built with raised Go module floors) | 3.2.2            | GPL-3.0                                                              | `gowitness/` (`go.mod`, `go.sum`, `MODIFICATIONS`)            |
+| trajan                                  | 1.0.2                   | Apache-2.0                                                           | `trajan/`                                                     |
+| sshamble                                | 0.5.1                   | BSD-2-Clause                                                         | `sshamble/`                                                   |
+| Kingfisher                              | 2.19.1                  | Apache-2.0                                                           | `kingfisher/`                                                 |
+| Go runtime (linked into the Go tools)   | 1.27.4                  | BSD-3-Clause                                                         | `go/`                                                         |
+| Playwright and Chromium headless shell  | 159.0.8154.6            | Apache-2.0; BSD-3-Clause and bundled licenses                        | `python/venv/`, `chromium/`                                   |
+| aardwolf, python-gvm and the client's other Python packages | `requirements.txt` | MIT, GPL-3.0+ (python-gvm), Apache-2.0, BSD and others  | `python/venv/` (`INDEX.txt`)                                  |
+| node2shell-scanner (vendored in `client/vendor`) | bf2dc38        | MIT, Copyright (c) 2026 Assetnote                                    | `node2shell-scanner/LICENSE`                                  |
+| Ubuntu 26.04 packages                   | base image digest       | per package                                                          | `ubuntu-packages.txt`; `/usr/share/doc/<package>/copyright`   |

@@ -134,6 +134,16 @@ missing_images() {
   done
 }
 
+# The Greenbone program services this stack runs (none without the openvas profile), space separated. Their images follow `stable`; the feed data
+# images are scripts/refresh-feeds.sh's.
+GREENBONE_PROGRAMS="openvas-redis openvas-pg-gvm-migrator openvas-pg-gvm openvas-gvmd openvas-configure openvas-openvasd openvas-ospd"
+greenbone_programs() {
+  SERVICES=$(docker compose config --services 2>/dev/null) || return 0
+  for service in $GREENBONE_PROGRAMS; do
+    if printf '%s\n' "$SERVICES" | grep -qx "$service"; then printf '%s ' "$service"; fi
+  done
+}
+
 cannot() {
   DETAIL="cannot update: $1"
   say "$DETAIL"
@@ -257,7 +267,7 @@ fi
 [ "$(git rev-parse HEAD)" = "$TARGET_FULL" ] || rollback "after the checkout HEAD is not the target $TARGET, so nothing was built or restarted" code
 ctl report updating --phase images --detail "pulling images" --from "$CURRENT" --to "$TARGET" 2>/dev/null || true
 # Only the images this machine does not have yet are pulled: an update needs the images its compose file names, not newer copies of the ones it
-# has. The Greenbone images are pinned by digest, so a changed pin is a new reference and is pulled; the OpenVAS feed data images follow moving tags
+# has (the Greenbone program images are pulled from `stable` below, which is not fatal); the OpenVAS feed data images follow moving tags
 # and are large (tens of minutes from their registry), so an update never re-pulls them: scripts/refresh-feeds.sh refreshes them daily. The image
 # this checkout builds is never pulled. When compose cannot list its images, everything it does not build is pulled, as before.
 PULL_NOTE=
@@ -276,7 +286,21 @@ elif [ -n "$MISSING" ]; then
   done
   PULL_NOTE=" (pulled $(printf '%s' "$MISSING" | wc -w | tr -d ' ') image(s) this machine did not have)"
 else
-  say "every image the stack needs is already on this machine: nothing to pull (the OpenVAS feed data is refreshed daily by scripts/refresh-feeds.sh)"
+  say "every image the stack needs is already on this machine: nothing missing to pull (the OpenVAS feed data is refreshed daily by scripts/refresh-feeds.sh)"
+fi
+# The Greenbone program images follow `stable` (docker-compose.yml), which Greenbone moves to its latest release and behind which it deletes the old
+# images: every update pulls the ones this stack runs, so the swap below recreates them on Greenbone's current release. Every image the stack needs
+# is on this machine by now, so a registry that does not answer only leaves them as they are: that is said, and is never a failed update.
+PROGRAMS=$(greenbone_programs)
+if [ -n "$PROGRAMS" ]; then
+  # shellcheck disable=SC2086 # a fixed list of service names
+  if PULL_ERR=$(docker compose pull --quiet $PROGRAMS 2>&1 >/dev/null); then
+    PULL_NOTE="$PULL_NOTE (Greenbone images pulled from stable)"
+  else
+    WHY=$(printf '%s\n' "$PULL_ERR" | grep -v '^[[:space:]]*$' | tail -n 1 | cut -c1-160)
+    PULL_NOTE="$PULL_NOTE (Greenbone images not refreshed: ${WHY:-no reason given})"
+    say "the Greenbone images could not be pulled from stable (${WHY:-no reason given}); the stack keeps the ones on this machine"
+  fi
 fi
 ctl report updating --phase build --detail "building the new Sentinel image" --from "$CURRENT" --to "$TARGET" 2>/dev/null || true
 docker compose build || rollback "docker compose build failed" build
