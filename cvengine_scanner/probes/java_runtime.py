@@ -30,7 +30,7 @@ import socket
 import time
 from urllib.parse import urlsplit
 
-from .. import java
+from .. import java, printers
 from . import version_probes
 
 logger = logging.getLogger(__name__)
@@ -210,6 +210,7 @@ def run_jdwp(entry, policy, connect=socket.create_connection):
     """One JDWP endpoint under ``policy``: refused (not asked) when the policy or this Sentinel's floor does not allow the address."""
     address, port = entry['address'], entry['port']
     try:
+        printers.check_port(port)  # the JDWP handshake is data: never sent to a raw print port
         policy.check_host(address)
         policy.check_address(address, literal=True)
     except ValueError as exc:

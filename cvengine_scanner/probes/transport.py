@@ -15,6 +15,7 @@ import socket
 import time
 import zlib
 
+from .. import printers
 from . import egress_proxy
 
 
@@ -32,6 +33,7 @@ def resolve(host, port, policy):
         raise ValueError('invalid probe hostname')
     if any(c in host for c in '/\\@%') or not 0 < int(port) < 65536:
         raise ValueError('invalid probe destination')
+    printers.check_port(port)  # a raw print port is never sent data, whatever the task or a redirect named
     policy.check_host(host)
     answers = socket.getaddrinfo(host, port, family=socket.AF_UNSPEC,
                                  type=socket.SOCK_STREAM, proto=socket.IPPROTO_TCP)
@@ -65,6 +67,7 @@ def open_socket(addresses, timeout, policy, host=None, proxy=_AUTO, literal=Fals
     deadline = time.monotonic() + timeout
     last_error = OSError('no probe address available')
     for family, address in addresses:
+        printers.check_port(address[1])  # a raw print port is never sent data (printers.PRINT_PORTS)
         ip = ipaddress.ip_address(address[0])
         if policy.address_refusal(str(ip), literal=literal or (host is not None and _is_literal(host, ip))):
             raise ValueError('probe destination is prohibited')

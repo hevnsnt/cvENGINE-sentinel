@@ -1630,6 +1630,22 @@
                       "items": {
                         "type": "string",
                         "maxLength": 260
+                      },
+                      "description": "the reverse DNS names this Sentinel's resolver gave the address"
+                    },
+                    "names": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "description": "the names the host gave itself: mDNS (a unicast reverse question to its port 5353) and NetBIOS (one node status question, UDP 137); each only when it answered",
+                      "properties": {
+                        "mdns": {
+                          "type": "string",
+                          "maxLength": 253
+                        },
+                        "netbios": {
+                          "type": "string",
+                          "maxLength": 15
+                        }
                       }
                     }
                   }

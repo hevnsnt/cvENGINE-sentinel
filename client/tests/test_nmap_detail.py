@@ -34,7 +34,9 @@ class RunNmapKeepsTheDetailTests(unittest.TestCase):
     def test_the_ipv4_and_ipv6_runs_add_up_their_cuts(self):
         one = ('<nmaprun><host timedout="true"><address addr="{ip}" addrtype="{kind}"/><ports/></host><runstats><finished exit="success"/></runstats></nmaprun>')
         answers = iter([one.format(ip='192.0.2.1', kind='ipv4'), one.format(ip='2001:db8::1', kind='ipv6')])
-        with mock.patch('client.tools._run', side_effect=lambda *a, **k: next(answers)):
+        # the SYN-only pass over the raw print ports answers with an empty finished report
+        with mock.patch('client.tools._run', side_effect=lambda argv, *a, **k: next(answers) if '-sV' in argv else
+                        '<nmaprun><runstats><finished exit="success"/></runstats></nmaprun>'):
             result = tools.run_nmap(['8.8.8.8', '2606:4700:4700::1111'])
         self.assertEqual(sorted(c['target'] for c in result['cuts']), ['192.0.2.1', '2001:db8::1'])
 

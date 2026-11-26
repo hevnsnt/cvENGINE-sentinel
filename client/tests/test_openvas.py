@@ -363,6 +363,17 @@ class WaitForTaskTests(OpenvasTestCase):
         self.assertIn('stop_task', gmp.names())
 
 
+def port_ranges_xml(ranges):
+    return ''.join(f'<port_range><start>{a}</start><end>{b}</end><type>tcp</type></port_range>' for a, b in ranges)
+
+
+def port_list_detail(list_id, **kw):
+    """gvmd's answer for one port list: the built-in IANA list holds the print ports, the Sentinel's own list does not."""
+    ranges = [(1, 1024), (9100, 9100), (9200, 9200)] if list_id == openvas.PORT_LIST[0] else [(1, 514), (516, 1024), (9200, 9200)]
+    return xml(f'<get_port_lists_response><port_list id="{list_id}"><port_ranges>{port_ranges_xml(ranges)}</port_ranges></port_list>'
+               '</get_port_lists_response>')
+
+
 def happy_gmp():
     """A gvmd that runs one task to Done with one CVE-bearing result on a host its report lists."""
     page = results_page(RESULT_WITH_CVE)
@@ -379,6 +390,8 @@ def happy_gmp():
                                       f'<name>{openvas.OPENVAS_SCANNER[1]}</name></scanner></get_scanners_response>'),
         get_port_lists=lambda **kw: xml(f'<get_port_lists_response><port_list id="{openvas.PORT_LIST[0]}">'
                                         f'<name>{openvas.PORT_LIST[1]}</name></port_list></get_port_lists_response>'),
+        get_port_list=port_list_detail,
+        create_port_list=lambda *a, **kw: xml('<create_port_list_response id="safe-ports"/>'),
         create_target=lambda *a, **kw: xml('<create_target_response id="target-1"/>'),
         create_task=lambda *a, **kw: xml('<create_task_response id="task-1"/>'),
         start_task=lambda *a: None,

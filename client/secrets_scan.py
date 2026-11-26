@@ -26,6 +26,7 @@ import tempfile
 import time
 from urllib.parse import urlsplit
 
+from cvengine_scanner import printers
 from cvengine_scanner import secrets as kf
 from cvengine_scanner.parsers import Cuts
 
@@ -46,6 +47,7 @@ class _Pinned(http.client.HTTPConnection):
         self._address = address
 
     def connect(self):
+        printers.check_port(self.port)  # a raw print port is never sent data (printers.PRINT_PORTS)
         self.sock = socket.create_connection((self._address, self.port), self.timeout)
 
 
@@ -58,6 +60,7 @@ class _PinnedTLS(http.client.HTTPSConnection):
         self._address = address
 
     def connect(self):
+        printers.check_port(self.port)  # a raw print port is never sent data (printers.PRINT_PORTS)
         sock = socket.create_connection((self._address, self.port), self.timeout)
         self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
 

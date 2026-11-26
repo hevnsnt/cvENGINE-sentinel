@@ -10,6 +10,8 @@ import ipaddress
 import re
 from urllib.parse import urlparse
 
+from . import printers
+
 MAX_TARGETS = 64  # matches agentapi.sentinel_broker.MAX_ADDRESSES: a task never names more than this many
 
 NAABU_FLAGS = ['-p', '-', '-rate', '1000', '-retries', '2', '-c', '25', '-warm-up-time', '2', '-json', '-silent', '-nc']
@@ -354,8 +356,11 @@ def reviewed_scripts(scripts):
 # task's own list (nmap_pass_flags), or the top thousand when it names none.
 TOP_PORTS = 1000
 NMAP_HOST_TIMEOUT = '8m'  # nmap gives up on a host after this; the host is then flagged timed_out, never read as clean (review H3)
+# --exclude-ports keeps the raw print ports (printers.PRINT_PORTS: 515, 9100 to 9107) out of this pass whole. nmap's own service probe file
+# excludes 9100 to 9107 from -sV only: its scripts still ran there (a TLS ClientHello reached 9100) and -sV still probed 515 with HTTP, TLS and
+# RPC requests, and a printer printed them. Whether those ports are open is read by NMAP_PRINT_PORT_FLAGS, a SYN-only pass that sends no data.
 _FAST_SCAN_FLAGS = ['-sV', '--version-intensity', '7', '-O', '--osscan-limit', '-Pn', '-T4', '--max-retries', '2', '--min-hostgroup', '32',
-                    '--defeat-rst-ratelimit', *NSE_FLAGS]
+                    '--defeat-rst-ratelimit', *NSE_FLAGS, '--exclude-ports', printers.nmap_exclude_argument()]
 NMAP_FAST_FLAGS = [*_FAST_SCAN_FLAGS, '--top-ports', str(TOP_PORTS)]  # the top thousand, as the server's own fingerprint pass runs it
 NMAP_FULL_PORT_FLAGS = ['-p-', '--open', '-T4', '-Pn']
 # nmap's --top-ports ranks ports by how often they are open across the internet, not by how dangerous an open one is, so the thousand it picks
@@ -366,7 +371,7 @@ EXTRA_PORTS = (
     3100, 4369, 5601, 5672, 5984,     # Loki, Erlang epmd, Kibana, AMQP, CouchDB
     6379, 6380, 6443, 7474, 8086,     # Redis, Kubernetes API, Neo4j, InfluxDB
     8161, 8200, 8500, 8834, 8983,     # ActiveMQ console, Vault, Consul, Nessus, Solr
-    9042, 9092, 9100, 9200, 9300,     # Cassandra, Kafka, node exporter, Elasticsearch HTTP and transport
+    9042, 9092, 9200, 9300,           # Cassandra, Kafka, Elasticsearch HTTP and transport (9100, node exporter, is a raw print port: printers.py)
     9443, 10250, 10255, 11211, 15672,  # alternate HTTPS, kubelet, kubelet read-only, Memcached, RabbitMQ console
     16686, 27017, 27018, 50070, 61616, 1883, 8883,  # Jaeger, MongoDB, Hadoop, ActiveMQ, MQTT (plain and TLS)
     5005, 5006, 5007, 5008, 5009, 5010, 8787, 9009,  # Java debug (JDWP) ports: an open one runs any code it is sent (see JDWP_VERSION_SCRIPT)
@@ -416,8 +421,13 @@ def nmap_pass_flags(ports=None):
             raise ValueError(f'a fingerprint task names at most {MAX_NMAP_PORTS} ports')
         if any(isinstance(p, bool) or not isinstance(p, int) or not 0 < p < 65536 for p in ports):
             raise ValueError('a port must be a whole number from 1 to 65535')
-        port_flags = ['-p', port_argument({*ports, *EXTRA_PORTS, *CLOSED_PROBE_PORTS})]
+        port_flags = ['-p', port_argument(printers.without_print_ports({*ports, *EXTRA_PORTS, *CLOSED_PROBE_PORTS}))]
     return [*_FAST_SCAN_FLAGS, '-n', '--open', '--host-timeout', NMAP_HOST_TIMEOUT, *port_flags]
+
+
+# The raw print ports of every address of a fingerprint pass, read with a SYN and nothing else: no -sV, no script, no OS probe, so no byte of
+# data reaches a printer (``printers``). An open one is reported as nmap's port table names it (jetdirect, printer) with method "table".
+NMAP_PRINT_PORT_FLAGS = ['-sS', '-Pn', '-n', '--open', '--max-retries', '1', '--host-timeout', '60s', '-p', printers.nmap_exclude_argument()]
 
 
 # The time one task of a kind may take, by how many hosts it names: ``(smallest, seconds per host, largest)``. nmap's numbers are the ones
@@ -457,6 +467,7 @@ PROBE_NMAP_SCRIPTS = {'http': 'http-server-header,http-headers,http-generator,ht
 def probe_nmap_flags(port, service=''):
     """The flags of the version probe's nmap run on one ``port`` (the address goes last, after these): a full version scan of that port and the
     reviewed scripts for ``service`` (``banner`` when it is none of the known ones), XML to standard output."""
+    printers.check_port(int(port))  # a raw print port is never version probed (printers.PRINT_PORTS)
     name = re.sub(r'^(ssl/|tcp)', '', str(service or '').lower())
     key = next((k for k in PROBE_NMAP_SCRIPTS if name.startswith(k)), 'http' if name.startswith('http') or name == 'https' else '')
     scripts = PROBE_NMAP_SCRIPTS.get(key, 'banner')
@@ -547,7 +558,7 @@ def wafw00f_flags(timeout):
 # nmap_full: every TCP port of one address, open ports only (cveFeed.nmap_scan.FULL_PORT_FLAGS and HOST_TIMEOUT_FULL). -n: the target is an address.
 NMAP_FULL_FLAGS = [*NMAP_FULL_PORT_FLAGS, '-n', '--host-timeout', '10m']
 # nmap_verify: service detection on the named ports of one address; the intensity and the NSE scripts come from the task, each checked here.
-NMAP_VERIFY_FLAGS = ['-sV', '-Pn', '-n']
+NMAP_VERIFY_FLAGS = ['-sV', '-Pn', '-n', '--exclude-ports', printers.nmap_exclude_argument()]  # never a raw print port (printers.py)
 # The NSE scripts an nmap_verify task may name are NSE_SCRIPTS above, the server's reviewed list: a name not on it is refused, whatever the server
 # sent, so a task can never run an intrusive or a brute-force script.
 NSE_SCRIPT_TIMEOUT = '20s'

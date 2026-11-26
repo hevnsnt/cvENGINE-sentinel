@@ -153,6 +153,8 @@ class RunnerArgvTests(unittest.TestCase):
         captured = {}
 
         def fake_run(argv, timeout, register=None):
+            if '-sV' not in argv:  # the SYN-only pass over the raw print ports (test_printer_safety covers it)
+                return FINISHED_REPORT
             captured['argv'], captured['timeout'] = argv, timeout
             self.assertIsInstance(argv, list)
             with open(argv[argv.index('-iL') + 1], encoding='utf-8') as handle:
@@ -234,6 +236,8 @@ class RunnerArgvTests(unittest.TestCase):
         runs = []
 
         def fake_run(argv, timeout, register=None):
+            if '-sV' not in argv:  # the SYN-only pass over the raw print ports (test_printer_safety covers it)
+                return FINISHED_REPORT
             with open(argv[argv.index('-iL') + 1], encoding='utf-8') as handle:
                 runs.append((argv, handle.read()))
             return _read('sample_nmap.xml') if len(runs) == 1 else FINISHED_REPORT
@@ -1009,9 +1013,10 @@ class DetectToolsTests(unittest.TestCase):
 
 class DiscoverTests(unittest.TestCase):
     def setUp(self):
-        patcher = mock.patch('client.config._local_internal', return_value=True)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        for patcher in (mock.patch('client.config._local_internal', return_value=True),
+                        mock.patch('client.host_names.name_hosts', side_effect=lambda hosts, **kw: hosts)):  # no name question leaves the test
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def test_the_run_is_a_fixed_ping_sweep_of_the_validated_chunk(self):
         with mock.patch('client.tools._run', return_value=DISCOVER_XML) as fake_run:

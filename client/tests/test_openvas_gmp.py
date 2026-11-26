@@ -58,8 +58,8 @@ class ScriptedGvmd:
             'get_configs': self._configs,
             'get_scanners': (f'<get_scanners_response status="200" status_text="OK"><scanner id="{openvas.OPENVAS_SCANNER[0]}">'
                              f'<name>{openvas.OPENVAS_SCANNER[1]}</name></scanner></get_scanners_response>'),
-            'get_port_lists': (f'<get_port_lists_response status="200" status_text="OK"><port_list id="{openvas.PORT_LIST[0]}">'
-                               f'<name>{openvas.PORT_LIST[1]}</name></port_list></get_port_lists_response>'),
+            'get_port_lists': self._port_lists,
+            'create_port_list': '<create_port_list_response status="201" status_text="OK, resource created" id="safe-ports"/>',
             'create_target': '<create_target_response status="201" status_text="OK, resource created" id="target-1"/>',
             'create_task': '<create_task_response status="201" status_text="OK, resource created" id="task-1"/>',
             'start_task': '<start_task_response status="202" status_text="OK, request submitted"><report_id>rep1</report_id></start_task_response>',
@@ -70,6 +70,19 @@ class ScriptedGvmd:
         }
         self.script.update(script)
         self.modified = False
+
+    def _port_lists(self, command):
+        """The built-in IANA list (with 9100 in it), and once asked for one list by id, that list's ranges: the Sentinel's own list has no
+        print port."""
+        list_id = command.get('port_list_id')
+        if list_id:
+            ranges = '1-1024,9100,9200' if list_id == openvas.PORT_LIST[0] else '1-514,516-1024,9200'
+            body = ''.join(f'<port_range><start>{r.split("-")[0]}</start><end>{r.split("-")[-1]}</end><type>tcp</type></port_range>'
+                           for r in ranges.split(','))
+            return (f'<get_port_lists_response status="200" status_text="OK"><port_list id="{list_id}"><port_ranges>{body}</port_ranges>'
+                    '</port_list></get_port_lists_response>')
+        return (f'<get_port_lists_response status="200" status_text="OK"><port_list id="{openvas.PORT_LIST[0]}">'
+                f'<name>{openvas.PORT_LIST[1]}</name></port_list></get_port_lists_response>')
 
     def _configs(self, command):
         if command.get('config_id'):  # one config, read back
