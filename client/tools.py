@@ -31,7 +31,7 @@ import threading
 import time
 import xml.etree.ElementTree as ET
 
-from cvengine_scanner import flags, nuclei_allowlist
+from cvengine_scanner import flags, nuclei_allowlist, printers
 from cvengine_scanner.flags import (DISCOVER_FLAGS, KERNEL_MARKERS, MAX_DISCOVER_ADDRESSES, MAX_DISCOVER_HOSTS, MAX_OPEN_PER_IP,  # noqa: F401
                                     MAX_PATH_TARGETS, MAX_TARGETS, MAX_TEMPLATE_BYTES, MAX_VERIFY_PORTS, NAABU_FLAGS, NMAP_FULL_FLAGS, TASK_LIMITS,
                                     nmap_pass_flags, task_seconds,
@@ -151,6 +151,8 @@ def _refused(value, why, exc=None):
 def _port_text(port, value):
     if not _PORT.fullmatch(port) or not 0 < int(port) < 65536:
         raise _refused(value, 'the port must be 1 to 65535')
+    if printers.is_print_port(port):
+        raise _refused(value, printers.REFUSAL)
     return str(int(port))
 
 
@@ -436,7 +438,9 @@ def run_nmap(addresses, timeout=None, register=None, ports=None):
             parsed = parse_nmap_xml(xml, strict=True)
             rows = parsed['hosts']
             cuts.merge(parsed.get('cuts'))  # a host nmap gave up on, a port list or a text cut: said in the result, never silent (contract 5)
-            out.extend(rows + _scanned_without_open_ports(group, rows, nmap_scanned_total(xml)))
+            rows = rows + _scanned_without_open_ports(group, rows, nmap_scanned_total(xml))
+            _add_print_ports(rows, flags, path, register)
+            out.extend(rows)
             readings.extend(service_probes.nse_readings(xml))  # SSH (ssh2-enum-algos) and RDP (rdp-enum-encryption) features: no new traffic
         finally:
             os.unlink(path)
@@ -471,6 +475,26 @@ def _nmap_follow_up(hosts, addresses, readings, cuts, left):
 
 
 FOLLOW_UP_MARGIN = 30  # seconds of the task's time the feature probes always leave unused
+PRINT_PORT_SECONDS = 120  # the SYN-only pass over the raw print ports of one group
+
+
+def _add_print_ports(rows, family_flags, path, register):
+    """Add the open raw print ports (``printers.PRINT_PORTS``) of the hosts in ``rows`` to their port lists, read by a SYN-only nmap pass
+    (``flags.NMAP_PRINT_PORT_FLAGS``: no service probe, no script, no OS probe, so no byte of data reaches them). The fingerprint pass leaves
+    those ports out whole (``--exclude-ports``), so this is how the server still learns a printer's print ports are open. Only hosts the
+    fingerprint pass already has a row for are completed: a host it did not cover is not made to look covered. Never fails the pass."""
+    if not rows:
+        return
+    try:
+        xml = _run([NMAP_BIN, *family_flags, *flags.NMAP_PRINT_PORT_FLAGS, '-oX', '-', '-iL', path], PRINT_PORT_SECONDS, register)
+        found = {_normal_address(h.get('ip')): h.get('ports') or [] for h in parse_nmap_xml(xml)['hosts']}
+    except Exception:  # noqa: BLE001 - the fingerprint pass stands without the print ports
+        logger.warning('the SYN-only pass over the raw print ports failed', exc_info=True)
+        return
+    for row in rows:
+        extra = [p for p in found.get(_normal_address(row.get('ip')), []) if printers.is_print_port(p.get('number')) and p.get('protocol', 'tcp') == 'tcp']
+        known = {p.get('number') for p in row.get('ports') or []}
+        row['ports'] = list(row.get('ports') or []) + [p for p in extra if p.get('number') not in known]
 
 
 def _scanned_without_open_ports(group, rows, total):
@@ -521,7 +545,11 @@ def run_discover(cidr, timeout=900, register=None):
         raise TargetError('discover only runs on an internal Sentinel')
     cidr = validate_cidr(cidr)
     argv = [NMAP_BIN, *DISCOVER_FLAGS, '-oX', '-', cidr]
-    return parse_discover_xml(_run(argv, timeout, register), strict=True)
+    result = parse_discover_xml(_run(argv, timeout, register), strict=True)
+    # each host's reverse DNS name came with the sweep (nmap asks this Sentinel's resolver); its mDNS and NetBIOS names are one question each
+    from . import host_names
+    host_names.name_hosts(result['hosts'])
+    return result
 
 
 # --- naabu ----------------------------------------------------------------------------------------------------------
@@ -1172,8 +1200,12 @@ _STARTTLS = re.compile(r'[a-z][a-z0-9-]{0,19}')
 
 
 def _validate_port(value):
+    """A task's port as a number. A raw print port (``printers.PRINT_PORTS``) is refused for every kind that takes one here (testssl, waf,
+    nmap_verify, rdp_shot, db_probe, path_probe, ssh_probe): each of them sends data, and a printer prints what reaches those ports."""
     if isinstance(value, bool) or not isinstance(value, int) or not 0 < value < 65536:
         raise TargetError(f'not a usable port: {value!r}')
+    if printers.is_print_port(value):
+        raise TargetError(f'port {value}: {printers.REFUSAL}')
     return value
 
 

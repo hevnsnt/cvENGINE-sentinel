@@ -24,6 +24,8 @@ import threading
 import time
 from urllib.parse import urlsplit
 
+from cvengine_scanner import printers
+
 logger = logging.getLogger(__name__)
 
 MAX_HEAD = 64 * 1024
@@ -200,6 +202,8 @@ class VettingProxy:
 
     def _open_upstream(self, page, host, port):
         """``(socket, '')``, or ``(None, 'refused')`` when the guards say no, or ``(None, 'failed')`` when the connection could not be made."""
+        if printers.is_print_port(port):  # a page, a redirect or a script that points the browser at a raw print port is never followed there
+            return None, 'refused'
         try:
             target, why = self.admit(page, host, port)
         except Exception:  # noqa: BLE001 - a guard that cannot answer is a refusal

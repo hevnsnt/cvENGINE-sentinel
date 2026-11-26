@@ -25,6 +25,8 @@ import time
 from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
 
+from cvengine_scanner import printers
+
 from . import scope
 
 logger = logging.getLogger('sentinel.openvas')
@@ -55,6 +57,10 @@ MIN_EXCLUDED_FAMILIES = frozenset({'Denial of Service', 'Brute force attacks'})
 FULL_AND_FAST = ('daba56c8-73ec-11df-a475-002264764cea', 'Full and fast')
 OPENVAS_SCANNER = ('08b69003-5fc2-4037-a479-93b440211c73', 'OpenVAS Default')
 PORT_LIST = ('33d0cd82-57c6-11e1-8ed1-406186ea4fc5', 'All IANA assigned TCP')
+# What a target is scanned on: Greenbone's "All IANA assigned TCP" without the raw print ports (cvengine_scanner.printers.PRINT_PORTS: 515 and
+# 9100 to 9107). OpenVAS's service detection (find_service and the NVTs after it) sends data to every port of the list it finds open, and a
+# printer prints what reaches those ports. Built once from the built-in list, found by name after that, and checked each time it is used.
+PRINT_SAFE_PORT_LIST = 'cvengine-sentinel IANA TCP without print ports'
 CONFIG_NAME = 'cvengine-sentinel safe scan'
 ALL_ROWS = 'rows=-1'  # gvmd pages list answers (10 rows by default); a built-in must never fall off the first page
 TASK_PREFERENCES = {'max_checks': '4', 'max_hosts': '1'}  # the defaults (Greenbone's own 4 NVTs at a time); the server's task may set max_checks
@@ -786,6 +792,61 @@ def ensure_config(gmp, excluded):
         return config_id
 
 
+def _port_ranges(answer):
+    """The TCP ``(start, end)`` ranges of a ``get_port_list`` answer."""
+    out = []
+    for item in answer.findall('.//port_range'):
+        if _text(item, 'type', 'tcp').lower() != 'tcp':
+            continue
+        start, end = _int(_text(item, 'start'), -1), _int(_text(item, 'end'), -1)
+        if 0 < start <= end < 65536:
+            out.append((start, end))
+    return out
+
+
+def print_safe_ranges(ranges):
+    """``ranges`` with every raw print port cut out, as gvmd's port range text (``T:1-514,516-9099,9108-65535``)."""
+    ports = sorted({p for start, end in ranges for p in range(start, end + 1)} - printers.PRINT_PORTS)
+    parts, start, prev = [], None, None
+    for port in ports + [None]:
+        if start is None:
+            start = prev = port
+        elif port is not None and port == prev + 1:
+            prev = port
+        else:
+            parts.append(str(start) if start == prev else f'{start}-{prev}')
+            start = prev = port
+    return 'T:' + ','.join(parts) if parts else ''
+
+
+def _has_print_port(ranges):
+    return any(start <= port <= end for start, end in ranges for port in printers.PRINT_PORTS)
+
+
+def ensure_port_list(gmp):
+    """The id of the port list every target of this Sentinel uses (``PRINT_SAFE_PORT_LIST``): found by name, or made from the built-in "All
+    IANA assigned TCP" without the raw print ports. A list that is empty or still names a print port is refused (fail closed): no scan starts
+    rather than one that would reach a printer's print port."""
+    lists = gmp.get_port_lists(filter_string=ALL_ROWS)
+    mine = [p for p in lists.findall('port_list') if _text(p, 'name') == PRINT_SAFE_PORT_LIST]
+    if mine:
+        list_id = mine[0].get('id')
+    else:
+        base = _find(lists, PORT_LIST, 'port_list')
+        if base is None:
+            raise OpenvasError('gvmd has no "All IANA assigned TCP" port list yet (the feed data is not loaded)')
+        text = print_safe_ranges(_port_ranges(gmp.get_port_list(base.get('id'))))
+        if not text:
+            raise OpenvasError('the "All IANA assigned TCP" port list has no TCP ranges gvmd would show')
+        created = gmp.create_port_list(PRINT_SAFE_PORT_LIST, text, comment='cvENGINE Sentinel: All IANA assigned TCP without the raw print '
+                                       'ports (515, 9100 to 9107), which printers print from')
+        list_id = created.get('id')
+    ranges = _port_ranges(gmp.get_port_list(list_id))
+    if not ranges or _has_print_port(ranges):
+        raise OpenvasError(f'the port list "{PRINT_SAFE_PORT_LIST}" is empty or names a raw print port; no scan starts with it')
+    return list_id
+
+
 def _syncing_feeds(gmp):
     """The feeds gvmd is still downloading (SCAP, CERT, data objects, vulnerability tests), by name; empty when none is or when gvmd cannot say."""
     try:
@@ -1012,13 +1073,11 @@ def _start(run, gmp, addresses, excluded, preferences):
     scanner = _find(gmp.get_scanners(filter_string=ALL_ROWS), OPENVAS_SCANNER, 'scanner')
     if scanner is None:
         raise OpenvasError('gvmd does not list the OpenVAS scanner yet')
-    port_list = _find(gmp.get_port_lists(filter_string=ALL_ROWS), PORT_LIST, 'port_list')
-    if port_list is None:
-        raise OpenvasError('gvmd has no "All IANA assigned TCP" port list yet (the feed data is not loaded)')
+    port_list_id = ensure_port_list(gmp)
     name = f'{NAME_PREFIX}{secrets.token_hex(6)}'
     # The server already decided the host is up and in scope; gvmd's default alive test (ICMP and TCP-ACK ping) would call a firewalled host
     # dead and finish "Done" with nothing scanned.
-    target = gmp.create_target(name, hosts=addresses, port_list_id=port_list.get('id'), alive_test=AliveTest.CONSIDER_ALIVE,
+    target = gmp.create_target(name, hosts=addresses, port_list_id=port_list_id, alive_test=AliveTest.CONSIDER_ALIVE,
                                comment='cvENGINE Sentinel: a server-vetted host set; created and removed by this Sentinel')
     run.target_id = target.get('id')
     _active([run.target_id], True)

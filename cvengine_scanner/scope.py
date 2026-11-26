@@ -29,6 +29,8 @@ import re
 import socket
 from urllib.parse import urlsplit
 
+from . import printers
+
 
 class ScopeError(ValueError):
     """A target the Sentinel will not scan. The message says why and never contains more than the offending target."""
@@ -296,5 +298,7 @@ def check_url(value, internal=None, resolve=True, resolver=socket.getaddrinfo):
         raise ScopeError('not a valid URL') from None
     if not parts or parts.scheme not in ('http', 'https') or not host or parts.username or parts.password:
         raise ScopeError('not an http or https URL with a plain host')
+    if printers.is_print_port(parts.port):
+        raise ScopeError(printers.REFUSAL)
     check_target(host, internal=internal, resolve=resolve, resolver=resolver)
     return value
