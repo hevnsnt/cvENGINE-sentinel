@@ -4,9 +4,8 @@
   python3 scripts/check_tool_versions.py [--json] [--fail-if-behind] [--github-warnings] [--root DIR]
 
 Every tool the image is built from is pinned: the ``ARG ..._VERSION`` lines of the Dockerfile, the ``name==version`` lines of requirements.txt (and the
-test extra of pyproject.toml), the pip bootstrap pins in the Dockerfile, the Ubuntu base image digest and the Greenbone images pinned by digest in
-docker-compose.yml. This reads all of them and compares each with its upstream (GitHub releases and tags, PyPI, proxy.golang.org, go.dev/dl,
-rubygems.org, nmap.org, Docker Hub, the Greenbone registry, Chrome's version history) and prints a table: tool, pinned, latest, state.
+test extra of pyproject.toml), the pip bootstrap pins in the Dockerfile and the Ubuntu base image digest. This reads all of them and compares each with its upstream (GitHub releases and tags, PyPI, proxy.golang.org, go.dev/dl,
+rubygems.org, nmap.org, Docker Hub, Chrome's version history) and prints a table: tool, pinned, latest, state.
 
 Exit status is 0 whatever the answer, 2 when the script itself crashes, or 1 with --fail-if-behind when any tool is behind, a pin cannot be found in its file, a version ARG has no known
 upstream, or a newest version cannot be read (the gate fails closed: a renamed pin or an unreachable site must not pass a release; the weekly report,
@@ -36,9 +35,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 # PyPI's JSON for a package with many releases (cryptography, pymongo) is several MB, and a cut-off answer is not JSON: it would read as "unknown".
 MAX_ANSWER = 30_000_000
-GREENBONE = 'registry.community.greenbone.net'
-GREENBONE_ACCEPT = ', '.join(('application/vnd.oci.image.index.v1+json', 'application/vnd.docker.distribution.manifest.list.v2+json',
-                              'application/vnd.oci.image.manifest.v1+json', 'application/vnd.docker.distribution.manifest.v2+json'))
 
 
 def version_key(text):
@@ -52,23 +48,10 @@ def fetch(url, as_json=True):
     token = os.environ.get('GITHUB_TOKEN', '')
     if token and url.startswith('https://api.github.com/'):
         headers['Authorization'] = 'Bearer ' + token
-    if url.startswith(f'https://{GREENBONE}/v2/'):
-        return greenbone_digest(url)
     request = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310 - fixed https URLs below
         body = response.read(MAX_ANSWER).decode('utf-8', 'replace')
     return json.loads(body) if as_json else body
-
-
-def greenbone_digest(url):
-    """The digest the registry serves for a manifest URL (the ``stable`` tag): ``{'digest': 'sha256:...'}``. The registry hands out an anonymous pull token."""
-    image = re.search(r'/v2/(community/[a-z0-9-]+)/manifests/', url).group(1)
-    token_url = f'https://{GREENBONE}/service/token?service=harbor-registry&scope=repository:{image}:pull'
-    with urllib.request.urlopen(urllib.request.Request(token_url, headers={'User-Agent': 'cvengine-sentinel-tool-check'}), timeout=30) as response:  # noqa: S310
-        token = json.loads(response.read(100_000).decode('utf-8', 'replace'))['token']
-    request = urllib.request.Request(url, method='HEAD', headers={'Authorization': 'Bearer ' + token, 'Accept': GREENBONE_ACCEPT})
-    with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310
-        return {'digest': response.headers.get('Docker-Content-Digest', '')}
 
 
 # ----------------------------------------------------------------------------- how each upstream answers
@@ -119,7 +102,7 @@ def latest_chrome_stable(data):
 
 
 def digest_of(data):
-    """Docker Hub's tag endpoint and the Greenbone lookup answer {"digest": "sha256:..."}."""
+    """Docker Hub's tag endpoint answers {"digest": "sha256:..."}."""
     digest = str(data.get('digest') or '') if isinstance(data, dict) else ''
     return digest if re.fullmatch(r'sha256:[0-9a-f]{64}', digest) else None
 
@@ -214,9 +197,6 @@ def pins(root):
         if name.lower() not in seen:
             seen.add(name.lower())
             found.append((name.lower(), version, PYPI.format(name), latest_pypi, row, True))
-    compose = read(root, 'docker-compose.yml')
-    for image, digest in sorted(set(re.findall(rf'{re.escape(GREENBONE)}/community/([a-z0-9-]+):stable@(sha256:[0-9a-f]{{64}})', compose))):
-        found.append((f'greenbone {image}', digest, f'https://{GREENBONE}/v2/community/{image}/manifests/stable', digest_of, digest_row, True))
     return found
 
 

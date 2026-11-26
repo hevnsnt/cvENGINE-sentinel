@@ -3,7 +3,7 @@
 The stand-in `docker` sends `docker compose exec ... python3 -m client.control` to the real module (against a temporary state directory) and
 records `compose pull`, `build` and `up` (each can be made to fail with SHIM_FAIL_PULL, SHIM_FAIL_BUILD or SHIM_FAIL_UP, and SHIM_FAIL_STACK_UP fails
 only the `up -d` of the whole stack; `compose config --images`
-lists SHIM_IMAGES, `image inspect` fails for those in SHIM_MISSING, and a plain `docker pull` fails with SHIM_FAIL_PULL); after `compose up` it
+lists SHIM_IMAGES and `compose config --services` SHIM_SERVICES, `image inspect` fails for those in SHIM_MISSING, and a plain `docker pull` fails with SHIM_FAIL_PULL); after `compose up` it
 writes the daemon status a rebuilt Sentinel would write. It proves the script's decisions, not Docker itself.
 """
 import fcntl
@@ -36,7 +36,9 @@ shift
 case "$1" in
   exec) shift; shift; shift; cd "$SENTINEL_SRC" && exec "$@" ;;
   pull) [ -z "${SHIM_FAIL_PULL:-}" ] || { echo 'Error response from daemon: Get "https://registry.example/v2/": net/http: TLS handshake timeout' >&2; exit 1; } ;;
-  config) [ -z "${SHIM_FAIL_CONFIG:-}" ] || exit 1; [ -z "${SHIM_IMAGES:-}" ] || printf '%s\n' $SHIM_IMAGES ;;
+  config) [ -z "${SHIM_FAIL_CONFIG:-}" ] || exit 1
+    if [ "${2:-}" = --services ]; then [ -z "${SHIM_SERVICES:-}" ] || printf '%s\n' $SHIM_SERVICES
+    else [ -z "${SHIM_IMAGES:-}" ] || printf '%s\n' $SHIM_IMAGES; fi ;;
   build) [ -z "${SHIM_FAIL_BUILD:-}" ] ;;
   up) shift
     [ -z "${SHIM_FAIL_UP:-}" ] || exit 1
@@ -262,7 +264,7 @@ class UpdateScriptTests(unittest.TestCase):
         self.assertNotIn('client.control drain', self.calls())
 
     FEED = 'registry.example/community/vulnerability-tests:community'
-    PINNED = 'registry.example/community/gvmd:stable@sha256:' + 'a' * 64
+    GREENBONE = 'registry.example/community/gvmd:stable'
 
     def handover(self, *args):
         """A run as root of a checkout another user owns: stand-in `id`, `stat` and `sudo` say so, and `sudo` records what it was asked to run."""
@@ -294,27 +296,65 @@ class UpdateScriptTests(unittest.TestCase):
         # (scripts/refresh-feeds.sh refreshes them daily), so a slow or broken registry cannot hold a code update back
         self.publish()
         self.status('automatic')
-        out = self.update(SHIM_FAIL_PULL='1', SHIM_IMAGES=f'cvengine-sentinel-local:latest {self.FEED} {self.PINNED}')
+        out = self.update(SHIM_FAIL_PULL='1', SHIM_IMAGES=f'cvengine-sentinel-local:latest {self.FEED} {self.GREENBONE}')
         self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
         self.assertEqual(self.head(), self.origin_main()[:12])
         self.assertEqual(control.updater_info()['last_result'], 'updated')
         self.assertNotIn('docker pull', self.calls())
         self.assertNotIn('compose pull', self.calls())
         self.assertNotIn('image inspect cvengine-sentinel-local', self.calls())  # the image this checkout builds is never looked for
-        self.assertIn('nothing to pull', out.stdout)
+        self.assertIn('nothing missing to pull', out.stdout)
 
     def test_an_update_pulls_only_the_images_this_machine_lacks(self):
         self.publish()
         self.status('automatic')
-        out = self.update(SHIM_IMAGES=f'cvengine-sentinel-local:latest {self.FEED} {self.PINNED}', SHIM_MISSING=self.PINNED)
+        out = self.update(SHIM_IMAGES=f'cvengine-sentinel-local:latest {self.FEED} {self.GREENBONE}', SHIM_MISSING=self.GREENBONE)
         self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
         calls = self.calls()
-        self.assertIn(f'docker pull --quiet {self.PINNED}', calls)  # a changed pin is a new reference, so it is pulled
+        self.assertIn(f'docker pull --quiet {self.GREENBONE}', calls)  # an image this machine lacks is pulled
         self.assertNotIn(f'docker pull --quiet {self.FEED}', calls)  # the feed data image it has is not
         self.assertNotIn('compose pull', calls)
         info = control.updater_info()
         self.assertEqual(info['last_result'], 'updated')
         self.assertIn('pulled 1 image(s) this machine did not have', info['detail'])
+
+    OPENVAS = 'sentinel-init sentinel openvas-vulnerability-tests openvas-gpg-data openvas-redis openvas-gvmd openvas-configure openvas-ospd'
+
+    def test_an_update_pulls_the_greenbone_programs_from_stable(self):
+        # Greenbone deletes the old images behind `stable`, so they are not pinned by digest: every update pulls the program images the stack
+        # runs and the swap recreates them on Greenbone's latest release. The feed data images stay scripts/refresh-feeds.sh's.
+        self.publish()
+        self.status('automatic')
+        out = self.update(SHIM_IMAGES=f'cvengine-sentinel-local:latest {self.FEED} {self.GREENBONE}', SHIM_SERVICES=self.OPENVAS)
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        calls = self.calls().splitlines()
+        pulls = [line for line in calls if line.startswith('docker compose pull')]
+        self.assertEqual(pulls, ['docker compose pull --quiet openvas-redis openvas-gvmd openvas-configure openvas-ospd'])
+        self.assertLess(calls.index(pulls[0]), calls.index('docker compose build'))  # before anything is drained or swapped
+        ups = [line for line in calls if line.startswith('docker compose up')]
+        self.assertEqual(ups[-1], 'docker compose up -d')  # the whole stack is brought up last, which recreates what changed
+        info = control.updater_info()
+        self.assertEqual(info['last_result'], 'updated')
+        self.assertIn('Greenbone images pulled from stable', info['detail'])
+
+    def test_a_registry_that_does_not_answer_keeps_the_greenbone_images_here_and_still_updates(self):
+        self.publish()
+        self.status('automatic')
+        out = self.update(SHIM_FAIL_PULL='1', SHIM_IMAGES=f'cvengine-sentinel-local:latest {self.FEED} {self.GREENBONE}', SHIM_SERVICES=self.OPENVAS)
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertEqual(self.head(), self.origin_main()[:12])
+        info = control.updater_info()
+        self.assertEqual(info['last_result'], 'updated')
+        self.assertIn('Greenbone images not refreshed', info['detail'])
+        self.assertIn('TLS handshake timeout', info['detail'])
+        self.assertIn('the stack keeps the ones on this machine', out.stdout)
+
+    def test_a_light_sentinel_pulls_no_greenbone_image(self):
+        self.publish()
+        self.status('automatic')
+        out = self.update(SHIM_IMAGES='cvengine-sentinel-local:latest', SHIM_SERVICES='sentinel-init sentinel')
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertNotIn('compose pull', self.calls())
 
     def test_a_failed_pull_of_an_image_missing_here_puts_the_checkout_back_and_never_drains(self):
         self.publish()

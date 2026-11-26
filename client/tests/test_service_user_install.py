@@ -81,6 +81,7 @@ case "$*" in
   "compose version") echo "Docker Compose version v2.0.0" ;;
   "volume inspect "*) case " $STUB_VOLUMES " in *" $3 "*) exit 0 ;; *) exit 1 ;; esac ;;
   "inspect "*) echo "${{STUB_HEALTH:-healthy}}" ;;
+  "compose pull "*) [ -z "${{STUB_FAIL_PULL:-}}" ] || {{ echo 'Error response from daemon: registry unreachable' >&2; exit 1; }} ;;
 esac
 exit 0
 ''')
@@ -139,6 +140,12 @@ class InstallTests(ServiceUserBase):
         self.assertNotIn('clone', self.calls())
         self.assertFalse(os.path.exists(self.dest))  # nothing was made for the service user
 
+    def test_a_failed_image_pull_still_starts_the_stack(self):
+        out = self.install('--light', '--internal', '--name', 'lab-1', '--yes', '--blob', '-', STUB_FAIL_PULL='1')
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertIn('Pulling the images failed', out.stdout)
+        self.assertIn('docker compose up -d', self.calls())
+
     def test_a_fresh_install_creates_the_user_clones_as_it_and_never_runs_as_root(self):
         out = self.install('--light', '--internal', '--name', 'lab-1', '--yes', '--blob', '-')
         self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
@@ -168,6 +175,9 @@ class InstallTests(ServiceUserBase):
         self.assertIn(f'WorkingDirectory={self.dest}\n', service)
         self.assertNotIn('--allow-root', calls)
         self.assertLess(calls.index('git clone'), calls.index('docker compose up -d'))
+        # the images are pulled first (the Greenbone ones follow `stable`, so a reinstall starts on Greenbone's current release), as the service user
+        self.assertTrue(any(line.endswith('docker compose pull --quiet --ignore-buildable') for line in runs), runs)
+        self.assertLess(calls.index('docker compose pull --quiet --ignore-buildable'), calls.index('docker compose up -d'))
         # the summary says who, where and how much that is
         self.assertIn('User:       cvengine', out.stdout)
         self.assertIn(f'Directory:  {self.dest}', out.stdout)

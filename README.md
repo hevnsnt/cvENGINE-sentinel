@@ -615,11 +615,14 @@ compose file.
   (`scripts/refresh-feeds.sh`, installed with the updater) pulls them and recreates the ones that changed, so feeds
   stay fresh without a code update. It runs only when `openvas-gvmd` is running, no task is in flight and no update is
   running.
-- The program images are pinned by digest. Greenbone publishes no version tags and replaces what `stable` points to,
-  so an old pin can vanish from the registry (`artifact ... not found` on `docker compose up`).
-  `./scripts/greenbone-digests.sh` checks every pin: `ok`, `CHANGED` (still exists, `stable` moved on) or `MISSING`
-  (gone; exit 1). Replace the `sha256` of each `CHANGED` or `MISSING` image in `docker-compose.yml` with the digest it
-  prints after `now=`.
+- The program images (gvmd, the scanner, ospd-openvas, Postgres, Redis) follow Greenbone's `stable` tag, which is
+  Greenbone's latest release; they are not pinned by digest. Greenbone publishes no version tags and deletes the old
+  images behind `stable`, so a digest pin kept vanishing from the registry and a fresh install could not pull it
+  (`artifact ... not found`). Every update (`scripts/update.sh`) pulls the program images from `stable` and recreates
+  the ones that changed, and `install.sh` pulls before the first start. A registry that does not answer during an
+  update leaves the images this machine has and does not fail the update. To move a stack to the current `stable` by
+  hand: `docker compose pull && docker compose up -d`. `./scripts/greenbone-tags.sh` checks that every tag
+  `docker-compose.yml` names exists in the registry (`ok` with the digest it points to now, or `MISSING`; exit 1).
 
 ## Updates
 
@@ -712,8 +715,8 @@ The updater never gets the Docker socket inside a container: it talks to the dae
 6. **Target, then build while the Sentinel keeps working.** It settles which commit to move to (the one cvENGINE named; refusals as in
    [What Automatic trusts](#what-automatic-trusts): "cannot update: ...", result `failed`, nothing changed), fast-forwards the checkout to exactly that
    commit and checks `HEAD` equals it before going on, pulls the images
-   (`docker compose pull --ignore-buildable`, so a moved Greenbone pin reaches the stack) and builds the new Sentinel
-   image. A failed pull or build puts the checkout back on the commit it had (`git reset --hard`) and records
+   (the images this machine lacks, then the Greenbone program images from `stable`, Greenbone's latest; a failure of
+   that last pull only keeps the Greenbone images it has) and builds the new Sentinel image. A failed pull or build puts the checkout back on the commit it had (`git reset --hard`) and records
    `failed`; the Sentinel never stopped taking work. It also deletes any `CVENGINE_SENTINEL_VERSION` line from `.env`.
 7. **Drain.** It asks the Sentinel to stop taking tasks and waits up to `CVENGINE_SENTINEL_DRAIN_TIMEOUT` (default 4200
    seconds, longer than any task's one-hour budget, so a deep nuclei scan is waited out) for running tasks to finish. If one is still running at the deadline, it un-drains, records `waiting`
@@ -898,9 +901,7 @@ workflow checks that on every pull request and the publish workflow on what it p
 ### Checking that the tools are the newest
 
 `python3 scripts/check_tool_versions.py` reads every pin of the image (the `ARG ..._VERSION` lines of the Dockerfile, the `name==version` lines of
-`requirements.txt` and the test extra of `pyproject.toml`, the pip bootstrap pins, the Ubuntu base image digest and the Greenbone image digests in
-`docker-compose.yml`), asks each upstream for its newest release (GitHub, PyPI, proxy.golang.org, go.dev, rubygems.org, nmap.org, Docker Hub, the
-Greenbone registry) and prints a table: tool, pinned, latest, and whether it is current or behind. `--json` prints the rows as JSON, `--root DIR`
+`requirements.txt` and the test extra of `pyproject.toml`, the pip bootstrap pins and the Ubuntu base image digest), asks each upstream for its newest release (GitHub, PyPI, proxy.golang.org, go.dev, rubygems.org, nmap.org, Docker Hub) and prints a table: tool, pinned, latest, and whether it is current or behind. `--json` prints the rows as JSON, `--root DIR`
 reads another checkout, and `--fail-if-behind` exits 1 when a tool is behind, a pin cannot be found, a version `ARG` has no known upstream or a
 newest version cannot be read (it fails closed: a renamed pin or an unreachable site must not pass a release). The Chromium build of Playwright
 is shown as a warning only, because it moves with the Playwright pin.
@@ -1035,9 +1036,10 @@ library change to the server, merge it here, then bump that sha on the server in
 
 ### Testing OpenVAS
 
-`.github/workflows/openvas-integration.yml` checks the Greenbone pins, brings up the pinned gvmd (without feeds) and
-runs the login bootstrap and readiness check against it with the pinned `python-gvm`. It runs when the OpenVAS client,
-the compose pins, the image or `requirements.txt` change, weekly, and on demand. GitHub disables scheduled workflows
+`.github/workflows/openvas-integration.yml` checks that every Greenbone tag exists, brings up the current gvmd (its
+`stable` tag, without feeds) and runs the login bootstrap and readiness check against it with the pinned `python-gvm`.
+It runs when the OpenVAS client, the compose file, the image or `requirements.txt` change, daily (so a new Greenbone
+release that breaks the client is caught), and on demand. GitHub disables scheduled workflows
 after 60 days without repository activity, so re-enable it from the Actions tab on a quiet repository. It does not run
 a scan: that needs the feeds.
 
@@ -1117,7 +1119,7 @@ again when they run, so a DNS answer that changes in between is not caught (nmap
   `https://github.com/hevnsnt/cvengine-sentinel.git` (or a fork you control), protect that repository, and use Manual
   or Off (`CVENGINE_SENTINEL_UPDATE=manual`) where that is not enough.
 - **Mind other unpinned inputs.** The nuclei templates in the image are a pinned release (checksum-verified at build) and are not
-  refreshed at start (`CVENGINE_SENTINEL_UPDATE_TEMPLATES=1` opts in); the Greenbone feed images follow moving tags; Python packages
+  refreshed at start (`CVENGINE_SENTINEL_UPDATE_TEMPLATES=1` opts in); the Greenbone images (programs and feeds) follow moving tags; Python packages
   are pinned by version, not hash.
 - **Set `CVENGINE_SENTINEL_NETWORK=internal` only on machines meant to scan private space.** An internal Sentinel may
   scan any private address, which includes this Docker host's bridge gateway and, with host networking, the

@@ -213,6 +213,9 @@ main() {
     fi
   fi
 
+  # The Greenbone images follow moving tags (`stable` for the programs, Greenbone's latest release): pull them first, so a machine that already
+  # has an older copy (a reinstall) starts on the current one. A failed pull is not fatal: `up` pulls whatever is still missing and says why it cannot.
+  svc_run "$dir" docker compose pull --quiet --ignore-buildable || say "Pulling the images failed (see above); starting with the images this machine has."
   svc_run "$dir" docker compose up -d
 
   say ""
