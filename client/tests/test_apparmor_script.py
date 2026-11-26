@@ -145,6 +145,16 @@ esac
         self.assertEqual(read(self.envfile), before)
         self.assertNotIn('sudo', self.calls())
 
+    @unittest.skipIf(os.geteuid() == 0, 'root reads any file')
+    def test_status_says_when_it_cannot_read_env_instead_of_guessing(self):
+        # .env is mode 600 and the cvengine user's: an operator's own account read nothing there and was told docker-default
+        self.apparmor()
+        put(self.envfile, 'CVENGINE_SENTINEL_APPARMOR=cvengine-sentinel\n', 0o000)
+        out = self.run_script('status', FAKE_UID='1000')
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn('cannot tell', out.stdout)
+        self.assertNotIn('runs under: docker-default', out.stdout)
+
     # --- install ---
 
     def test_install_loads_a_root_copy_installs_the_boot_unit_and_names_the_profile_in_env_in_place(self):
