@@ -676,7 +676,7 @@ class UpdateScriptTests(unittest.TestCase):
         with open(os.path.join(ROOT, 'README.md')) as handle:
             readme = handle.read()
         self.assertIn('What Automatic trusts', readme)
-        self.assertIn('are not signature-checked in 1.4.0', readme)
+        self.assertIn('are not signature-checked', readme)
         self.assertIn('CVENGINE_SENTINEL_UPDATE=manual', readme)
 
 
