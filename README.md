@@ -55,9 +55,11 @@ checkout in `/opt/cvengine-sentinel` owned by that user, and runs `setup.sh`, `d
 that user. Nothing is owned by root and nothing runs as root by default, so you do not clone into `/root` and run a
 Sentinel from there (a checkout under `/root` can never be handed to another user: a non-root user cannot enter `/root`).
 
-1. On your CVEngine instance's **Sentinels** page (`/cve/sentinels/`), pick the project and click **Provision**. Copy
-   the one-time blob (or the command the page shows, which already holds it). It is single-use and expires in 30
-   minutes. You need the admin role in the project or its organization (see
+1. In your cvENGINE instance, open **Scanners**, then its **Sentinels** tab (`/cve/sentinels/`). Under **Provision a
+   Sentinel** pick the scope, **Where it runs** (external or internal) and **Size** (full or light, see
+   [Full or light](#full-or-light)), then click **Provision**. Copy the one-time blob (or the command the page shows,
+   which already holds it). It is single-use and expires in 24 hours, long enough for a first install to build and pull
+   its images. You need the admin role in the project or its organization (see
    [docs/FRONTEND.md](https://github.com/hevnsnt/CVEngine/blob/develop/docs/FRONTEND.md#sentinels) in the main
    repository).
 
@@ -85,7 +87,10 @@ Sentinel from there (a checkout under `/root` can never be handed to another use
    - clones this repository into the directory as `cvengine`, or reuses a checkout there that `cvengine` owns and whose
      `origin` is this repository;
    - runs `setup.sh` as `cvengine` (with `--no-updater`), then installs the updater, which runs as `cvengine`;
-   - runs `docker compose up -d` as `cvengine`, and prints the user, the directory and what is and is not unprivileged.
+   - on a host with AppArmor 4 (Ubuntu 24.04 and later, recent Debian and Kali), loads the `cvengine-sentinel` profile so
+     the screenshot browser can start (see [Screenshots and AppArmor](#screenshots-and-apparmor)); elsewhere it changes nothing;
+   - pulls the images (the Greenbone images follow moving tags, so a reinstall starts on the current ones), then runs
+     `docker compose up -d` as `cvengine`, and prints the user, the directory, the AppArmor step and what is and is not unprivileged.
 
    Expected output ends like this (abridged):
 
@@ -287,8 +292,18 @@ When cvENGINE answers 401, or 403 with `"code": "token_revoked"` (or a message s
 the Sentinel logs `this Sentinel's token was revoked or is invalid; stopping` and exits with status 1. A Sentinel that
 cvENGINE holds instead (pending approval, suspended, or a 403 `"code": "agent_blocked"` / "no work can be assigned" for
 an active agent whose user is disabled, whose token is read only or expired, or whose user must set up MFA) keeps its
-token, logs the server's reason once and keeps heartbeating and polling until that is fixed in cvENGINE: do not re-enroll it. Docker's restart policy (`unless-stopped`) then restarts it, and it stops again each time.
-Restarting does not help: provision it again. Delete only the saved token (the same volume holds the GVM login,
+token, logs the server's reason once and keeps heartbeating and polling until that is fixed in cvENGINE: do not re-enroll it.
+
+A 403 that refuses this machine's **address**, not its token, is not a dead token either: the input guard banned the
+address, or it is not on the server's IP allowlist. cvENGINE marks such an answer with the header `X-CVEngine-Refusal`
+(`banned` or `not_allowlisted`); from an older server, a 403 whose body is not a JSON error is read the same way. The
+Sentinel keeps its token, logs `the server refused this address (banned or blocked) ... The token is fine: do not
+re-enroll`, and asks again after 30 seconds, doubling up to 10 minutes, until an App Admin lifts the ban in cvENGINE
+(**Settings, IP allowlist**, **Lift ban**). A current cvENGINE does not ban the address of a live Sentinel in the first
+place: it raises a notice for its App Admins instead.
+
+A Sentinel whose token really was revoked exits each time it starts; Docker's restart policy (`unless-stopped`) starts it
+again and it stops again. Restarting does not help: provision it again. Delete only the saved token (the same volume holds the GVM login,
 which you want to keep), put a new blob in `.env`, and start it:
 
 ```bash
@@ -369,6 +384,14 @@ the profile, set `CVENGINE_SENTINEL_DISABLE=openvas`.
 `CVENGINE_SENTINEL_NETWORK=internal` says this machine sits inside a private network (an office LAN, a VPC, a VPN).
 Only then does the Sentinel declare `network:internal`, scan private addresses, and run the `discover` sweep. An
 external Sentinel refuses every private target, whatever the server sends.
+
+The server holds an internal Sentinel to internal work: it is handed a task only when every host the task names lies
+inside an internal range a project in its scope declared. Public addresses, domain discovery and other external work go
+to external Sentinels, so put a separate external Sentinel (or the built-in scanner) on the internet side for those.
+
+The `discover` sweep also reads what each live address is called, from inside the network: the reverse DNS name from
+this machine's resolver, else the host's mDNS name (one unicast question to its port 5353), else its NetBIOS name (one
+node status question on UDP 137) (`client/host_names.py`). cvENGINE shows the host as `name (address)`.
 
 ### Addresses this Sentinel never touches
 
@@ -548,6 +571,11 @@ buggy or compromised server cannot aim a scanner at the machine it runs on. What
 - **Host names are judged by every address they resolve to:** a name is refused when any of its addresses is refused.
   A name that does not resolve is let through (there is nothing to reach); nmap and naabu drop it.
 
+- **Never data to a raw print port:** no tool sends data to TCP 515 (LPD) or 9100 to 9107 (JetDirect) on any target,
+  because a printer prints what arrives there (`cvengine_scanner.printers`). The fingerprint pass reads those ports with a
+  SYN only, every kind that takes a port, URL or socket refuses them, and the OpenVAS port list leaves them out. cvENGINE
+  then scans a host it recognises as a printer gently.
+
 A refused target fails the task with an error result naming the reason.
 
 The probe kinds (`http_probe`, `dns_resolve`) also carry a **scope policy** (`target.scope`, the contract's `probe_scope`) that cvENGINE computed
@@ -592,7 +620,8 @@ declares `openvas` only once gvmd is **ready**, which means:
 
 - gvmd has created its socket and accepts this Sentinel's login,
 - the "Full and fast" scan configuration, the "OpenVAS Default" scanner and the "All IANA assigned TCP" port list are
-  loaded, and
+  loaded (targets are scanned with a copy of that list without the print ports, `cvengine-sentinel IANA TCP without print
+  ports`, which the Sentinel creates itself), and
 - no feed is still syncing. This last check applies only until the Sentinel first sees the stack ready (it then
   writes an `openvas-ready` marker in the state volume), so a routine daily feed update does not take the capability
   away.
@@ -725,7 +754,7 @@ cvENGINE, exits non-zero and leaves the running Sentinel unchanged when:
 After the checkout, `HEAD` must equal the target before anything is built or restarted. The same rules apply to `scripts/pull-on-exit.sh`.
 
 What is still trusted: **cvENGINE's choice of commit, and the repository's `main` branch** (whoever can push to `main` of the repository `origin` points
-at, or take over the server's idea of the newest build, decides what an Automatic Sentinel runs). **Commits are not signature-checked in 1.4.0**: there
+at, or take over the server's idea of the newest build, decides what an Automatic Sentinel runs). **Commits are not signature-checked**: there
 is no signing key and no verification of tags or commits. To stay in control of what runs, set the Sentinel to **Manual** (in cvENGINE, or
 `CVENGINE_SENTINEL_UPDATE=manual` in `.env`, which cvENGINE cannot loosen) or **Off**, and update by hand after you have looked at the change.
 
@@ -962,7 +991,8 @@ unless the run ticks `tools_reviewed` after someone looked at the newer version 
 ## The built-in scanner
 
 cvENGINE runs this image next to the server as its built-in scanner, shown as **CVEngine Scanner** (the `scanner` service of cvENGINE's own
-`docker-compose.yml`, which runs the moving `main` tag; `scanner.lock.json` there names the floor). It is a Sentinel like any other, with `CVENGINE_SENTINEL_BUILTIN=1`, which changes these things:
+`docker-compose.yml`, which runs the image `scanner.lock.json` there pins by digest, published from the commit the server pins; a newer
+Sentinel reaches it only with a cvENGINE update that moved the pin). It is a Sentinel like any other, with `CVENGINE_SENTINEL_BUILTIN=1`, which changes these things:
 
 - **Name and updates.** It is always called CVEngine Scanner, and its self-update setting is always `off`: cvENGINE's updater replaces its image,
   and rolls back to the previous image if the new one does not heartbeat.
@@ -1067,7 +1097,7 @@ Or, without a local clone, run the **Tag a release** workflow (Actions, `tag-rel
 of `main` to tag. It refuses a tag that is not `vMAJOR.MINOR.PATCH`, a commit that is not on `main`, and a tag that already exists.
 
 Use `vMAJOR.MINOR.PATCH`. Raise MAJOR when a function the server calls changes or goes away, and MINOR for a new kind or
-function. A tag is never moved or reused. The server does not pin a tag. Its `web/requirements.txt` pins a **commit sha of `main`** (cvENGINE 1.4.0 pins `5ac80a23b43f`), and its Docker build and its
+function. A tag is never moved or reused. The server does not pin a tag. Its `web/requirements.txt` pins a **commit sha of `main`** (for example `29d1613f88bc`), and its Docker build and its
 CI both install it from there:
 
 ```
@@ -1159,7 +1189,7 @@ again when they run, so a DNS answer that changes in between is not caught (nmap
   commands for this Sentinel are an unprivileged account's, nothing is owned by or runs as root by default, `.env` is not
   in root's home, and the account has no password or login shell. It is not a sandbox against that account; the
   container (uid 10001, `cap_drop: [ALL]` plus two capabilities) is the boundary for scan tools.
-- **Protect the code source.** Updates are not signature-checked in 1.4.0: the updater builds and runs the commit cvENGINE
+- **Protect the code source.** Updates are not signature-checked: the updater builds and runs the commit cvENGINE
   names, which must be on `origin/main` (or the configured branch) of this checkout's `origin` remote
   ([What Automatic trusts](#what-automatic-trusts)). Anyone who can push there reaches every
   Automatic Sentinel once cvENGINE names that commit. Keep `origin` pointed at
